@@ -28,6 +28,7 @@
         <option value="draw" selected>Create</option>
         <option value="edit">Edit</option>
         <option value="import">Import</option>
+        <option value="ar">AR View</option>
       </select>
     </div>
     <div id="draw-ui" style="margin-top:6px;">
@@ -47,7 +48,9 @@
         <option value="rotate">Rotate</option>
       </select>
       <button id="snapFloor" style="margin-left:8px;">Return to Floor</button>
+      <button id="groupBtn" style="margin-left:8px;">Group Selected</button>
     </div>
+    <button id="arButton" style="margin-top:10px; display:none;">Enter AR</button>
     <button id="exportScene" style="margin-top:10px;">Export Scene (OBJ)</button>
     <div style="margin-top:6px; font-size:12px; color:#333;">
       Create: drag • Edit: select/move/rotate • Import: place • Export scene
@@ -81,9 +84,15 @@
     renderer.shadowMap.enabled = true;
     document.body.appendChild(renderer.domElement);
 
+    // Enable WebXR AR if available
+    renderer.xr.enabled = true;
+    let arActive = false;
+
     // Grid & Lights
-    const grid = new THREE.GridHelper(20,20);
-    grid.receiveShadow=true; scene.add(grid);
+    // 1 foot = 1 unit. Grid is 20x20 feet, 1 foot per division.
+    const grid = new THREE.GridHelper(20, 20, 0x888888, 0xcccccc); // size=20 units (feet), divisions=20 (1 foot per square)
+    grid.receiveShadow = true;
+    scene.add(grid);
     scene.add(new THREE.AmbientLight(0xffffff,0.5));
     const dirLight=new THREE.DirectionalLight(0xffffff,0.8);
     dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
@@ -109,6 +118,8 @@
     const objects=[];
     const material=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
     let loadedModel=null, selectionOutline=null;
+    // Multi-selection state
+    let selectedObjects = [];
 
     // UI refs
     const uiContainer=document.getElementById('ui-container');
@@ -125,9 +136,55 @@
     const addFloorBtn=document.getElementById('addFloor');
     const addWallBtn=document.getElementById('addWall');
     const objectList=document.getElementById('objectList');
+    const arButton=document.getElementById('arButton');
 
     // Visibility UI
-    function updateVisibilityUI(){objectList.innerHTML='';objects.forEach(obj=>{const div=document.createElement('div');const cb=document.createElement('input');cb.type='checkbox';cb.checked=obj.visible;cb.addEventListener('change',()=>obj.visible=cb.checked);const span=document.createElement('span');span.textContent=obj.name;span.style.flex='1';span.style.cursor='pointer';span.addEventListener('dblclick',()=>{const inp=document.createElement('input');inp.type='text';inp.value=obj.name;inp.style.flex='1';inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI();});inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();});div.replaceChild(inp,span);inp.focus();});div.append(cb,span);objectList.append(div);});}
+    function updateVisibilityUI(){
+      objectList.innerHTML='';
+      objects.forEach(obj=>{
+        const div=document.createElement('div');
+        const cb=document.createElement('input');
+        cb.type='checkbox';
+        cb.checked=obj.visible;
+        cb.addEventListener('change',()=>obj.visible=cb.checked);
+        const span=document.createElement('span');
+        span.textContent=obj.name;
+        span.style.flex='1';
+        span.style.cursor='pointer';
+        // Highlight if selected
+        if(selectedObjects.includes(obj)) span.style.background='#ffe066';
+        span.addEventListener('dblclick',()=>{
+          const inp=document.createElement('input');
+          inp.type='text';
+          inp.value=obj.name;
+          inp.style.flex='1';
+          inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI();});
+          inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();});
+          div.replaceChild(inp,span);
+          inp.focus();
+        });
+        // Click to select for grouping (edit mode only)
+        span.addEventListener('click',e=>{
+          if(mode!=='edit') return;
+          if(e.ctrlKey||e.metaKey||e.shiftKey){
+            // Toggle selection
+            if(selectedObjects.includes(obj)){
+              selectedObjects=selectedObjects.filter(o=>o!==obj);
+            }else{
+              selectedObjects.push(obj);
+            }
+            transformControls.detach();
+          }else{
+            selectedObjects=[obj];
+            // Attach transform controls to the selected object (group or mesh)
+            transformControls.attach(obj);
+          }
+          updateVisibilityUI();
+        });
+        div.append(cb,span);
+        objectList.append(div);
+      });
+    }
 
     // Mode change
     modeSelect.addEventListener('change',()=>{
@@ -138,6 +195,34 @@
       if(importUI.style.display==='block') importUI.style.top=`${uiContainer.offsetTop+uiContainer.offsetHeight+10}px`;
       uploadBtn.style.display=(mode==='import')?'block':'none';
       snapBtn.style.display=(mode==='edit')?'inline-block':'none';
+      // AR button visibility
+      if(mode==='ar') {
+        arButton.style.display = 'block';
+      } else {
+        arButton.style.display = 'none';
+        if(renderer.xr.isPresenting) renderer.xr.getSession().end();
+      }
+    // AR Button logic
+    arButton.addEventListener('click', async () => {
+      if (navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')) {
+        try {
+          const session = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hit-test', 'local-floor']
+          });
+          renderer.xr.setSession(session);
+          arActive = true;
+          session.addEventListener('end', () => {
+            arActive = false;
+            modeSelect.value = 'draw';
+            modeSelect.dispatchEvent(new Event('change'));
+          });
+        } catch (e) {
+          alert('Failed to start AR session: ' + e.message);
+        }
+      } else {
+        alert('AR not supported on this device/browser.');
+      }
+    });
     });
     modeSelect.dispatchEvent(new Event('change'));
 
@@ -168,21 +253,69 @@
         const hits=raycaster.intersectObjects(objects,true);
         if(hits.length){
           if(selectionOutline){scene.remove(selectionOutline);selectionOutline=null;}
-          const obj=hits[0].object;
-          transformControls.attach(obj); transformControls.setMode(transformModeSelect.value);
-          const edgeGeo=new THREE.EdgesGeometry(obj.geometry);
-          selectionOutline=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({color:0xffff00,linewidth:3}));
-          selectionOutline.position.copy(obj.position);
-          selectionOutline.rotation.copy(obj.rotation);
-          selectionOutline.scale.copy(obj.scale);
-          scene.add(selectionOutline);
+          let obj=hits[0].object;
+          // If the object is a child of a group, select the group instead
+          while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) {
+            obj = obj.parent;
+          }
+          // Multi-select logic
+          if(e.shiftKey||e.ctrlKey||e.metaKey){
+            if(selectedObjects.includes(obj)){
+              selectedObjects=selectedObjects.filter(o=>o!==obj);
+            }else{
+              selectedObjects.push(obj);
+            }
+            transformControls.detach();
+          }else{
+            selectedObjects=[obj];
+            transformControls.attach(obj); transformControls.setMode(transformModeSelect.value);
+          }
+          // Outline for single selection only
+          if(selectedObjects.length===1&&obj.geometry){
+            const edgeGeo=new THREE.EdgesGeometry(obj.geometry);
+            selectionOutline=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({color:0xffff00,linewidth:3}));
+            selectionOutline.position.copy(obj.position);
+            selectionOutline.rotation.copy(obj.rotation);
+            selectionOutline.scale.copy(obj.scale);
+            scene.add(selectionOutline);
+          }
+          updateVisibilityUI();
         } else {
           transformControls.detach();
           if(selectionOutline){scene.remove(selectionOutline);selectionOutline=null;}
+          selectedObjects=[];
+          updateVisibilityUI();
         }
       } else {
         transformControls.detach();
       }
+    // Grouping logic
+    const groupBtn = document.getElementById('groupBtn');
+    groupBtn.addEventListener('click',()=>{
+      if(selectedObjects.length<2) {
+        return;
+      }
+      // Remove from scene and objects list
+      selectedObjects.forEach(obj=>{
+        scene.remove(obj);
+        const idx=objects.indexOf(obj);
+        if(idx>-1) objects.splice(idx,1);
+      });
+      // Create group
+      const group=new THREE.Group();
+      selectedObjects.forEach(obj=>{
+        // Reset object's position/rotation/scale to be relative to group
+        obj.position.sub(group.position);
+        group.add(obj);
+      });
+      group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
+      scene.add(group);
+      objects.push(group);
+      selectedObjects=[group];
+      // Attach transform controls to the new group
+      transformControls.attach(group);
+      updateVisibilityUI();
+    });
     });
 
     renderer.domElement.addEventListener('pointermove',e=>{if(!isDragging)return;getPointer(e);raycaster.setFromCamera(pointer,camera);const pt=intersectGround();if(!pt)return;const dx=pt.x-startPt.x,dz=pt.z-startPt.z;const sx=Math.abs(dx)||0.01,sz=Math.abs(dz)||0.01;const h=parseFloat(document.getElementById('height').value)||1;const cx=startPt.x+dx/2,cy=h/2,cz=startPt.z+dz/2; if(previewMesh){scene.remove(previewMesh);previewMesh.geometry.dispose();previewMesh.material.dispose();}previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz),material);previewMesh.position.set(cx,cy,cz);scene.add(previewMesh);});
@@ -202,6 +335,14 @@
     // Resize & animate
     window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
     (function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);})();
+    // Animation loop with AR support
+    function animate() {
+      renderer.setAnimationLoop(() => {
+        if (!arActive) controls.update();
+        renderer.render(scene, camera);
+      });
+    }
+    animate();
   </script>
 </body>
 </html>
