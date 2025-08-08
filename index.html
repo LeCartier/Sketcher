@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>Sketcher</title>
+  <title>Interactive Scene + Import & Export</title>
   <style>
     body { margin: 0; overflow: hidden; }
     canvas { display: block; touch-action: none; }
@@ -40,65 +40,79 @@
   </style>
 </head>
 <body>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./js/vendor/three.module.js"
+      }
+    }
+  </script>
   <div id="ui-container">
     <div>
-      <label for="modeSelect">Mode:</label>
+      <label for="langSelect" data-i18n="language.label">Language:</label>
+      <select id="langSelect" style="margin-right:8px;">
+        <option value="en" data-i18n="language.en">English</option>
+        <option value="es" data-i18n="language.es">Spanish</option>
+      </select>
+      <label for="modeSelect" data-i18n="mode.label">Mode:</label>
       <select id="modeSelect">
-        <option value="draw" selected>Create</option>
-        <option value="edit">Edit</option>
-        <option value="import">Import</option>
-        <option value="ar">AR View</option>
+        <option value="draw" selected data-i18n="mode.create">Create</option>
+        <option value="edit" data-i18n="mode.edit">Edit</option>
+        <option value="import" data-i18n="mode.import">Import</option>
+        <option value="ar" data-i18n="mode.ar">AR View</option>
       </select>
     </div>
     <div id="draw-ui" style="margin-top:6px;">
-  <label for="height">Height (feet):</label>
+  <label for="height" data-i18n="draw.heightLabel">Height (feet):</label>
   <input id="height" type="number" step="0.1" value="1">
     </div>
     <div id="edit-ui" style="margin-top:6px; display:none;">
-      <label for="transformMode">Transform:</label>
+      <label for="transformMode" data-i18n="edit.transformLabel">Transform:</label>
       <select id="transformMode">
-        <option value="translate" selected>Move</option>
-        <option value="rotate">Rotate</option>
+        <option value="translate" selected data-i18n="edit.move">Move</option>
+        <option value="rotate" data-i18n="edit.rotate">Rotate</option>
       </select>
-      <button id="snapFloor" style="margin-left:8px;">Return to Floor</button>
-      <button id="groupBtn" style="margin-left:8px;">Group Selected</button>
+      <button id="snapFloor" style="margin-left:8px;" data-i18n="edit.snapFloor">Return to Floor</button>
+      <button id="groupBtn" style="margin-left:8px;" data-i18n="edit.groupSelected">Group Selected</button>
     </div>
-    <button id="arButton" style="margin-top:10px; display:none;">Enter AR</button>
-    <button id="exportScene" style="margin-top:10px;">Export Scene (OBJ)</button>
-    <div style="margin-top:6px; font-size:12px; color:#333;">
+    <button id="arButton" style="margin-top:10px; display:none;" data-i18n="buttons.enterAR">Enter AR</button>
+    <button id="exportScene" style="margin-top:10px;" data-i18n="buttons.exportOBJ">Export Scene (OBJ)</button>
+    <div style="margin-top:6px; font-size:12px; color:#333;" data-i18n="hints.main">
       Create: drag • Edit: select/move/rotate • Import: place • Export scene
     </div>
-    <button id="uploadModel" style="margin-top:6px;">Upload Model</button>
+    <button id="uploadModel" style="margin-top:6px;" data-i18n="buttons.uploadModel">Upload Model</button>
     <input id="modelInput" type="file" accept=".gltf,.glb,.obj" style="display:none;">
-    <div id="uploadStatus" style="font-size:12px; color:#555; margin-top:4px;">No model selected</div>
+    <div id="uploadStatus" style="font-size:12px; color:#555; margin-top:4px;" data-i18n="status.noModelSelected">No model selected</div>
   </div>
   <div id="import-ui">
-    <button id="addFloor">Add Floor</button>
-    <button id="addWall">Add Wall</button>
+    <button id="addFloor" data-i18n="importUI.addFloor">Add Floor</button>
+    <button id="addWall" data-i18n="importUI.addWall">Add Wall</button>
   </div>
   <div id="visibility-container">
-    <strong>Visibility</strong>
+    <strong data-i18n="visibility.title">Visibility</strong>
     <div id="objectList"></div>
   </div>
+  <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <script type="module">
-    import * as THREE from 'https://esm.sh/three@0.155.0';
-    import { GLTFLoader } from 'https://esm.sh/three@0.155.0/examples/jsm/loaders/GLTFLoader';
-    import { OBJLoader }  from 'https://esm.sh/three@0.155.0/examples/jsm/loaders/OBJLoader';
-    import { OrbitControls } from 'https://esm.sh/three@0.155.0/examples/jsm/controls/OrbitControls';
-    import { TransformControls } from 'https://esm.sh/three@0.155.0/examples/jsm/controls/TransformControls';
-    import { OBJExporter } from 'https://esm.sh/three@0.155.0/examples/jsm/exporters/OBJExporter.js';
+    import { initLocale, setLocale, applyTranslations, t } from './js/i18n.js';
+  import * as THREE from './js/vendor/three.module.js';
+  import { GLTFLoader } from './js/vendor/GLTFLoader.js';
+  import { OBJLoader }  from './js/vendor/OBJLoader.js';
+  import { OrbitControls } from './js/vendor/OrbitControls.js';
+  import { TransformControls } from './js/vendor/TransformControls.js';
+  import { OBJExporter } from './js/vendor/OBJExporter.js';
 
     // WebXR Polyfill for iOS (iPhone/iPad) AR support
     async function loadWebXRPolyfillIfNeeded() {
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       if (isIOS && !('xr' in navigator)) {
-        // Dynamically load WebXR Polyfill
-        await import('https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.module.js');
+        // Dynamically load WebXR Polyfill via local proxy
+        await import('./js/vendor/webxr-polyfill.module.js');
       }
     }
     loadWebXRPolyfillIfNeeded();
 
-    // Scene setup
+  // Scene setup
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
     camera.position.set(5,5,5); camera.lookAt(0,0,0);
@@ -165,7 +179,13 @@
     const addFloorBtn=document.getElementById('addFloor');
     const addWallBtn=document.getElementById('addWall');
     const objectList=document.getElementById('objectList');
-    const arButton=document.getElementById('arButton');
+  const arButton=document.getElementById('arButton');
+  const langSelect=document.getElementById('langSelect');
+  // Initialize and apply current locale
+  const initialLocale = initLocale(['en','es']);
+  langSelect.value = initialLocale;
+  applyTranslations(document);
+  const groupBtn=document.getElementById('groupBtn');
 
     // Visibility UI
     function updateVisibilityUI(){
@@ -231,9 +251,11 @@
         arButton.style.display = 'none';
         if(renderer.xr.isPresenting) renderer.xr.getSession().end();
       }
-    // AR Button logic
+    });
+    modeSelect.dispatchEvent(new Event('change'));
+
+    // AR Button logic (bind once)
     arButton.addEventListener('click', async () => {
-      // Try to load polyfill if needed (for iOS)
       await loadWebXRPolyfillIfNeeded();
       if (navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')) {
         try {
@@ -248,35 +270,53 @@
             modeSelect.dispatchEvent(new Event('change'));
           });
         } catch (e) {
-          alert('Failed to start AR session: ' + e.message);
+          alert(t('alerts.arStartFailed', { message: e.message }));
         }
       } else {
-        alert('AR not supported on this device/browser. On iPhone/iPad, use Safari 16+ and "WebXR Device API" enabled in Experimental Features.');
+        alert(t('alerts.arNotSupported'));
       }
     });
-    });
-    modeSelect.dispatchEvent(new Event('change'));
 
     // Transform mode
     transformModeSelect.addEventListener('change',()=>{
       transformControls.setMode(transformModeSelect.value);
     });
 
-    // Upload model
+  // Upload model
     uploadBtn.addEventListener('click',()=>fileInput.click());
-    fileInput.addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;const url=URL.createObjectURL(file);const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader();loader.load(url,gltf=>{loadedModel=gltf.scene||gltf;uploadStatus.textContent=file.name;});});
+  fileInput.addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;const url=URL.createObjectURL(file);const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader();loader.load(url,gltf=>{loadedModel=gltf.scene||gltf;uploadStatus.textContent=file.name;uploadStatus.dataset.skipI18n='true';URL.revokeObjectURL(url);});});
 
-    // Export
-    exportBtn.addEventListener('click',()=>{const exporter=new OBJExporter();const data=exporter.parse(scene);const blob=new Blob([data],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='scene.obj';a.click();URL.revokeObjectURL(a.href);});
+    // Export: only user-created/imported objects (exclude grid, lights, gizmos)
+    exportBtn.addEventListener('click',()=>{
+      const exporter=new OBJExporter();
+      const root=new THREE.Group();
+      objects.forEach(o=>root.add(o.clone(true)));
+      const data=exporter.parse(root);
+      const blob=new Blob([data],{type:'text/plain'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='scene.obj';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    // Language change
+    langSelect.addEventListener('change', ()=>{
+      setLocale(langSelect.value);
+      applyTranslations(document);
+      // Repaint the list to keep selection highlight but translations applied
+      updateVisibilityUI();
+    });
 
     // Helpers
     function getPointer(e){const rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;}
     function intersectGround(){const pt=new THREE.Vector3();raycaster.ray.intersectPlane(groundPlane,pt);return pt;}
 
     // Interaction
-    renderer.domElement.addEventListener('pointerdown',e=>{
-    // Touch: prevent scrolling when interacting with canvas
-    renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
+  // Prevent browser scroll/zoom while finger-panning on canvas (bind once)
+  renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
+
+  renderer.domElement.addEventListener('pointerdown',e=>{
   // Prevent deselection and allow gizmo interaction even when not overlapping group
   if (transformControls.dragging) return;
   getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
@@ -307,8 +347,15 @@
             selectedObjects=[obj];
             transformControls.attach(obj); transformControls.setMode(transformModeSelect.value);
           }
-          // Remove previous outlines
-          selectionOutlines.forEach(outline => scene.remove(outline));
+          // Remove previous outlines and dispose resources
+          selectionOutlines.forEach(outline => {
+            scene.remove(outline);
+            if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
+            if (outline.material) {
+              if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
+              else if (outline.material.dispose) outline.material.dispose();
+            }
+          });
           selectionOutlines = [];
           // Outline all selected objects with thick yellow line (consistent for single objects and groups)
           selectedObjects.forEach(selObj => {
@@ -348,7 +395,14 @@
           updateVisibilityUI();
         } else {
           transformControls.detach();
-          selectionOutlines.forEach(outline => scene.remove(outline));
+          selectionOutlines.forEach(outline => {
+            scene.remove(outline);
+            if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
+            if (outline.material) {
+              if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
+              else if (outline.material.dispose) outline.material.dispose();
+            }
+          });
           selectionOutlines = [];
           selectedObjects=[];
           updateVisibilityUI();
@@ -356,12 +410,12 @@
       } else {
         transformControls.detach();
       }
-    // Grouping logic
-    const groupBtn = document.getElementById('groupBtn');
+    });
+
+    // Grouping logic (bind once)
     groupBtn.addEventListener('click',()=>{
-      if(selectedObjects.length<2) {
-        return;
-      }
+      if(selectedObjects.length<2) return;
+
       // Compute center of selected objects
       const center = new THREE.Vector3();
       selectedObjects.forEach(obj => {
@@ -378,11 +432,11 @@
         const idx=objects.indexOf(obj);
         if(idx>-1) objects.splice(idx,1);
       });
+
       // Create group at center
       const group=new THREE.Group();
       group.position.copy(center);
       selectedObjects.forEach(obj=>{
-        // Set object's position relative to group center
         obj.updateMatrixWorld();
         const worldPos = new THREE.Vector3();
         worldPos.setFromMatrixPosition(obj.matrixWorld);
@@ -393,10 +447,8 @@
       scene.add(group);
       objects.push(group);
       selectedObjects=[group];
-      // Attach transform controls to the new group
       transformControls.attach(group);
       updateVisibilityUI();
-    });
     });
 
     renderer.domElement.addEventListener('pointermove',e=>{if(!isDragging)return;getPointer(e);raycaster.setFromCamera(pointer,camera);const pt=intersectGround();if(!pt)return;const dx=pt.x-startPt.x,dz=pt.z-startPt.z;const sx=Math.abs(dx)||0.01,sz=Math.abs(dz)||0.01;const h=parseFloat(document.getElementById('height').value)||1;const cx=startPt.x+dx/2,cy=h/2,cz=startPt.z+dz/2; if(previewMesh){scene.remove(previewMesh);previewMesh.geometry.dispose();previewMesh.material.dispose();}previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz),material);previewMesh.position.set(cx,cy,cz);scene.add(previewMesh);});
@@ -410,20 +462,49 @@
     // Return to Floor
     snapBtn.addEventListener('click',()=>{const sel=transformControls.object;if(sel){const box=new THREE.Box3().setFromObject(sel);const minY=box.min.y;sel.position.y-=minY;}});
 
-    // Delete
-    window.addEventListener('keydown',e=>{if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){const sel=transformControls.object;if(sel){scene.remove(sel);const idx=objects.indexOf(sel);if(idx>-1)objects.splice(idx,1);transformControls.detach();updateVisibilityUI();}}});
+    // Delete (supports multi-select)
+    window.addEventListener('keydown',e=>{
+      if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){
+        const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+        toDelete.forEach(sel=>{
+          scene.remove(sel);
+          const idx=objects.indexOf(sel);
+          if(idx>-1)objects.splice(idx,1);
+        });
+        selectedObjects = [];
+        transformControls.detach();
+        updateVisibilityUI();
+      }
+    });
 
-    // Resize & animate
+    // ESC to cancel drawing preview
+    window.addEventListener('keydown',e=>{
+      if(e.key==='Escape' && isDragging){
+        isDragging=false; controls.enabled=true;
+        if(previewMesh){
+          scene.remove(previewMesh);
+          if (previewMesh.geometry) previewMesh.geometry.dispose();
+          if (previewMesh.material && previewMesh.material.dispose) previewMesh.material.dispose();
+          previewMesh=null;
+        }
+      }
+    });
+
+    // Resize & single animation loop with AR support
     window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
-    (function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);})();
-    // Animation loop with AR support
-    function animate() {
-      renderer.setAnimationLoop(() => {
+    renderer.setAnimationLoop(() => {
+      try {
         if (!arActive) controls.update();
         renderer.render(scene, camera);
-      });
-    }
-    animate();
+        const banner = document.getElementById('error-banner');
+        if (banner) banner.style.display = 'none';
+      } catch (err) {
+        const banner = document.getElementById('error-banner');
+        if (banner) { banner.textContent = 'Render error: ' + (err?.message || err); banner.style.display = 'block'; }
+        // Re-throw to surface in console for debugging
+        console.error(err);
+      }
+    });
   </script>
 </body>
 </html>
