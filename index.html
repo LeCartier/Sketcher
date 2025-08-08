@@ -51,14 +51,8 @@
       </select>
     </div>
     <div id="draw-ui" style="margin-top:6px;">
-      <label for="height">Height:</label>
-      <input id="height" type="number" step="0.1" value="1"><br>
-      <label for="scale">Scale:</label>
-      <input id="scale" type="number" step="0.1" value="1">
-      <select id="unitSelect">
-        <option value="meters">Meters</option>
-        <option value="feet" selected>Feet</option>
-      </select>
+  <label for="height">Height (feet):</label>
+  <input id="height" type="number" step="0.1" value="1">
     </div>
     <div id="edit-ui" style="margin-top:6px; display:none;">
       <label for="transformMode">Transform:</label>
@@ -149,7 +143,10 @@
     let startPt=new THREE.Vector3();
     const objects=[];
     const material=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
-    let loadedModel=null, selectionOutline=null;
+  let loadedModel=null;
+  // Store outlines for all selected objects
+  // Store outlines for all selected objects
+  let selectionOutlines = [];
     // Multi-selection state
     let selectedObjects = [];
 
@@ -280,15 +277,19 @@
     renderer.domElement.addEventListener('pointerdown',e=>{
     // Touch: prevent scrolling when interacting with canvas
     renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
-      getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
+  // Prevent deselection and allow gizmo interaction even when not overlapping group
+  if (transformControls.dragging) return;
+  getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
       if(mode==='draw'){
         const pt=intersectGround(); if(!pt)return; isDragging=true; startPt.copy(pt); controls.enabled=false;
       } else if(mode==='import'&&loadedModel){
         const pt=intersectGround(); if(!pt)return; const clone=loadedModel.clone(); clone.position.copy(pt); scene.add(clone); objects.push(clone); updateVisibilityUI();
       } else if(mode==='edit'){
-        const hits=raycaster.intersectObjects(objects,true);
+        // Make sure raycaster can select both meshes and groups
+        // Flatten objects array to include groups and their children for intersection
+        const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
+        const hits=raycaster.intersectObjects(selectableObjects,true);
         if(hits.length){
-          if(selectionOutline){scene.remove(selectionOutline);selectionOutline=null;}
           let obj=hits[0].object;
           // If the object is a child of a group, select the group instead
           while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) {
@@ -306,19 +307,49 @@
             selectedObjects=[obj];
             transformControls.attach(obj); transformControls.setMode(transformModeSelect.value);
           }
-          // Outline for single selection only
-          if(selectedObjects.length===1&&obj.geometry){
-            const edgeGeo=new THREE.EdgesGeometry(obj.geometry);
-            selectionOutline=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({color:0xffff00,linewidth:3}));
-            selectionOutline.position.copy(obj.position);
-            selectionOutline.rotation.copy(obj.rotation);
-            selectionOutline.scale.copy(obj.scale);
-            scene.add(selectionOutline);
-          }
+          // Remove previous outlines
+          selectionOutlines.forEach(outline => scene.remove(outline));
+          selectionOutlines = [];
+          // Outline all selected objects with thick yellow line (consistent for single objects and groups)
+          selectedObjects.forEach(selObj => {
+            if (selObj.type === 'Group') {
+              selObj.children.forEach(child => {
+                if (child.geometry) {
+                  const edgeGeo = new THREE.EdgesGeometry(child.geometry);
+                  const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
+                  // Use world transforms for group children
+                  child.updateMatrixWorld();
+                  const worldPos = new THREE.Vector3();
+                  const worldQuat = new THREE.Quaternion();
+                  const worldScale = new THREE.Vector3();
+                  child.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+                  outline.position.copy(worldPos);
+                  outline.quaternion.copy(worldQuat);
+                  outline.scale.copy(worldScale);
+                  scene.add(outline);
+                  selectionOutlines.push(outline);
+                }
+              });
+            } else if (selObj.geometry) {
+              const edgeGeo = new THREE.EdgesGeometry(selObj.geometry);
+              const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
+              selObj.updateMatrixWorld();
+              const worldPos = new THREE.Vector3();
+              const worldQuat = new THREE.Quaternion();
+              const worldScale = new THREE.Vector3();
+              selObj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+              outline.position.copy(worldPos);
+              outline.quaternion.copy(worldQuat);
+              outline.scale.copy(worldScale);
+              scene.add(outline);
+              selectionOutlines.push(outline);
+            }
+          });
           updateVisibilityUI();
         } else {
           transformControls.detach();
-          if(selectionOutline){scene.remove(selectionOutline);selectionOutline=null;}
+          selectionOutlines.forEach(outline => scene.remove(outline));
+          selectionOutlines = [];
           selectedObjects=[];
           updateVisibilityUI();
         }
@@ -331,17 +362,31 @@
       if(selectedObjects.length<2) {
         return;
       }
+      // Compute center of selected objects
+      const center = new THREE.Vector3();
+      selectedObjects.forEach(obj => {
+        obj.updateMatrixWorld();
+        const pos = new THREE.Vector3();
+        pos.setFromMatrixPosition(obj.matrixWorld);
+        center.add(pos);
+      });
+      center.multiplyScalar(1 / selectedObjects.length);
+
       // Remove from scene and objects list
       selectedObjects.forEach(obj=>{
         scene.remove(obj);
         const idx=objects.indexOf(obj);
         if(idx>-1) objects.splice(idx,1);
       });
-      // Create group
+      // Create group at center
       const group=new THREE.Group();
+      group.position.copy(center);
       selectedObjects.forEach(obj=>{
-        // Reset object's position/rotation/scale to be relative to group
-        obj.position.sub(group.position);
+        // Set object's position relative to group center
+        obj.updateMatrixWorld();
+        const worldPos = new THREE.Vector3();
+        worldPos.setFromMatrixPosition(obj.matrixWorld);
+        obj.position.copy(worldPos.sub(center));
         group.add(obj);
       });
       group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
