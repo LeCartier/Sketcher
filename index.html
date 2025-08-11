@@ -65,14 +65,11 @@
       <!-- Move + Rotate gizmos are both active in Edit mode -->
       <button id="snapFloor" style="margin-left:8px;" data-i18n="edit.snapFloor">Return to Floor</button>
       <button id="groupBtn" style="margin-left:8px;" data-i18n="edit.groupSelected">Group Selected</button>
-      <label style="margin-left:8px; user-select:none;">
-        <input type="checkbox" id="touchNavToggle" /> Touch Navigate
-      </label>
     </div>
     <button id="arButton" style="margin-top:10px; display:none;" data-i18n="buttons.enterAR">Enter AR</button>
     <button id="exportScene" style="margin-top:10px;" data-i18n="buttons.exportOBJ">Export Scene (OBJ)</button>
     <div style="margin-top:6px; font-size:12px; color:#333;" data-i18n="hints.main">
-      Create: drag • Edit: select/move/rotate • Import: place • Export scene • Mobile: pinch to zoom/rotate; use Touch Navigate for one-finger orbit
+      Create: drag • Edit: select/move/rotate • Import: place • Export scene • Mobile: tap to select • Edit: one finger orbits, pinch to zoom/pan • Create/Import: one finger draws/places
     </div>
     <button id="uploadModel" style="margin-top:6px;" data-i18n="buttons.uploadModel">Upload Model</button>
     <input id="modelInput" type="file" accept=".gltf,.glb,.obj" style="display:none;">
@@ -89,6 +86,8 @@
   <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <script type="module">
   import * as THREE from './js/vendor/three.module.js';
+  import { clearSelectionOutlines as clearOutlinesMod, rebuildSelectionOutlines as rebuildOutlinesMod } from './js/app/outlines.js';
+  import { getWorldMatrix as getWorldMatrixMod, setWorldMatrix as setWorldMatrixMod } from './js/app/transforms.js';
   import { GLTFLoader } from './js/vendor/GLTFLoader.js';
   import { OBJLoader }  from './js/vendor/OBJLoader.js';
   import { OrbitControls } from './js/vendor/OrbitControls.js';
@@ -133,8 +132,8 @@
     controls.enablePan=true; controls.enableZoom=true;
     controls.enableRotate=true;
     controls.mouseButtons={LEFT:THREE.MOUSE.NONE,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.PAN};
-    // On mobile, use two fingers to orbit (rotate), one finger to select/draw
-    controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.ROTATE };
+  // Default touch mapping; will be adjusted automatically per mode on touch devices
+  controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
     window.addEventListener('keydown',e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.PAN;});
     window.addEventListener('keyup',  e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.ROTATE;});
   const transformControls=new TransformControls(camera,renderer.domElement); // translate
@@ -174,85 +173,16 @@
     const material=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
   let loadedModel=null;
   // Store outlines for all selected objects
-  // Store outlines for all selected objects
   let selectionOutlines = [];
     // Multi-selection state
     let selectedObjects = [];
 
-    // Outline helpers
-    function clearSelectionOutlines(){
-      selectionOutlines.forEach(outline => {
-        scene.remove(outline);
-        if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
-        if (outline.material) {
-          if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
-          else if (outline.material.dispose) outline.material.dispose();
-        }
-      });
-      selectionOutlines = [];
-    }
-    function rebuildSelectionOutlines(){
-      clearSelectionOutlines();
-      selectedObjects.forEach(selObj => {
-        if (selObj.type === 'Group') {
-          selObj.children.forEach(child => {
-            if (child.geometry) {
-              const edgeGeo = new THREE.EdgesGeometry(child.geometry);
-              const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
-              child.updateMatrixWorld();
-              const worldPos = new THREE.Vector3();
-              const worldQuat = new THREE.Quaternion();
-              const worldScale = new THREE.Vector3();
-              child.matrixWorld.decompose(worldPos, worldQuat, worldScale);
-              outline.position.copy(worldPos);
-              outline.quaternion.copy(worldQuat);
-              outline.scale.copy(worldScale);
-              scene.add(outline);
-              selectionOutlines.push(outline);
-            }
-          });
-        } else if (selObj.geometry) {
-          const edgeGeo = new THREE.EdgesGeometry(selObj.geometry);
-          const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
-          selObj.updateMatrixWorld();
-          const worldPos = new THREE.Vector3();
-          const worldQuat = new THREE.Quaternion();
-          const worldScale = new THREE.Vector3();
-          selObj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
-          outline.position.copy(worldPos);
-          outline.quaternion.copy(worldQuat);
-          outline.scale.copy(worldScale);
-          scene.add(outline);
-          selectionOutlines.push(outline);
-        }
-      });
-    }
+  // Outline helpers (delegated to module)
+  function clearSelectionOutlines(){ selectionOutlines = clearOutlinesMod(scene, selectionOutlines); }
+  function rebuildSelectionOutlines(){ selectionOutlines = clearOutlinesMod(scene, selectionOutlines); selectionOutlines = rebuildOutlinesMod(THREE, scene, selectedObjects); }
 
     // Helpers for multi-select gizmo
-    function getWorldMatrix(obj){
-      obj.updateMatrixWorld();
-      return obj.matrixWorld.clone();
-    }
-    function setWorldMatrix(obj, worldMat){
-      // Compute local matrix relative to parent
-      const parent = obj.parent;
-      const invParent = new THREE.Matrix4();
-      if(parent){
-        parent.updateMatrixWorld();
-        invParent.copy(parent.matrixWorld).invert();
-      } else {
-        invParent.identity();
-      }
-      const local = new THREE.Matrix4().multiplyMatrices(invParent, worldMat);
-      const pos = new THREE.Vector3();
-      const quat = new THREE.Quaternion();
-      const scl = new THREE.Vector3();
-      local.decompose(pos, quat, scl);
-      obj.position.copy(pos);
-      obj.quaternion.copy(quat);
-      obj.scale.copy(scl);
-      obj.updateMatrixWorld(true);
-    }
+  const getWorldMatrix = getWorldMatrixMod; const setWorldMatrix = setWorldMatrixMod;
     function updateMultiSelectPivot(){
       if(selectedObjects.length < 2) return;
       // Compute centroid in world space
@@ -347,7 +277,7 @@
     const objectList=document.getElementById('objectList');
   const arButton=document.getElementById('arButton');
   const groupBtn=document.getElementById('groupBtn');
-  const touchNavToggle=document.getElementById('touchNavToggle');
+  // No manual touch toggle; we'll detect touch automatically
 
     // Visibility UI
     function updateVisibilityUI(){
@@ -416,6 +346,8 @@
         arButton.style.display = 'none';
         if(renderer.xr.isPresenting) renderer.xr.getSession().end();
       }
+  // Ensure touch mapping matches current mode on touch devices
+  if (typeof applyAutoTouchMapping === 'function') applyAutoTouchMapping();
     });
     modeSelect.dispatchEvent(new Event('change'));
 
@@ -468,63 +400,47 @@
     function getPointer(e){const rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;}
     function intersectGround(){const pt=new THREE.Vector3();raycaster.ray.intersectPlane(groundPlane,pt);return pt;}
 
-    // Touch helpers and behavior
-    let ongoingTouches = new Map(); // id => {x,y}
-    function touchCount(){ return ongoingTouches.size; }
-    function updateTouch(id, x, y){ ongoingTouches.set(id, {x,y}); }
-    function removeTouch(id){ ongoingTouches.delete(id); }
-    function getTouchesArray(){ return Array.from(ongoingTouches.values()); }
-    function distance(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
-    function angle(a,b){ return Math.atan2(b.y-a.y, b.x-a.x); }
-
-    function applyTouchControlsMode(){
-      if(touchNavToggle && touchNavToggle.checked){
-        // One finger orbit, two finger zoom/pan
-        controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    // Automatic touch mapping based on device + mode
+    const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
+    function applyAutoTouchMapping(){
+      if(isTouchDevice){
+        // Edit: single finger orbits; pinch pans/zooms. Other modes: leave one finger free for app actions.
+        controls.touches = (mode === 'edit')
+          ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }
+          : { ONE: THREE.TOUCH.NONE,   TWO: THREE.TOUCH.DOLLY_PAN };
       } else {
-        // Default: two finger rotate; we'll add pinch zoom manually below
-        controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.ROTATE };
+        // Desktop: prefer app actions on single pointer
+        controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
       }
     }
-    if(touchNavToggle){ touchNavToggle.addEventListener('change', applyTouchControlsMode); }
-    applyTouchControlsMode();
+    applyAutoTouchMapping();
 
 
     // Interaction
   // Prevent browser scroll/zoom while finger-panning on canvas (bind once)
   renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
-  renderer.domElement.addEventListener('touchstart', e => { for(const t of e.changedTouches){ updateTouch(t.identifier, t.clientX, t.clientY); } }, { passive: false });
-  renderer.domElement.addEventListener('touchend', e => { for(const t of e.changedTouches){ removeTouch(t.identifier); } });
-  renderer.domElement.addEventListener('touchcancel', e => { for(const t of e.changedTouches){ removeTouch(t.identifier); } });
-  let prevPinchDist=null, prevAngle=null;
-  renderer.domElement.addEventListener('touchmove', e => {
-    const touches = getTouchesArray();
-    if(touches.length===2 && (!touchNavToggle || !touchNavToggle.checked)){
-      const [a,b]=touches; const d=distance(a,b); const ang=angle(a,b);
-      if(prevPinchDist!=null){
-        const delta=d-prevPinchDist;
-        camera.position.addScaledVector(camera.getWorldDirection(new THREE.Vector3()), delta * -0.01);
-      }
-      if(prevAngle!=null){
-        const dAng=ang-prevAngle; const r=camera.position.length(); const th=Math.atan2(camera.position.x,camera.position.z)+dAng; const y=camera.position.y; camera.position.set(Math.sin(th)*r,y,Math.cos(th)*r); camera.lookAt(0,0,0);
-      }
-      prevPinchDist=d; prevAngle=ang;
-    } else { prevPinchDist=null; prevAngle=null; }
-    // Update positions for ongoing touches
-    for(const t of e.changedTouches){ updateTouch(t.identifier, t.clientX, t.clientY); }
-  }, { passive: false });
+
+  // Track active touch pointers to avoid accidental actions with multi-touch
+  const activeTouchPointers = new Set();
+  renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
+  renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
 
   renderer.domElement.addEventListener('pointerdown',e=>{
   // Prevent deselection and allow gizmo interaction even when not overlapping group
   if (transformControls.dragging || transformControlsRotate.dragging) return;
   // If multiple touches are present, avoid starting select/draw
-  if (e.pointerType==='touch' && touchCount()>1) return;
+  if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
   getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
       if(mode==='draw'){
         const pt=intersectGround(); if(!pt)return; isDragging=true; startPt.copy(pt); controls.enabled=false;
       } else if(mode==='import'&&loadedModel){
         const pt=intersectGround(); if(!pt)return; const clone=loadedModel.clone(); clone.position.copy(pt); scene.add(clone); objects.push(clone); updateVisibilityUI();
       } else if(mode==='edit'){
+        // On touch in Edit: one-finger is reserved for orbit; use tap-to-select on pointerup
+        if(e.pointerType==='touch'){
+          e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() };
+          return;
+        }
         // Make sure raycaster can select both meshes and groups
         // Flatten objects array to include groups and their children for intersection
         const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
@@ -559,6 +475,37 @@
         }
       } else {
         transformControls.detach(); transformControlsRotate.detach();
+      }
+    });
+
+  // Handle tap-to-select on touch in Edit mode
+    renderer.domElement.addEventListener('pointerup', e => {
+      if(e.pointerType==='touch'){
+        const start = e.target.__tapStart;
+        activeTouchPointers.delete(e.pointerId);
+    if(mode==='edit' && start){
+          const dt = performance.now() - start.t;
+          const dx = Math.abs(e.clientX - start.x);
+          const dy = Math.abs(e.clientY - start.y);
+          // Consider it a tap if short and small movement
+          if(dt < 300 && dx < 8 && dy < 8){
+            getPointer(e); raycaster.setFromCamera(pointer,camera);
+            const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
+            const hits=raycaster.intersectObjects(selectableObjects,true);
+            if(hits.length){
+              let obj=hits[0].object;
+              while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent;
+              selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+            } else {
+              // Clear selection on empty tap
+              transformControls.detach(); transformControlsRotate.detach();
+              clearSelectionOutlines();
+              selectedObjects=[];
+              updateVisibilityUI();
+            }
+          }
+          e.target.__tapStart = undefined;
+        }
       }
     });
 
