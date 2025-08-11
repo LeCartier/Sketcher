@@ -1,29 +1,22 @@
-// Transform helpers for multi-select pivot operations
-import * as THREE from '../vendor/three.module.js';
+// World transform helpers for applying deltas with parented objects
 
-/** Return a clone of object's world matrix after updating world. */
 export function getWorldMatrix(obj) {
-  obj.updateMatrixWorld();
-  return obj.matrixWorld.clone();
+	if (!obj) return new (obj?.matrix?.constructor || window.THREE?.Matrix4 || Function)();
+	obj.updateMatrixWorld(true);
+	return obj.matrixWorld.clone();
 }
 
-/** Set an object's transform using a world-space matrix. */
-export function setWorldMatrix(obj, worldMat) {
-  const parent = obj.parent;
-  const invParent = new THREE.Matrix4();
-  if (parent) {
-    parent.updateMatrixWorld();
-    invParent.copy(parent.matrixWorld).invert();
-  } else {
-    invParent.identity();
-  }
-  const local = new THREE.Matrix4().multiplyMatrices(invParent, worldMat);
-  const pos = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const scl = new THREE.Vector3();
-  local.decompose(pos, quat, scl);
-  obj.position.copy(pos);
-  obj.quaternion.copy(quat);
-  obj.scale.copy(scl);
-  obj.updateMatrixWorld(true);
+export function setWorldMatrix(obj, worldMatrix) {
+	// Applies a world matrix to an object, respecting its parent transform
+	obj.updateMatrixWorld(true);
+	const parent = obj.parent;
+	if (!parent) {
+		obj.matrix.copy(worldMatrix);
+		obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
+		return;
+	}
+	parent.updateMatrixWorld(true);
+	const invParent = parent.matrixWorld.clone().invert();
+	const local = worldMatrix.clone().premultiply(invParent);
+	local.decompose(obj.position, obj.quaternion, obj.scale);
 }
