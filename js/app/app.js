@@ -127,16 +127,17 @@ export async function init() {
 	const utilsGroup = document.getElementById('utilsGroup');
 	const toggleImportBtn = document.getElementById('toggleImport');
 	const importGroup = document.getElementById('importGroup');
+	const toggleSettingsBtn = document.getElementById('toggleSettings');
+	const settingsGroup = document.getElementById('settingsGroup');
+	const bgColorPicker = document.getElementById('bgColorPicker');
+	const gridColorPicker = document.getElementById('gridColorPicker');
 	const uploadBtn=document.getElementById('uploadModel');
 	const fileInput=document.getElementById('modelInput');
 	const uploadStatus=document.getElementById('uploadStatus');
-	const exportBtn=document.getElementById('exportScene');
-	const snapBtn=document.getElementById('snapFloor');
 	const addFloorBtn=document.getElementById('addFloor');
 	const addWallBtn=document.getElementById('addWall');
 	const objectList=document.getElementById('objectList');
 	const arButton=document.getElementById('arButton');
-	const groupBtn=document.getElementById('groupBtn');
 	const mapBackdrop = document.getElementById('mapModalBackdrop');
 	const mapContainer = document.getElementById('mapContainer');
 	const mapSearchInput = document.getElementById('mapSearch');
@@ -185,34 +186,51 @@ export async function init() {
 			if (showImport){ if (importGroup && toggleImportBtn){ importGroup.classList.remove('open'); importGroup.setAttribute('aria-hidden','true'); toggleImportBtn.setAttribute('aria-pressed','false'); } }
 			toolbox.style.top = `${uiContainer.offsetTop+uiContainer.offsetHeight+10}px`;
 		}
-		// Accordion-like collapse: opening one closes others
-		function toggleCollapse(btn, panel){
-			const open = btn.getAttribute('aria-pressed') === 'true';
-			const next = !open;
-			// Close all first
-			const pairs = [
-				[togglePrimsBtn, primsGroup],
-				[toggleDrawCreateBtn, drawCreateGroup],
-				[toggleUtilsBtn, utilsGroup],
-				[toggleImportBtn, importGroup]
-			];
-			pairs.forEach(([b,p])=>{
-				if(!b||!p) return;
-				b.setAttribute('aria-pressed','false');
-				p.classList.remove('open');
-				p.setAttribute('aria-hidden','true');
+		// Toolbox: collapsible groups, settings panel floats right
+		function closeAllPanels() {
+			[primsGroup, drawCreateGroup, importGroup, utilsGroup].forEach(panel => {
+				if(panel) {
+					panel.classList.remove('open');
+					panel.setAttribute('aria-hidden','true');
+				}
 			});
-			// Then open the requested one if next is true
-			if(next){
-				btn.setAttribute('aria-pressed','true');
-				panel.classList.add('open');
-				panel.setAttribute('aria-hidden','false');
+			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleUtilsBtn].forEach(btn => {
+				if(btn) btn.setAttribute('aria-pressed','false');
+			});
+			// Hide settings panel
+			if (settingsGroup) {
+				settingsGroup.classList.remove('open');
+				settingsGroup.setAttribute('aria-hidden','true');
 			}
+			if (toggleSettingsBtn) toggleSettingsBtn.setAttribute('aria-pressed','false');
 		}
-		if (togglePrimsBtn && primsGroup){ togglePrimsBtn.addEventListener('click', ()=> toggleCollapse(togglePrimsBtn, primsGroup)); }
-		if (toggleDrawCreateBtn && drawCreateGroup){ toggleDrawCreateBtn.addEventListener('click', ()=> toggleCollapse(toggleDrawCreateBtn, drawCreateGroup)); }
-		if (toggleUtilsBtn && utilsGroup){ toggleUtilsBtn.addEventListener('click', ()=> toggleCollapse(toggleUtilsBtn, utilsGroup)); }
-		if (toggleImportBtn && importGroup){ toggleImportBtn.addEventListener('click', ()=> toggleCollapse(toggleImportBtn, importGroup)); }
+		function togglePanel(btn, group) {
+			btn.addEventListener('click', () => {
+				const isOpen = group.classList.contains('open');
+				closeAllPanels();
+				if (!isOpen) {
+					btn.setAttribute('aria-pressed','true');
+					group.classList.add('open');
+					group.setAttribute('aria-hidden','false');
+				}
+			});
+		}
+		if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
+		if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
+		if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
+		if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
+	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
+	// Settings: background and grid color pickers
+	if (bgColorPicker) {
+		bgColorPicker.addEventListener('input', e => {
+			renderer.setClearColor(e.target.value);
+		});
+	}
+	if (gridColorPicker && grid) {
+		gridColorPicker.addEventListener('input', e => {
+			grid.material.color.set(e.target.value);
+		});
+	}
 
 		// AR visibility
 		if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
@@ -220,7 +238,7 @@ export async function init() {
 	});
 	modeSelect.dispatchEvent(new Event('change'));
 
-	// Export
+	// Export logic for toolbox popup
 	function buildExportRootFromObjects(objs){ const root = new THREE.Group(); objs.forEach(o => root.add(o.clone(true))); return root; }
 	function prepareModelForAR(root){ root.traverse((obj)=>{ if(obj.isMesh){ const oldMat=obj.material; let color=0xcccccc; if(oldMat){ if(Array.isArray(oldMat)){ obj.material = oldMat.map(m => new THREE.MeshStandardMaterial({ color: (m.color && m.color.getHex) ? m.color.getHex() : color, metalness: 0, roughness: 0.8 })); } else { if (oldMat.color && oldMat.color.getHex) color = oldMat.color.getHex(); obj.material = new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.8 }); } } else { obj.material = new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.8 }); } } }); root.updateMatrixWorld(true); const box=new THREE.Box3().setFromObject(root); const center=new THREE.Vector3(); box.getCenter(center); const translate=new THREE.Vector3(center.x, box.min.y, center.z); root.position.sub(translate); const FEET_TO_METERS=0.3048; root.scale.setScalar(FEET_TO_METERS); root.updateMatrixWorld(true); }
 	async function openQuickLookUSDZ(){ const source=(selectedObjects && selectedObjects.length)?selectedObjects:objects; if(!source||!source.length){ alert('Nothing to show in AR. Create or import an object first.'); return; } const root=buildExportRootFromObjects(source); prepareModelForAR(root); try { const { USDZExporter } = await import('https://unpkg.com/three@0.155.0/examples/jsm/exporters/USDZExporter.js'); const exporter=new USDZExporter(); const arraybuffer=await exporter.parse(root); const blob=new Blob([arraybuffer],{type:'model/vnd.usdz+zip'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.setAttribute('rel','ar'); a.setAttribute('href',url); document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },30000); } catch(e){ alert('Unable to generate USDZ for AR: ' + (e?.message || e)); console.error(e); } }
@@ -243,8 +261,21 @@ export async function init() {
 	uploadBtn.addEventListener('click',()=>fileInput.click());
 	fileInput.addEventListener('change',e=>{ const file=e.target.files[0]; if(!file)return; const url=URL.createObjectURL(file); const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader(); loader.load(url,gltf=>{ loadedModel=gltf.scene||gltf; uploadStatus.textContent=file.name; URL.revokeObjectURL(url); }); });
 
-	// OBJ export
-	exportBtn.addEventListener('click',()=>{ const exporter=new OBJExporter(); const root=new THREE.Group(); objects.forEach(o=>root.add(o.clone(true))); const data=exporter.parse(root); const blob=new Blob([data],{type:'text/plain'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='scene.obj'; a.click(); URL.revokeObjectURL(a.href); });
+	// OBJ export (now in utilities popup)
+	// Export Scene button wiring (only in Utilities group)
+	const exportBtn = document.getElementById('exportScene');
+	if (exportBtn) exportBtn.addEventListener('click',()=>{
+		const exporter=new OBJExporter();
+		const root=new THREE.Group();
+		objects.forEach(o=>root.add(o.clone(true)));
+		const data=exporter.parse(root);
+		const blob=new Blob([data],{type:'text/plain'});
+		const a=document.createElement('a');
+		a.href=URL.createObjectURL(blob);
+		a.download='scene.obj';
+		a.click();
+		setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+	});
 
 	// Helpers
 	function getPointer(e){const rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;}
@@ -293,8 +324,8 @@ export async function init() {
 		}
 	});
 
-	// Grouping
-	groupBtn.addEventListener('click',()=>{
+	// Grouping logic for toolbox button
+	function handleGroupSelected() {
 		if(selectedObjects.length<2) return;
 		const center = new THREE.Vector3(); selectedObjects.forEach(obj => { obj.updateMatrixWorld(); const pos = new THREE.Vector3(); pos.setFromMatrixPosition(obj.matrixWorld); center.add(pos); }); center.multiplyScalar(1 / selectedObjects.length);
 		selectedObjects.forEach(obj=>{ scene.remove(obj); const idx=objects.indexOf(obj); if(idx>-1) objects.splice(idx,1); });
@@ -302,7 +333,7 @@ export async function init() {
 		selectedObjects.forEach(obj=>{ obj.updateMatrixWorld(); const worldPos = new THREE.Vector3(); worldPos.setFromMatrixPosition(obj.matrixWorld); obj.position.copy(worldPos.sub(center)); group.add(obj); });
 		group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
 		scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping();
-	});
+	}
 
 	// Draw-create preview
 	renderer.domElement.addEventListener('pointermove',e=>{
@@ -333,8 +364,30 @@ export async function init() {
 	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const steps=10, rise=0.7, tread=1, width=4; const grp=new THREE.Group(); for(let i=0;i<steps;i++){ const h=rise, d=tread, w=width; const step=new THREE.Mesh(new THREE.BoxGeometry(d,h,w), material.clone()); step.position.set(i*tread + d/2, (i+0.5)*rise, 0); grp.add(step); } grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
 	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const w=12, d=10; const plane=new THREE.PlaneGeometry(w,d); plane.rotateX(-Math.PI/2); const roof=new THREE.Mesh(plane, material.clone()); roof.rotation.z = THREE.MathUtils.degToRad(30); roof.position.set(0, 10, 0); roof.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(roof,{ select:true }); });
 
-	// Return to Floor
-	snapBtn.addEventListener('click',()=>{ if(selectedObjects.length >= 2){ let minY = Infinity; const box = new THREE.Box3(); selectedObjects.forEach(o=>{ box.setFromObject(o); if(box.min.y < minY) minY = box.min.y; }); if(isFinite(minY) && Math.abs(minY) > 1e-6){ const T = new THREE.Matrix4().makeTranslation(0, -minY, 0); selectedObjects.forEach(o=>{ const current = getWorldMatrix(o); setWorldMatrix(o, new THREE.Matrix4().multiplyMatrices(T, current)); }); updateMultiSelectPivot(); rebuildSelectionOutlines(); } } else { const sel=transformControls.object; if(sel){ const box=new THREE.Box3().setFromObject(sel); const minY=box.min.y; sel.position.y-=minY; } } });
+	// Return to Floor logic for toolbox button
+	function handleReturnToFloor() {
+		if(selectedObjects.length >= 2){
+			let minY = Infinity;
+			const box = new THREE.Box3();
+			selectedObjects.forEach(o=>{ box.setFromObject(o); if(box.min.y < minY) minY = box.min.y; });
+			if(isFinite(minY) && Math.abs(minY) > 1e-6){
+				const T = new THREE.Matrix4().makeTranslation(0, -minY, 0);
+				selectedObjects.forEach(o=>{
+					const current = getWorldMatrix(o);
+					setWorldMatrix(o, new THREE.Matrix4().multiplyMatrices(T, current));
+				});
+				updateMultiSelectPivot();
+				rebuildSelectionOutlines();
+			}
+		} else {
+			const sel=transformControls.object;
+			if(sel){
+				const box=new THREE.Box3().setFromObject(sel);
+				const minY=box.min.y;
+				sel.position.y-=minY;
+			}
+		}
+	}
 	// Delete
 	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); } });
 
@@ -347,8 +400,10 @@ export async function init() {
 	renderer.setAnimationLoop(() => { try { if (!arActive) controls.update(); renderer.render(scene, camera); const banner = document.getElementById('error-banner'); if (banner) banner.style.display = 'none'; } catch (err) { const banner = document.getElementById('error-banner'); if (banner) { banner.textContent = 'Render error: ' + (err?.message || err); banner.style.display = 'block'; } console.error(err); } });
 
 	// Utilities group mirrors
-	const toolSnapFloorBtn = document.getElementById('toolSnapFloor'); if (toolSnapFloorBtn) toolSnapFloorBtn.addEventListener('click', ()=> snapBtn.click());
-	const toolGroupSelectedBtn = document.getElementById('toolGroupSelected'); if (toolGroupSelectedBtn) toolGroupSelectedBtn.addEventListener('click', ()=> groupBtn.click());
+	const toolSnapFloorBtn = document.getElementById('toolSnapFloor');
+	if (toolSnapFloorBtn) toolSnapFloorBtn.addEventListener('click', handleReturnToFloor);
+	const toolGroupSelectedBtn = document.getElementById('toolGroupSelected');
+	if (toolGroupSelectedBtn) toolGroupSelectedBtn.addEventListener('click', handleGroupSelected);
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
 
 	// Map Import wiring

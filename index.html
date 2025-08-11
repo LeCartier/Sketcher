@@ -23,16 +23,12 @@
         <option value="ar" data-i18n="mode.ar">AR View</option>
       </select>
     </div>
-    <div id="edit-ui" style="margin-top:6px; display:none;">
-      <!-- Move + Rotate gizmos are both active in Edit mode -->
-      <button id="snapFloor" style="margin-left:8px;" data-i18n="edit.snapFloor">Return to Floor</button>
-      <button id="groupBtn" style="margin-left:8px;" data-i18n="edit.groupSelected">Group Selected</button>
-    </div>
+  <div id="edit-ui" style="margin-top:6px; display:none;"></div>
     <button id="arButton" style="margin-top:10px; display:none;" data-i18n="buttons.enterAR">Enter AR</button>
-    <button id="exportScene" style="margin-top:10px;" data-i18n="buttons.exportOBJ">Export Scene (OBJ)</button>
-    <div style="margin-top:6px; font-size:12px; color:#333;" data-i18n="hints.main">
-      Edit: select/move/rotate • Use the toolbox to add floors, walls, columns, beams, ramps, stairs, roofs • Import: place models or map areas • Export scene • Mobile: tap to select • Edit: one finger orbits, pinch to zoom/pan
-    </div>
+  <!-- Removed export scene button from main UI panel; now only in Utilities group -->
+  <!-- Instructions removed -->
+    <!-- ...existing code... -->
+  <!-- ...existing code... -->
     
     <input id="modelInput" type="file" accept=".gltf,.glb,.obj" style="display:none;">
     <div id="uploadStatus" style="font-size:12px; color:#555; margin-top:4px;" data-i18n="status.noModelSelected">No model selected</div>
@@ -93,6 +89,22 @@
       </svg>
     </button>
     </div>
+    <!-- Gear/settings parent button and dropdown, now under utilities -->
+    <button id="toggleSettings" class="icon-btn toggle-btn" title="Settings" aria-label="Settings" aria-pressed="false">
+      <span class="sr-only">Settings</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="#222" stroke-width="2"/>
+      </svg>
+    </button>
+    <div id="settingsGroup" class="collapse" aria-hidden="true">
+      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Back Color
+        <input id="bgColorPicker" type="color" value="#f7f7f7" style="margin-left:8px;">
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Grid Color
+        <input id="gridColorPicker" type="color" value="#cccccc" style="margin-left:8px;">
+      </label>
+    </div>
     <button id="toggleDrawCreate" class="icon-btn toggle-btn" title="Click-Drag Create" aria-label="Click-Drag Create" aria-pressed="false">
       <span class="sr-only">Click-Drag Create</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -147,10 +159,13 @@
     <button id="addScaleFigure" class="icon-btn" title="Add 6ft Scale Figure" aria-label="Add 6ft Scale Figure">
       <span class="sr-only">Add 6ft Scale Figure</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Clearer human figure: head, body, arms, legs -->
         <circle cx="12" cy="6" r="2" fill="#222"/>
-        <rect x="10" y="8" width="4" height="8" fill="#999" stroke="#222" stroke-width="1.2"/>
-        <rect x="7.5" y="8" width="2" height="6" fill="#999" stroke="#222" stroke-width="1.2"/>
-        <rect x="14.5" y="8" width="2" height="6" fill="#999" stroke="#222" stroke-width="1.2"/>
+        <rect x="11" y="8" width="2" height="6" fill="#999" stroke="#222" stroke-width="1.2"/>
+        <line x1="12" y1="14" x2="8.5" y2="19" stroke="#222" stroke-width="1.5"/>
+        <line x1="12" y1="14" x2="15.5" y2="19" stroke="#222" stroke-width="1.5"/>
+        <line x1="12" y1="10" x2="8.5" y2="12.5" stroke="#222" stroke-width="1.5"/>
+        <line x1="12" y1="10" x2="15.5" y2="12.5" stroke="#222" stroke-width="1.5"/>
       </svg>
     </button>
     <!-- Utilities group toggle -->
@@ -163,7 +178,7 @@
         <path d="M8 9V7m8 2V7" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
-    <div id="utilsGroup" class="collapse" aria-hidden="true">
+  <div id="utilsGroup" class="collapse" aria-hidden="true">
       <button id="toolSnapFloor" class="icon-btn" title="Return to Floor" aria-label="Return to Floor">
         <span class="sr-only">Return to Floor</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -178,6 +193,14 @@
           <rect x="4" y="8" width="6" height="6" fill="none" stroke="#222" stroke-width="2"/>
           <rect x="14" y="8" width="6" height="6" fill="none" stroke="#222" stroke-width="2"/>
           <path d="M7 11h10" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+      <button id="exportScene" class="icon-btn" title="Export Scene (OBJ)" aria-label="Export Scene (OBJ)">
+        <span class="sr-only">Export Scene (OBJ)</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M12 8v6" stroke="#222" stroke-width="2"/>
+          <path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
     </div>
@@ -202,14 +225,9 @@
       <div id="mapContainer"></div>
       <div id="mapModalFooter">
         <div style="font-size:12px;color:#444;">
-          Tip: Click "Draw Box", then drag on the map to select an area. If no box is drawn, the current view is used.
-          <div style="margin-top:4px;color:#666;">Imagery © Esri — World Imagery; Map data © OpenStreetMap contributors.</div>
-        </div>
-        <div>
-          <button id="mapUseFlat" class="btn">Use selected area (Flat)</button>
-          <button id="mapUseTopo" class="btn primary">Use selected area (Topography)</button>
-        </div>
-      </div>
+  <!-- Settings panel floats outside toolbox -->
+    </div>
+  <!-- Removed floating settings panel markup; settingsGroup is only inside toolbox as a collapse -->
     </div>
   </div>
   <script type="module">
