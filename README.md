@@ -9,7 +9,8 @@ A single‑page Three.js scene for drawing boxes (in feet), importing models, ed
 - Visibility: per‑object show/hide and inline rename
 - Export: OBJ of only user-created/imported objects
 - AR: WebXR immersive‑ar (with polyfill attempt on iOS)
-- Localization: language selector (English, Spanish) with easy extension
+- Touch: automatic gesture mapping (Edit: one‑finger orbit; Create/Import: one‑finger draw/place; pinch zoom/pan)
+- Version badge: shows the live version from `version.json` in the bottom‑right
 
 ## Run
 Use any static server. If you have Live Server in VS Code:
@@ -32,12 +33,27 @@ Then open http://localhost:8000/ (adjust port as needed).
 - Multi‑select: Ctrl/Cmd/Shift click in viewport or list
 - Delete: Delete/Backspace removes all selected
 - ESC while drawing cancels the preview
-- Change language via the dropdown at the top left
+- Tap empty area (touch, Edit) to clear selection
 
 ## Notes
 - Units: 1 Three.js unit equals 1 foot. Grid is 20×20 ft.
 - Export excludes helpers/lights/gizmos.
 - Tested with Three r155 via ESM CDN imports.
 
-### Add a new language
-Edit `js/i18n.js` and add a new top‑level key (e.g., `fr`) in `dictionaries`. Then add an `<option>` in the `#langSelect` in `index.html` and include the new code in `initLocale([...])` if desired.
+## Versioning (lightweight)
+The app displays a small version badge sourced from `version.json`:
+
+```json
+{
+	"version": "0.1.0",
+	"date": "2025-08-11",
+	"notes": "Initial version badge and touch auto-detect"
+}
+```
+
+How to update:
+- Bump the `version` and `date` fields in `version.json` when you deploy
+- Optional: add a brief note for what changed
+
+The file is fetched with `cache: 'no-store'` to avoid stale values when hosted statically.
+

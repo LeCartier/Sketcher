@@ -83,6 +83,9 @@
     <strong data-i18n="visibility.title">Visibility</strong>
     <div id="objectList"></div>
   </div>
+  <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.7); color:#fff; padding:6px 8px; border-radius:4px; font-family:sans-serif; font-size:12px; z-index:20;">
+    v…
+  </div>
   <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <script type="module">
   import * as THREE from './js/vendor/three.module.js';
@@ -93,13 +96,27 @@
   import { OrbitControls } from './js/vendor/OrbitControls.js';
   import { TransformControls } from './js/vendor/TransformControls.js';
   import { OBJExporter } from './js/vendor/OBJExporter.js';
+  
+  // three.js examples CDN base for optional exporters (match local three version)
+  const THREE_EXAMPLES_CDN_BASE = 'https://unpkg.com/three@0.155.0/examples/jsm';
+  
+  // Lightweight version badge
+  (async () => {
+    try {
+      const res = await fetch('./version.json', { cache: 'no-store' });
+      if (res.ok) {
+        const v = await res.json();
+        const el = document.getElementById('version-badge');
+        if (el) el.textContent = `v${v.version} — ${v.date}`;
+      }
+    } catch {}
+  })();
 
-    // WebXR Polyfill for iOS (iPhone/iPad) AR support
+    // WebXR Polyfill attempt for iOS; note: real AR may still be unsupported
     async function loadWebXRPolyfillIfNeeded() {
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       if (isIOS && !('xr' in navigator)) {
-        // Dynamically load WebXR Polyfill via local proxy
-        await import('./js/vendor/webxr-polyfill.module.js');
+        try { await import('./js/vendor/webxr-polyfill.module.js'); } catch {}
       }
     }
     loadWebXRPolyfillIfNeeded();
@@ -351,11 +368,54 @@
     });
     modeSelect.dispatchEvent(new Event('change'));
 
-    // AR Button logic (bind once)
+    // Helper: build a root group of exportable objects (user content only)
+    function buildExportRootFromObjects(objs){
+      const root = new THREE.Group();
+      objs.forEach(o => root.add(o.clone(true)));
+      return root;
+    }
+
+    // Helper: export USDZ and open in Quick Look (iOS)
+    async function openQuickLookUSDZ() {
+      // Prefer selected objects; else entire scene objects[]
+      const source = (selectedObjects && selectedObjects.length) ? selectedObjects : objects;
+      if (!source || !source.length) { alert('Nothing to show in AR. Create or import an object first.'); return; }
+      const root = buildExportRootFromObjects(source);
+      // Convert feet to meters for AR consistency
+      const FEET_TO_METERS = 0.3048;
+      root.scale.setScalar(FEET_TO_METERS);
+      try {
+        const { USDZExporter } = await import(`${THREE_EXAMPLES_CDN_BASE}/exporters/USDZExporter.js`);
+        const exporter = new USDZExporter();
+        const arraybuffer = await exporter.parse(root);
+        const blob = new Blob([arraybuffer], { type: 'model/vnd.usdz+zip' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.setAttribute('rel', 'ar');
+        a.setAttribute('href', url);
+        // Optionally add a fallback poster: a.appendChild(new Image())
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 30000);
+      } catch (e) {
+        alert('Unable to generate USDZ for AR: ' + (e?.message || e));
+        console.error(e);
+      }
+    }
+
+    // AR Button logic (WebXR first; iOS Quick Look fallback)
     arButton.addEventListener('click', async () => {
       await loadWebXRPolyfillIfNeeded();
-      if (navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')) {
-        try {
+      const isSecure = window.isSecureContext || location.protocol === 'https:';
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      if (!isSecure) {
+        alert('AR requires HTTPS. Please host this page over https://');
+        return;
+      }
+      try {
+        const xr = navigator.xr;
+        const xrSupported = xr && await xr.isSessionSupported('immersive-ar');
+        if (xrSupported) {
           const session = await navigator.xr.requestSession('immersive-ar', {
             requiredFeatures: ['hit-test', 'local-floor']
           });
@@ -366,11 +426,15 @@
             modeSelect.value = 'draw';
             modeSelect.dispatchEvent(new Event('change'));
           });
-        } catch (e) {
-          alert('Failed to start AR: ' + (e?.message || e));
+        } else if (isIOS) {
+          // Fallback: Apple Quick Look using USDZ
+          await openQuickLookUSDZ();
+        } else {
+          alert('AR not supported on this device or browser.');
         }
-      } else {
-        alert('AR not supported on this device.');
+      } catch (e) {
+        alert('Failed to start AR: ' + (e?.message || e));
+        console.error(e);
       }
     });
 
