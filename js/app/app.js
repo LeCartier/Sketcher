@@ -2,7 +2,7 @@
 // Exports an init function executed by index.html
 
 export async function init() {
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -12,6 +12,7 @@ export async function init() {
 			import('./map-import.js'),
 			import('./outlines.js'),
 			import('./transforms.js'),
+			import('./local-store.js'),
 	]);
 
 	// Version badge
@@ -44,6 +45,11 @@ export async function init() {
 	document.body.appendChild(renderer.domElement);
 	renderer.xr.enabled = true;
 	let arActive = false;
+	let arContent = null; // cloned scene content for AR
+	let arPlaced = false;
+	let xrHitTestSource = null;
+	let xrViewerSpace = null;
+	let xrLocalSpace = null;
 
 	// Grid & lights
 	const grid = new THREE.GridHelper(20, 20, 0x888888, 0xcccccc);
@@ -125,6 +131,8 @@ export async function init() {
 	const drawCreateGroup = document.getElementById('drawCreateGroup');
 	const toggleUtilsBtn = document.getElementById('toggleUtils');
 	const utilsGroup = document.getElementById('utilsGroup');
+	const toggleSceneManagerBtn = document.getElementById('toggleSceneManager');
+	const sceneManagerGroup = document.getElementById('sceneManagerGroup');
 	const toggleImportBtn = document.getElementById('toggleImport');
 	const importGroup = document.getElementById('importGroup');
 	const toggleSettingsBtn = document.getElementById('toggleSettings');
@@ -147,6 +155,14 @@ export async function init() {
 	const mapUseFlatBtn = document.getElementById('mapUseFlat');
 	const mapUseTopoBtn = document.getElementById('mapUseTopo');
 	const mapImportBtn = document.getElementById('mapImport');
+	// Scenes UI
+	const saveSceneBtn = document.getElementById('saveScene');
+	const openScenesBtn = document.getElementById('openScenes');
+	const scenesDrawer = document.getElementById('scenesDrawer');
+	const scenesList = document.getElementById('scenesList');
+	// Track the currently loaded/saved scene so we can overwrite on Save
+	let currentSceneId = null;
+	let currentSceneName = '';
 
 	// Visibility UI
 	function updateVisibilityUI(){
@@ -182,19 +198,22 @@ export async function init() {
 			drawCreateGroup.style.display = showEdit ? 'block' : 'none';
 			if (utilsGroup) utilsGroup.style.display = showEdit ? 'block' : 'none';
 			if (importGroup) importGroup.style.display = showImport ? 'block' : 'none';
-			if (showEdit){ primsGroup.classList.remove('open'); primsGroup.setAttribute('aria-hidden','true'); togglePrimsBtn.setAttribute('aria-pressed','false'); drawCreateGroup.classList.remove('open'); drawCreateGroup.setAttribute('aria-hidden','true'); toggleDrawCreateBtn.setAttribute('aria-pressed','false'); if (utilsGroup && toggleUtilsBtn){ utilsGroup.classList.remove('open'); utilsGroup.setAttribute('aria-hidden','true'); toggleUtilsBtn.setAttribute('aria-pressed','false'); } }
+			if (showEdit){ primsGroup.classList.remove('open'); primsGroup.setAttribute('aria-hidden','true'); togglePrimsBtn.setAttribute('aria-pressed','false'); drawCreateGroup.classList.remove('open'); drawCreateGroup.setAttribute('aria-hidden','true'); toggleDrawCreateBtn.setAttribute('aria-pressed','false'); if (utilsGroup && toggleUtilsBtn){ utilsGroup.classList.remove('open'); utilsGroup.setAttribute('aria-hidden','true'); toggleUtilsBtn.setAttribute('aria-pressed','false'); }
+				// Also ensure nested drawers (like My Scenes) are closed when Utilities resets
+				if (typeof scenesDrawer !== 'undefined' && scenesDrawer) { scenesDrawer.classList.remove('open'); scenesDrawer.setAttribute('aria-hidden','true'); }
+			}
 			if (showImport){ if (importGroup && toggleImportBtn){ importGroup.classList.remove('open'); importGroup.setAttribute('aria-hidden','true'); toggleImportBtn.setAttribute('aria-pressed','false'); } }
 			toolbox.style.top = `${uiContainer.offsetTop+uiContainer.offsetHeight+10}px`;
 		}
 		// Toolbox: collapsible groups, settings panel floats right
 		function closeAllPanels() {
-			[primsGroup, drawCreateGroup, importGroup, utilsGroup].forEach(panel => {
+			[primsGroup, drawCreateGroup, importGroup, utilsGroup, sceneManagerGroup].forEach(panel => {
 				if(panel) {
 					panel.classList.remove('open');
 					panel.setAttribute('aria-hidden','true');
 				}
 			});
-			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleUtilsBtn].forEach(btn => {
+			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleUtilsBtn, toggleSceneManagerBtn].forEach(btn => {
 				if(btn) btn.setAttribute('aria-pressed','false');
 			});
 			// Hide settings panel
@@ -203,6 +222,11 @@ export async function init() {
 				settingsGroup.setAttribute('aria-hidden','true');
 			}
 			if (toggleSettingsBtn) toggleSettingsBtn.setAttribute('aria-pressed','false');
+			// Ensure nested drawers under Scene Manager are also closed
+			if (typeof scenesDrawer !== 'undefined' && scenesDrawer) {
+				scenesDrawer.classList.remove('open');
+				scenesDrawer.setAttribute('aria-hidden','true');
+			}
 		}
 		function togglePanel(btn, group) {
 			btn.addEventListener('click', () => {
@@ -215,10 +239,11 @@ export async function init() {
 				}
 			});
 		}
-		if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
-		if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
-		if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
-		if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
+	if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
+	if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
+	if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
+	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
+	if (toggleSceneManagerBtn && sceneManagerGroup) togglePanel(toggleSceneManagerBtn, sceneManagerGroup);
 	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
 	// Settings: background and grid color pickers
 	if (bgColorPicker) {
@@ -252,7 +277,25 @@ export async function init() {
 			const xr = navigator.xr; const xrSupported = xr && await xr.isSessionSupported('immersive-ar');
 			if (xrSupported) {
 				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'] });
-				renderer.xr.setSession(session); arActive = true; session.addEventListener('end', () => { arActive = false; modeSelect.value = 'draw'; modeSelect.dispatchEvent(new Event('change')); });
+				renderer.xr.setSession(session);
+				arActive = true;
+				arPlaced = false;
+				grid.visible = false;
+				// Setup hit test source and reference spaces for initial placement
+				xrViewerSpace = await session.requestReferenceSpace('viewer');
+				xrLocalSpace = await session.requestReferenceSpace('local-floor');
+				xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace });
+				session.addEventListener('end', () => {
+					arActive = false;
+					grid.visible = true;
+					if (arContent) { scene.remove(arContent); arContent = null; }
+					arPlaced = false;
+					if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
+					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
+					// Return UI to Edit mode
+					modeSelect.value = 'edit';
+					modeSelect.dispatchEvent(new Event('change'));
+				});
 			} else if (isIOS) { await openQuickLookUSDZ(); } else { alert('AR not supported on this device or browser.'); }
 		} catch (e) { alert('Failed to start AR: ' + (e?.message || e)); console.error(e); }
 	});
@@ -303,11 +346,12 @@ export async function init() {
 	renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
 	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
 	const SURFACE_EPS = 0.01;
-	renderer.domElement.addEventListener('pointerdown',e=>{
+		renderer.domElement.addEventListener('pointerdown',e=>{
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
 		if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 		getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
-		if(mode==='import'&&loadedModel){ const hits=raycaster.intersectObjects(selectableTargets(),true); let dropPoint = null; if (hits.length) dropPoint = hits[0].point.clone().add(new THREE.Vector3(0, SURFACE_EPS, 0)); else dropPoint = intersectGround(); if(!dropPoint) return; const clone=loadedModel.clone(); clone.position.copy(dropPoint); addObjectToScene(clone); }
+			const importPanelOpen = importGroup && importGroup.classList.contains('open');
+			if((mode==='import' || importPanelOpen) && loadedModel){ const hits=raycaster.intersectObjects(selectableTargets(),true); let dropPoint = null; if (hits.length) dropPoint = hits[0].point.clone().add(new THREE.Vector3(0, SURFACE_EPS, 0)); else dropPoint = intersectGround(); if(!dropPoint) return; const clone=loadedModel.clone(); clone.position.copy(dropPoint); addObjectToScene(clone); /* single placement */ loadedModel = null; if (fileInput) fileInput.value = ''; if (uploadStatus) uploadStatus.textContent = 'No model selected'; }
 		else if(mode==='edit'){
 			if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); controls.enabled=false; return; }
 			if(e.pointerType==='touch'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
@@ -397,14 +441,113 @@ export async function init() {
 
 	// Animation
 	window.addEventListener('resize',()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
-	renderer.setAnimationLoop(() => { try { if (!arActive) controls.update(); renderer.render(scene, camera); const banner = document.getElementById('error-banner'); if (banner) banner.style.display = 'none'; } catch (err) { const banner = document.getElementById('error-banner'); if (banner) { banner.textContent = 'Render error: ' + (err?.message || err); banner.style.display = 'block'; } console.error(err); } });
+	renderer.setAnimationLoop((t, frame) => {
+		try {
+			if (!arActive) {
+				controls.update();
+			} else {
+				// Perform one-time placement when AR starts using hit-test
+				const session = renderer.xr.getSession && renderer.xr.getSession();
+				if (session && xrHitTestSource && !arPlaced && frame && xrLocalSpace) {
+					const results = frame.getHitTestResults(xrHitTestSource);
+					if (results && results.length) {
+						const pose = results[0].getPose(xrLocalSpace);
+						if (pose) {
+							// Build AR content from entire scene objects
+							if (!arContent) {
+								const root = buildExportRootFromObjects(objects);
+								prepareModelForAR(root);
+								arContent = root;
+								scene.add(arContent);
+							}
+							const p = pose.transform.position;
+							arContent.position.set(p.x, p.y, p.z);
+							arPlaced = true;
+							if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
+							xrHitTestSource = null;
+						}
+					}
+				}
+			}
+			renderer.render(scene, camera);
+			const banner = document.getElementById('error-banner'); if (banner) banner.style.display = 'none';
+		} catch (err) {
+			const banner = document.getElementById('error-banner'); if (banner) { banner.textContent = 'Render error: ' + (err?.message || err); banner.style.display = 'block'; }
+			console.error(err);
+		}
+	});
 
 	// Utilities group mirrors
 	const toolSnapFloorBtn = document.getElementById('toolSnapFloor');
 	if (toolSnapFloorBtn) toolSnapFloorBtn.addEventListener('click', handleReturnToFloor);
 	const toolGroupSelectedBtn = document.getElementById('toolGroupSelected');
 	if (toolGroupSelectedBtn) toolGroupSelectedBtn.addEventListener('click', handleGroupSelected);
+	const newSceneBtn = document.getElementById('newScene');
+	if (newSceneBtn) newSceneBtn.addEventListener('click', () => {
+		clearSceneObjects();
+		currentSceneId = null;
+		currentSceneName = '';
+		updateCameraClipping();
+	});
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
+
+	// Local scenes: serialize, save, list, load, delete
+	function serializeScene() {
+		// Build a root group of current objects and use Object3D.toJSON
+		const root = buildExportRootFromObjects(objects);
+		return root.toJSON();
+	}
+	function clearSceneObjects() {
+		[...objects].forEach(o => { scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); });
+		selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI();
+	}
+	async function refreshScenesList() {
+		if (!scenesList) return;
+		const items = await localStore.listScenes().catch(()=>[]);
+		scenesList.innerHTML = '';
+		if (!items.length) { scenesList.textContent = 'No saved scenes'; return; }
+		items.forEach(({ id, name, updatedAt }) => {
+			const row = document.createElement('div'); row.style.display='flex'; row.style.alignItems='center'; row.style.gap='6px'; row.style.margin='4px 0';
+			const btnLoad = document.createElement('button'); btnLoad.textContent = name || 'Untitled'; btnLoad.className='btn-link'; btnLoad.style.flex='1'; btnLoad.style.textAlign='left'; btnLoad.style.background='transparent'; btnLoad.style.border='none'; btnLoad.style.cursor='pointer';
+			btnLoad.addEventListener('click', async ()=>{
+				// Always clear everything before loading
+				clearSceneObjects();
+				const rec = await localStore.getScene(id); if (!rec || !rec.json) return;
+				try {
+					const loader = new THREE.ObjectLoader();
+					const root = loader.parse(rec.json);
+					// Add children as top-level objects
+					(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+					updateCameraClipping();
+					// Track current scene for overwrite on Save
+					currentSceneId = id;
+					currentSceneName = name || 'Untitled';
+				} catch(e){ alert('Failed to load scene'); console.error(e); }
+			});
+			const btnDelete = document.createElement('button'); btnDelete.textContent='Delete'; btnDelete.className='btn'; btnDelete.style.fontSize='11px'; btnDelete.addEventListener('click', async ()=>{ await localStore.deleteScene(id); if (currentSceneId === id) { currentSceneId = null; currentSceneName = ''; } refreshScenesList(); });
+			row.append(btnLoad, btnDelete); scenesList.append(row);
+		});
+	}
+	if (openScenesBtn && scenesDrawer) {
+		openScenesBtn.addEventListener('click', async ()=>{
+			const open = scenesDrawer.classList.contains('open');
+			scenesDrawer.classList.toggle('open', !open);
+			scenesDrawer.setAttribute('aria-hidden', open ? 'true' : 'false');
+			if (!open) await refreshScenesList();
+		});
+	}
+	if (saveSceneBtn) {
+		saveSceneBtn.addEventListener('click', async (e)=>{
+			try {
+				const name = prompt('Scene name?') || 'Untitled';
+				const json = serializeScene();
+				await localStore.saveScene({ name, json });
+				// After saving, do not update currentSceneId/currentSceneName (always a new scene)
+				if (scenesDrawer && scenesDrawer.classList.contains('open')) refreshScenesList();
+				alert('Saved');
+			} catch(e){ alert('Save failed'); console.error(e); }
+		});
+	}
 
 	// Map Import wiring
 	setupMapImport({ THREE, renderer, fallbackMaterial: material, addObjectToScene, elements: { backdrop: mapBackdrop, container: mapContainer, searchInput: mapSearchInput, searchBtn: mapSearchBtn, closeBtn: mapCloseBtn, useFlatBtn: mapUseFlatBtn, useTopoBtn: mapUseTopoBtn, drawToggleBtn: mapDrawToggle, importBtn: mapImportBtn } });

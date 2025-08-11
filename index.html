@@ -19,7 +19,6 @@
       <label for="modeSelect" data-i18n="mode.label">Mode:</label>
       <select id="modeSelect">
         <option value="edit" selected data-i18n="mode.edit">Edit</option>
-        <option value="import" data-i18n="mode.import">Import</option>
         <option value="ar" data-i18n="mode.ar">AR View</option>
       </select>
     </div>
@@ -34,83 +33,14 @@
     <div id="uploadStatus" style="font-size:12px; color:#555; margin-top:4px;" data-i18n="status.noModelSelected">No model selected</div>
   </div>
   <div id="toolbox">
-    <button id="togglePrims" class="icon-btn toggle-btn" title="Primitives" aria-label="Primitives" aria-pressed="false">
-      <span class="sr-only">Primitives</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="3" y="14" width="8" height="6" fill="none" stroke="#222" stroke-width="2"/>
-        <circle cx="17" cy="9" r="3" fill="none" stroke="#222" stroke-width="2"/>
-        <polygon points="12,3 9,8 15,8" fill="none" stroke="#222" stroke-width="2"/>
-      </svg>
-    </button>
-    <div id="primsGroup" class="collapse" aria-hidden="true">
-    <button id="addFloor" class="icon-btn" title="Add Floor" aria-label="Add Floor">
-      <span class="sr-only">Add Floor</span>
-      <!-- Floor icon: a flat square -->
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2" rx="2" ry="2" />
-      </svg>
-    </button>
-    <button id="addWall" class="icon-btn" title="Add Wall" aria-label="Add Wall">
-      <span class="sr-only">Add Wall</span>
-      <!-- Wall icon: a vertical rectangle sitting on a base line -->
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="9" y="4" width="6" height="12" fill="#999" stroke="#222" stroke-width="1.5" />
-        <line x1="4" y1="19" x2="20" y2="19" stroke="#222" stroke-width="2" />
-      </svg>
-    </button>
-    <button id="addColumn" class="icon-btn" title="Add Column" aria-label="Add Column">
-      <span class="sr-only">Add Column</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="7" y="4" width="10" height="16" rx="2" ry="2" fill="none" stroke="#222" stroke-width="2"/>
-      </svg>
-    </button>
-    <button id="addBeam" class="icon-btn" title="Add Beam" aria-label="Add Beam">
-      <span class="sr-only">Add Beam</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="3" y="10" width="18" height="4" fill="#999" stroke="#222" stroke-width="1.5"/>
-      </svg>
-    </button>
-    <button id="addRamp" class="icon-btn" title="Add Ramp" aria-label="Add Ramp">
-      <span class="sr-only">Add Ramp</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <polygon points="3,16 21,12 21,16 3,16" fill="#bbb" stroke="#222" stroke-width="1.5"/>
-      </svg>
-    </button>
-    <button id="addStairs" class="icon-btn" title="Add Stairs" aria-label="Add Stairs">
-      <span class="sr-only">Add Stairs</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 18h4v-2h4v-2h4v-2h4v-2" fill="none" stroke="#222" stroke-width="1.8"/>
-      </svg>
-    </button>
-    <button id="addRoof" class="icon-btn" title="Add Roof Plane" aria-label="Add Roof Plane">
-      <span class="sr-only">Add Roof Plane</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <polygon points="3,12 12,6 21,12 21,14 3,14" fill="none" stroke="#222" stroke-width="1.8"/>
-      </svg>
-    </button>
-    </div>
-    <!-- Gear/settings parent button and dropdown, now under utilities -->
-    <button id="toggleSettings" class="icon-btn toggle-btn" title="Settings" aria-label="Settings" aria-pressed="false">
-      <span class="sr-only">Settings</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/>
-        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="#222" stroke-width="2"/>
-      </svg>
-    </button>
-    <div id="settingsGroup" class="collapse" aria-hidden="true">
-      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Back Color
-        <input id="bgColorPicker" type="color" value="#f7f7f7" style="margin-left:8px;">
-      </label>
-      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Grid Color
-        <input id="gridColorPicker" type="color" value="#cccccc" style="margin-left:8px;">
-      </label>
-    </div>
+    <!-- 1) Click-Drag Create -->
     <button id="toggleDrawCreate" class="icon-btn toggle-btn" title="Click-Drag Create" aria-label="Click-Drag Create" aria-pressed="false">
       <span class="sr-only">Click-Drag Create</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="4" y="16" width="12" height="4" fill="#bbb" stroke="#222" stroke-width="1.5"/>
-        <path d="M4 8h10" stroke="#222" stroke-width="2"/>
-        <circle cx="14" cy="8" r="2" fill="#222"/>
+        <!-- Collection of shapes: square, circle, triangle -->
+        <rect x="3" y="13" width="7" height="7" fill="none" stroke="#222" stroke-width="2"/>
+        <circle cx="16" cy="8" r="3" fill="none" stroke="#222" stroke-width="2"/>
+        <polygon points="12,14 20,20 12,20" fill="none" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
     <div id="drawCreateGroup" class="collapse" aria-hidden="true">
@@ -131,35 +61,67 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,4 4,18 20,18" fill="none" stroke="#222" stroke-width="2"/></svg>
       </button>
     </div>
-    <!-- Import group toggle -->
-    <button id="toggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
-      <span class="sr-only">Import</span>
+
+    <!-- 2) Primitives -->
+    <button id="togglePrims" class="icon-btn toggle-btn" title="Primitives" aria-label="Primitives" aria-pressed="false">
+      <span class="sr-only">Primitives</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 3l4 4h-3v6h-2V7H8l4-4z" fill="#222"/>
-        <path d="M5 14h14v5H5z" fill="none" stroke="#222" stroke-width="2"/>
+        <!-- House icon: roof and body -->
+        <polygon points="3,11 12,4 21,11" fill="none" stroke="#222" stroke-width="2"/>
+        <rect x="6" y="11" width="12" height="9" fill="none" stroke="#222" stroke-width="2"/>
+        <rect x="11" y="14" width="2" height="6" fill="none" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
-    <div id="importGroup" class="collapse" aria-hidden="true">
-      <button id="uploadModel" class="icon-btn" title="Upload Model" aria-label="Upload Model">
-        <span class="sr-only">Upload Model</span>
+    <div id="primsGroup" class="collapse" aria-hidden="true">
+      <button id="addFloor" class="icon-btn" title="Add Floor" aria-label="Add Floor">
+        <span class="sr-only">Add Floor</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 3l4 4h-3v6h-2V7H8l4-4z" fill="#222"/>
-          <path d="M5 14h14v5H5z" fill="none" stroke="#222" stroke-width="2"/>
+          <rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2" rx="2" ry="2" />
         </svg>
       </button>
-      <button id="mapImport" class="icon-btn" title="Import from Map" aria-label="Import from Map">
-        <span class="sr-only">Import from Map</span>
+      <button id="addWall" class="icon-btn" title="Add Wall" aria-label="Add Wall">
+        <span class="sr-only">Add Wall</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2V6z" fill="none" stroke="#222" stroke-width="1.8"/>
-          <circle cx="12" cy="12" r="2" fill="#222"/>
+          <rect x="9" y="4" width="6" height="12" fill="#999" stroke="#222" stroke-width="1.5" />
+          <line x1="4" y1="19" x2="20" y2="19" stroke="#222" stroke-width="2" />
+        </svg>
+      </button>
+      <button id="addColumn" class="icon-btn" title="Add Column" aria-label="Add Column">
+        <span class="sr-only">Add Column</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="7" y="4" width="10" height="16" rx="2" ry="2" fill="none" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+      <button id="addBeam" class="icon-btn" title="Add Beam" aria-label="Add Beam">
+        <span class="sr-only">Add Beam</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="10" width="18" height="4" fill="#999" stroke="#222" stroke-width="1.5"/>
+        </svg>
+      </button>
+      <button id="addRamp" class="icon-btn" title="Add Ramp" aria-label="Add Ramp">
+        <span class="sr-only">Add Ramp</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <polygon points="3,16 21,12 21,16 3,16" fill="#bbb" stroke="#222" stroke-width="1.5"/>
+        </svg>
+      </button>
+      <button id="addStairs" class="icon-btn" title="Add Stairs" aria-label="Add Stairs">
+        <span class="sr-only">Add Stairs</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 18h4v-2h4v-2h4v-2h4v-2" fill="none" stroke="#222" stroke-width="1.8"/>
+        </svg>
+      </button>
+      <button id="addRoof" class="icon-btn" title="Add Roof Plane" aria-label="Add Roof Plane">
+        <span class="sr-only">Add Roof Plane</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <polygon points="3,12 12,6 21,12 21,14 3,14" fill="none" stroke="#222" stroke-width="1.8"/>
         </svg>
       </button>
     </div>
-    <!-- Parent button: Add Scale Figure -->
+
+    <!-- 3) Scale Figure -->
     <button id="addScaleFigure" class="icon-btn" title="Add 6ft Scale Figure" aria-label="Add 6ft Scale Figure">
       <span class="sr-only">Add 6ft Scale Figure</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <!-- Clearer human figure: head, body, arms, legs -->
         <circle cx="12" cy="6" r="2" fill="#222"/>
         <rect x="11" y="8" width="2" height="6" fill="#999" stroke="#222" stroke-width="1.2"/>
         <line x1="12" y1="14" x2="8.5" y2="19" stroke="#222" stroke-width="1.5"/>
@@ -168,23 +130,24 @@
         <line x1="12" y1="10" x2="15.5" y2="12.5" stroke="#222" stroke-width="1.5"/>
       </svg>
     </button>
-    <!-- Utilities group toggle -->
+
+
+  <!-- 8) Utilities (now below Scene Manager) -->
     <button id="toggleUtils" class="icon-btn toggle-btn" title="Utilities" aria-label="Utilities" aria-pressed="false">
       <span class="sr-only">Utilities</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <!-- Toolbox icon: base with handle -->
         <rect x="3" y="9" width="18" height="10" rx="2" ry="2" fill="none" stroke="#222" stroke-width="2"/>
         <rect x="8" y="6" width="8" height="3" rx="1.5" ry="1.5" fill="none" stroke="#222" stroke-width="2"/>
         <path d="M8 9V7m8 2V7" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
-  <div id="utilsGroup" class="collapse" aria-hidden="true">
+    <div id="utilsGroup" class="collapse" aria-hidden="true">
       <button id="toolSnapFloor" class="icon-btn" title="Return to Floor" aria-label="Return to Floor">
         <span class="sr-only">Return to Floor</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 20h16" stroke="#222" stroke-width="2"/>
-          <path d="M12 4v10" stroke="#222" stroke-width="2"/>
-          <path d="M8 10l4-4 4 4" fill="none" stroke="#222" stroke-width="2"/>
+          <line x1="4" y1="20" x2="20" y2="20" stroke="#222" stroke-width="2"/>
+          <line x1="12" y1="8" x2="12" y2="16" stroke="#222" stroke-width="2"/>
+          <polyline points="9,13 12,16 15,13" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
       <button id="toolGroupSelected" class="icon-btn" title="Group Selected" aria-label="Group Selected">
@@ -199,10 +162,92 @@
         <span class="sr-only">Export Scene (OBJ)</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M12 16V10" stroke="#222" stroke-width="2"/>
+          <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Scene Manager parent button and group -->
+    <button id="toggleSceneManager" class="icon-btn toggle-btn" title="Scene Manager" aria-label="Scene Manager" aria-pressed="false">
+      <span class="sr-only">Scene Manager</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M8 8h8v8H8z" fill="none" stroke="#222" stroke-width="2"/>
+        <circle cx="12" cy="12" r="2" fill="#222"/>
+      </svg>
+    </button>
+    <div id="sceneManagerGroup" class="collapse" aria-hidden="true">
+      <button id="newScene" class="icon-btn" title="New Scene" aria-label="New Scene">
+        <span class="sr-only">New Scene</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M12 8v8" stroke="#222" stroke-width="2"/>
+          <path d="M8 12h8" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+      <button id="saveScene" class="icon-btn" title="Save Scene" aria-label="Save Scene">
+        <span class="sr-only">Save Scene</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 4h16v16H4z" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M7 4h10v6H7z" fill="#999" stroke="#222" stroke-width="1.5"/>
+          <path d="M8 14h8" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+      <button id="openScenes" class="icon-btn" title="My Scenes" aria-label="My Scenes">
+        <span class="sr-only">My Scenes</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="14" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M3 9h18" stroke="#222" stroke-width="2"/>
+        </svg>
+      </button>
+      <div id="scenesDrawer" class="collapse" aria-hidden="true" style="padding:6px 4px;">
+        <div id="scenesList" style="max-height:180px; overflow:auto; font-size:12px; color:#222;"></div>
+      </div>
+    </div>
+
+    <!-- 5) Import (moved above Settings) -->
+    <button id="toggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
+      <span class="sr-only">Import</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M12 8v6" stroke="#222" stroke-width="2"/>
+        <path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
+      </svg>
+    </button>
+    <div id="importGroup" class="collapse" aria-hidden="true">
+      <button id="uploadModel" class="icon-btn" title="Upload Model" aria-label="Upload Model">
+        <span class="sr-only">Upload Model</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
           <path d="M12 8v6" stroke="#222" stroke-width="2"/>
           <path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
+      <button id="mapImport" class="icon-btn" title="Import from Map" aria-label="Import from Map">
+        <span class="sr-only">Import from Map</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2V6z" fill="none" stroke="#222" stroke-width="1.8"/>
+          <circle cx="12" cy="12" r="2" fill="#222"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- 9) Settings -->
+    <button id="toggleSettings" class="icon-btn toggle-btn" title="Settings" aria-label="Settings" aria-pressed="false">
+      <span class="sr-only">Settings</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="#222" stroke-width="2"/>
+      </svg>
+    </button>
+    <div id="settingsGroup" class="collapse" aria-hidden="true">
+      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Back Color
+        <input id="bgColorPicker" type="color" value="#f7f7f7" style="margin-left:8px;">
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Grid Color
+        <input id="gridColorPicker" type="color" value="#cccccc" style="margin-left:8px;">
+      </label>
     </div>
   </div>
   <div id="visibility-container">
