@@ -48,12 +48,7 @@
     }
   </script>
   <div id="ui-container">
-    <div>
-      <label for="langSelect" data-i18n="language.label">Language:</label>
-      <select id="langSelect" style="margin-right:8px;">
-        <option value="en" data-i18n="language.en">English</option>
-        <option value="es" data-i18n="language.es">Spanish</option>
-      </select>
+  <div>
       <label for="modeSelect" data-i18n="mode.label">Mode:</label>
       <select id="modeSelect">
         <option value="draw" selected data-i18n="mode.create">Create</option>
@@ -67,18 +62,17 @@
   <input id="height" type="number" step="0.1" value="1">
     </div>
     <div id="edit-ui" style="margin-top:6px; display:none;">
-      <label for="transformMode" data-i18n="edit.transformLabel">Transform:</label>
-      <select id="transformMode">
-        <option value="translate" selected data-i18n="edit.move">Move</option>
-        <option value="rotate" data-i18n="edit.rotate">Rotate</option>
-      </select>
+      <!-- Move + Rotate gizmos are both active in Edit mode -->
       <button id="snapFloor" style="margin-left:8px;" data-i18n="edit.snapFloor">Return to Floor</button>
       <button id="groupBtn" style="margin-left:8px;" data-i18n="edit.groupSelected">Group Selected</button>
+      <label style="margin-left:8px; user-select:none;">
+        <input type="checkbox" id="touchNavToggle" /> Touch Navigate
+      </label>
     </div>
     <button id="arButton" style="margin-top:10px; display:none;" data-i18n="buttons.enterAR">Enter AR</button>
     <button id="exportScene" style="margin-top:10px;" data-i18n="buttons.exportOBJ">Export Scene (OBJ)</button>
     <div style="margin-top:6px; font-size:12px; color:#333;" data-i18n="hints.main">
-      Create: drag • Edit: select/move/rotate • Import: place • Export scene
+      Create: drag • Edit: select/move/rotate • Import: place • Export scene • Mobile: pinch to zoom/rotate; use Touch Navigate for one-finger orbit
     </div>
     <button id="uploadModel" style="margin-top:6px;" data-i18n="buttons.uploadModel">Upload Model</button>
     <input id="modelInput" type="file" accept=".gltf,.glb,.obj" style="display:none;">
@@ -94,7 +88,6 @@
   </div>
   <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <script type="module">
-    import { initLocale, setLocale, applyTranslations, t } from './js/i18n.js';
   import * as THREE from './js/vendor/three.module.js';
   import { GLTFLoader } from './js/vendor/GLTFLoader.js';
   import { OBJLoader }  from './js/vendor/OBJLoader.js';
@@ -144,11 +137,33 @@
     controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.ROTATE };
     window.addEventListener('keydown',e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.PAN;});
     window.addEventListener('keyup',  e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.ROTATE;});
-    const transformControls=new TransformControls(camera,renderer.domElement);
-    transformControls.setTranslationSnap(0.1);
-    transformControls.setRotationSnap(THREE.MathUtils.degToRad(15));
-    transformControls.addEventListener('dragging-changed',e=>controls.enabled=!e.value);
-    scene.add(transformControls);
+  const transformControls=new TransformControls(camera,renderer.domElement); // translate
+  transformControls.setMode('translate');
+  transformControls.setTranslationSnap(0.1);
+  transformControls.addEventListener('dragging-changed',e=>controls.enabled=!e.value);
+  scene.add(transformControls);
+
+  const transformControlsRotate=new TransformControls(camera,renderer.domElement); // rotate
+  transformControlsRotate.setMode('rotate');
+  transformControlsRotate.setRotationSnap(THREE.MathUtils.degToRad(15));
+  transformControlsRotate.addEventListener('dragging-changed',e=>controls.enabled=!e.value);
+  scene.add(transformControlsRotate);
+  // Only one gizmo active at a time
+  function disableRotateGizmo(){ transformControlsRotate.enabled = false; transformControlsRotate.visible = false; }
+  function enableRotateGizmo(){ transformControlsRotate.enabled = true; transformControlsRotate.visible = true; }
+  function disableTranslateGizmo(){ transformControls.enabled = false; transformControls.visible = false; }
+  function enableTranslateGizmo(){ transformControls.enabled = true; transformControls.visible = true; }
+  transformControls.addEventListener('mouseDown', () => { disableRotateGizmo(); });
+  transformControls.addEventListener('mouseUp',   () => { enableRotateGizmo(); });
+  transformControlsRotate.addEventListener('mouseDown', () => { disableTranslateGizmo(); });
+  transformControlsRotate.addEventListener('mouseUp',   () => { enableTranslateGizmo(); });
+
+  // Multi-selection transform pivot (temporary gizmo target when 2+ items selected)
+  const multiSelectPivot = new THREE.Object3D();
+  multiSelectPivot.name = '__MultiSelectPivot';
+  scene.add(multiSelectPivot);
+  let multiStartPivotMatrix = new THREE.Matrix4();
+  let multiStartMatrices = new Map(); // Map<Object3D, Matrix4>
 
     // State
     const raycaster=new THREE.Raycaster(), pointer=new THREE.Vector2();
@@ -164,13 +179,164 @@
     // Multi-selection state
     let selectedObjects = [];
 
+    // Outline helpers
+    function clearSelectionOutlines(){
+      selectionOutlines.forEach(outline => {
+        scene.remove(outline);
+        if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
+        if (outline.material) {
+          if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
+          else if (outline.material.dispose) outline.material.dispose();
+        }
+      });
+      selectionOutlines = [];
+    }
+    function rebuildSelectionOutlines(){
+      clearSelectionOutlines();
+      selectedObjects.forEach(selObj => {
+        if (selObj.type === 'Group') {
+          selObj.children.forEach(child => {
+            if (child.geometry) {
+              const edgeGeo = new THREE.EdgesGeometry(child.geometry);
+              const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
+              child.updateMatrixWorld();
+              const worldPos = new THREE.Vector3();
+              const worldQuat = new THREE.Quaternion();
+              const worldScale = new THREE.Vector3();
+              child.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+              outline.position.copy(worldPos);
+              outline.quaternion.copy(worldQuat);
+              outline.scale.copy(worldScale);
+              scene.add(outline);
+              selectionOutlines.push(outline);
+            }
+          });
+        } else if (selObj.geometry) {
+          const edgeGeo = new THREE.EdgesGeometry(selObj.geometry);
+          const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
+          selObj.updateMatrixWorld();
+          const worldPos = new THREE.Vector3();
+          const worldQuat = new THREE.Quaternion();
+          const worldScale = new THREE.Vector3();
+          selObj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+          outline.position.copy(worldPos);
+          outline.quaternion.copy(worldQuat);
+          outline.scale.copy(worldScale);
+          scene.add(outline);
+          selectionOutlines.push(outline);
+        }
+      });
+    }
+
+    // Helpers for multi-select gizmo
+    function getWorldMatrix(obj){
+      obj.updateMatrixWorld();
+      return obj.matrixWorld.clone();
+    }
+    function setWorldMatrix(obj, worldMat){
+      // Compute local matrix relative to parent
+      const parent = obj.parent;
+      const invParent = new THREE.Matrix4();
+      if(parent){
+        parent.updateMatrixWorld();
+        invParent.copy(parent.matrixWorld).invert();
+      } else {
+        invParent.identity();
+      }
+      const local = new THREE.Matrix4().multiplyMatrices(invParent, worldMat);
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      local.decompose(pos, quat, scl);
+      obj.position.copy(pos);
+      obj.quaternion.copy(quat);
+      obj.scale.copy(scl);
+      obj.updateMatrixWorld(true);
+    }
+    function updateMultiSelectPivot(){
+      if(selectedObjects.length < 2) return;
+      // Compute centroid in world space
+      const center = new THREE.Vector3();
+      const tmp = new THREE.Vector3();
+      selectedObjects.forEach(o=>{
+        o.updateMatrixWorld();
+        tmp.setFromMatrixPosition(o.matrixWorld);
+        center.add(tmp);
+      });
+      center.multiplyScalar(1/selectedObjects.length);
+      // Place pivot at center; keep world-up orientation
+      setWorldMatrix(multiSelectPivot, new THREE.Matrix4().compose(
+        center,
+        new THREE.Quaternion(),
+        new THREE.Vector3(1,1,1)
+      ));
+    }
+    function attachTransformForSelection(){
+      if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); return; }
+      if(selectedObjects.length === 1){
+        const target = selectedObjects[0];
+        transformControls.attach(target);
+        transformControlsRotate.attach(target);
+  enableTranslateGizmo();
+  enableRotateGizmo();
+      } else if(selectedObjects.length >= 2){
+        updateMultiSelectPivot();
+        transformControls.attach(multiSelectPivot);
+        transformControlsRotate.attach(multiSelectPivot);
+  enableTranslateGizmo();
+  enableRotateGizmo();
+      } else {
+        transformControls.detach();
+        transformControlsRotate.detach();
+      }
+    }
+    function captureMultiStart(){
+      multiStartPivotMatrix = getWorldMatrix(multiSelectPivot);
+      multiStartMatrices.clear();
+      selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o)));
+    }
+    function applyMultiDelta(){
+      if(selectedObjects.length < 2) return;
+      const currentPivot = getWorldMatrix(multiSelectPivot);
+      const invStartPivot = multiStartPivotMatrix.clone().invert();
+      const delta = new THREE.Matrix4().multiplyMatrices(currentPivot, invStartPivot);
+      selectedObjects.forEach(o => {
+        const startMat = multiStartMatrices.get(o);
+        if(!startMat) return;
+        const newWorld = new THREE.Matrix4().multiplyMatrices(delta, startMat);
+        setWorldMatrix(o, newWorld);
+      });
+    }
+
+    // When dragging multi-select pivot, move/rotate all selected objects
+    transformControls.addEventListener('dragging-changed', e => {
+      if(e.value && transformControls.object === multiSelectPivot){
+        captureMultiStart();
+      }
+    });
+    transformControls.addEventListener('objectChange', () => {
+      if(transformControls.object === multiSelectPivot){
+        applyMultiDelta();
+      }
+    });
+
+    transformControlsRotate.addEventListener('dragging-changed', e => {
+      if(e.value && transformControlsRotate.object === multiSelectPivot){
+        captureMultiStart();
+      }
+    });
+    transformControlsRotate.addEventListener('objectChange', () => {
+      if(transformControlsRotate.object === multiSelectPivot){
+        applyMultiDelta();
+      }
+    });
+
     // UI refs
     const uiContainer=document.getElementById('ui-container');
     const modeSelect=document.getElementById('modeSelect');
     const drawUI=document.getElementById('draw-ui');
     const editUI=document.getElementById('edit-ui');
-    const importUI=document.getElementById('import-ui');
-    const transformModeSelect=document.getElementById('transformMode');
+  const importUI=document.getElementById('import-ui');
     const uploadBtn=document.getElementById('uploadModel');
     const fileInput=document.getElementById('modelInput');
     const uploadStatus=document.getElementById('uploadStatus');
@@ -180,12 +346,8 @@
     const addWallBtn=document.getElementById('addWall');
     const objectList=document.getElementById('objectList');
   const arButton=document.getElementById('arButton');
-  const langSelect=document.getElementById('langSelect');
-  // Initialize and apply current locale
-  const initialLocale = initLocale(['en','es']);
-  langSelect.value = initialLocale;
-  applyTranslations(document);
   const groupBtn=document.getElementById('groupBtn');
+  const touchNavToggle=document.getElementById('touchNavToggle');
 
     // Visibility UI
     function updateVisibilityUI(){
@@ -213,7 +375,7 @@
           inp.focus();
         });
         // Click to select for grouping (edit mode only)
-        span.addEventListener('click',e=>{
+    span.addEventListener('click',e=>{
           if(mode!=='edit') return;
           if(e.ctrlKey||e.metaKey||e.shiftKey){
             // Toggle selection
@@ -222,11 +384,13 @@
             }else{
               selectedObjects.push(obj);
             }
-            transformControls.detach();
+            attachTransformForSelection();
+            rebuildSelectionOutlines();
           }else{
             selectedObjects=[obj];
-            // Attach transform controls to the selected object (group or mesh)
-            transformControls.attach(obj);
+      // Attach transform controls to the selected object (group or mesh)
+            attachTransformForSelection();
+            rebuildSelectionOutlines();
           }
           updateVisibilityUI();
         });
@@ -237,7 +401,8 @@
 
     // Mode change
     modeSelect.addEventListener('change',()=>{
-      mode=modeSelect.value; transformControls.detach();
+  mode=modeSelect.value; transformControls.detach(); transformControlsRotate.detach();
+      clearSelectionOutlines();
       drawUI.style.display=(mode==='draw')?'block':'none';
       editUI.style.display=(mode==='edit')?'block':'none';
       importUI.style.display=(mode==='draw')?'block':'none';
@@ -270,21 +435,18 @@
             modeSelect.dispatchEvent(new Event('change'));
           });
         } catch (e) {
-          alert(t('alerts.arStartFailed', { message: e.message }));
+          alert('Failed to start AR: ' + (e?.message || e));
         }
       } else {
-        alert(t('alerts.arNotSupported'));
+        alert('AR not supported on this device.');
       }
     });
 
-    // Transform mode
-    transformModeSelect.addEventListener('change',()=>{
-      transformControls.setMode(transformModeSelect.value);
-    });
+  // No transform mode dropdown: both move and rotate gizmos are active in Edit mode
 
   // Upload model
     uploadBtn.addEventListener('click',()=>fileInput.click());
-  fileInput.addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;const url=URL.createObjectURL(file);const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader();loader.load(url,gltf=>{loadedModel=gltf.scene||gltf;uploadStatus.textContent=file.name;uploadStatus.dataset.skipI18n='true';URL.revokeObjectURL(url);});});
+  fileInput.addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;const url=URL.createObjectURL(file);const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader();loader.load(url,gltf=>{loadedModel=gltf.scene||gltf;uploadStatus.textContent=file.name;URL.revokeObjectURL(url);});});
 
     // Export: only user-created/imported objects (exclude grid, lights, gizmos)
     exportBtn.addEventListener('click',()=>{
@@ -300,25 +462,63 @@
       URL.revokeObjectURL(a.href);
     });
 
-    // Language change
-    langSelect.addEventListener('change', ()=>{
-      setLocale(langSelect.value);
-      applyTranslations(document);
-      // Repaint the list to keep selection highlight but translations applied
-      updateVisibilityUI();
-    });
+  // Language selection removed; default is English
 
     // Helpers
     function getPointer(e){const rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;}
     function intersectGround(){const pt=new THREE.Vector3();raycaster.ray.intersectPlane(groundPlane,pt);return pt;}
 
+    // Touch helpers and behavior
+    let ongoingTouches = new Map(); // id => {x,y}
+    function touchCount(){ return ongoingTouches.size; }
+    function updateTouch(id, x, y){ ongoingTouches.set(id, {x,y}); }
+    function removeTouch(id){ ongoingTouches.delete(id); }
+    function getTouchesArray(){ return Array.from(ongoingTouches.values()); }
+    function distance(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+    function angle(a,b){ return Math.atan2(b.y-a.y, b.x-a.x); }
+
+    function applyTouchControlsMode(){
+      if(touchNavToggle && touchNavToggle.checked){
+        // One finger orbit, two finger zoom/pan
+        controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      } else {
+        // Default: two finger rotate; we'll add pinch zoom manually below
+        controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.ROTATE };
+      }
+    }
+    if(touchNavToggle){ touchNavToggle.addEventListener('change', applyTouchControlsMode); }
+    applyTouchControlsMode();
+
+
     // Interaction
   // Prevent browser scroll/zoom while finger-panning on canvas (bind once)
   renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
+  renderer.domElement.addEventListener('touchstart', e => { for(const t of e.changedTouches){ updateTouch(t.identifier, t.clientX, t.clientY); } }, { passive: false });
+  renderer.domElement.addEventListener('touchend', e => { for(const t of e.changedTouches){ removeTouch(t.identifier); } });
+  renderer.domElement.addEventListener('touchcancel', e => { for(const t of e.changedTouches){ removeTouch(t.identifier); } });
+  let prevPinchDist=null, prevAngle=null;
+  renderer.domElement.addEventListener('touchmove', e => {
+    const touches = getTouchesArray();
+    if(touches.length===2 && (!touchNavToggle || !touchNavToggle.checked)){
+      const [a,b]=touches; const d=distance(a,b); const ang=angle(a,b);
+      if(prevPinchDist!=null){
+        const delta=d-prevPinchDist;
+        camera.position.addScaledVector(camera.getWorldDirection(new THREE.Vector3()), delta * -0.01);
+      }
+      if(prevAngle!=null){
+        const dAng=ang-prevAngle; const r=camera.position.length(); const th=Math.atan2(camera.position.x,camera.position.z)+dAng; const y=camera.position.y; camera.position.set(Math.sin(th)*r,y,Math.cos(th)*r); camera.lookAt(0,0,0);
+      }
+      prevPinchDist=d; prevAngle=ang;
+    } else { prevPinchDist=null; prevAngle=null; }
+    // Update positions for ongoing touches
+    for(const t of e.changedTouches){ updateTouch(t.identifier, t.clientX, t.clientY); }
+  }, { passive: false });
 
   renderer.domElement.addEventListener('pointerdown',e=>{
   // Prevent deselection and allow gizmo interaction even when not overlapping group
-  if (transformControls.dragging) return;
+  if (transformControls.dragging || transformControlsRotate.dragging) return;
+  // If multiple touches are present, avoid starting select/draw
+  if (e.pointerType==='touch' && touchCount()>1) return;
   getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
       if(mode==='draw'){
         const pt=intersectGround(); if(!pt)return; isDragging=true; startPt.copy(pt); controls.enabled=false;
@@ -336,79 +536,29 @@
             obj = obj.parent;
           }
           // Multi-select logic
-          if(e.shiftKey||e.ctrlKey||e.metaKey){
+           if(e.shiftKey||e.ctrlKey||e.metaKey){
             if(selectedObjects.includes(obj)){
               selectedObjects=selectedObjects.filter(o=>o!==obj);
             }else{
               selectedObjects.push(obj);
             }
-            transformControls.detach();
+            attachTransformForSelection();
+            rebuildSelectionOutlines();
           }else{
             selectedObjects=[obj];
-            transformControls.attach(obj); transformControls.setMode(transformModeSelect.value);
+            attachTransformForSelection();
+            rebuildSelectionOutlines();
           }
-          // Remove previous outlines and dispose resources
-          selectionOutlines.forEach(outline => {
-            scene.remove(outline);
-            if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
-            if (outline.material) {
-              if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
-              else if (outline.material.dispose) outline.material.dispose();
-            }
-          });
-          selectionOutlines = [];
-          // Outline all selected objects with thick yellow line (consistent for single objects and groups)
-          selectedObjects.forEach(selObj => {
-            if (selObj.type === 'Group') {
-              selObj.children.forEach(child => {
-                if (child.geometry) {
-                  const edgeGeo = new THREE.EdgesGeometry(child.geometry);
-                  const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
-                  // Use world transforms for group children
-                  child.updateMatrixWorld();
-                  const worldPos = new THREE.Vector3();
-                  const worldQuat = new THREE.Quaternion();
-                  const worldScale = new THREE.Vector3();
-                  child.matrixWorld.decompose(worldPos, worldQuat, worldScale);
-                  outline.position.copy(worldPos);
-                  outline.quaternion.copy(worldQuat);
-                  outline.scale.copy(worldScale);
-                  scene.add(outline);
-                  selectionOutlines.push(outline);
-                }
-              });
-            } else if (selObj.geometry) {
-              const edgeGeo = new THREE.EdgesGeometry(selObj.geometry);
-              const outline = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 3 }));
-              selObj.updateMatrixWorld();
-              const worldPos = new THREE.Vector3();
-              const worldQuat = new THREE.Quaternion();
-              const worldScale = new THREE.Vector3();
-              selObj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
-              outline.position.copy(worldPos);
-              outline.quaternion.copy(worldQuat);
-              outline.scale.copy(worldScale);
-              scene.add(outline);
-              selectionOutlines.push(outline);
-            }
-          });
+          rebuildSelectionOutlines();
           updateVisibilityUI();
         } else {
-          transformControls.detach();
-          selectionOutlines.forEach(outline => {
-            scene.remove(outline);
-            if (outline.geometry && outline.geometry.dispose) outline.geometry.dispose();
-            if (outline.material) {
-              if (Array.isArray(outline.material)) outline.material.forEach(m=>m.dispose&&m.dispose());
-              else if (outline.material.dispose) outline.material.dispose();
-            }
-          });
-          selectionOutlines = [];
+          transformControls.detach(); transformControlsRotate.detach();
+          clearSelectionOutlines();
           selectedObjects=[];
           updateVisibilityUI();
         }
       } else {
-        transformControls.detach();
+        transformControls.detach(); transformControlsRotate.detach();
       }
     });
 
@@ -446,8 +596,9 @@
       group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
       scene.add(group);
       objects.push(group);
-      selectedObjects=[group];
-      transformControls.attach(group);
+  selectedObjects=[group];
+  attachTransformForSelection();
+  rebuildSelectionOutlines();
       updateVisibilityUI();
     });
 
@@ -459,20 +610,41 @@
     document.getElementById('addFloor').addEventListener('click',()=>{const thickness=0.333;const floor=new THREE.Mesh(new THREE.BoxGeometry(10,thickness,10),material);floor.position.set(0,thickness/2,0);floor.name='Floor';scene.add(floor);objects.push(floor);updateVisibilityUI();});
     document.getElementById('addWall').addEventListener('click',()=>{const thickness=0.333;const wall=new THREE.Mesh(new THREE.BoxGeometry(10,8,thickness),material);wall.position.set(0,4,-thickness/2);wall.name='Wall';scene.add(wall);objects.push(wall);updateVisibilityUI();});
 
+  // Boolean buttons removed
+
     // Return to Floor
-    snapBtn.addEventListener('click',()=>{const sel=transformControls.object;if(sel){const box=new THREE.Box3().setFromObject(sel);const minY=box.min.y;sel.position.y-=minY;}});
+    snapBtn.addEventListener('click',()=>{
+      if(selectedObjects.length >= 2){
+        // Move the multi selection such that the lowest minY among all rests on y=0
+        let minY = Infinity;
+        const box = new THREE.Box3();
+        selectedObjects.forEach(o=>{ box.setFromObject(o); if(box.min.y < minY) minY = box.min.y; });
+        if(isFinite(minY) && Math.abs(minY) > 1e-6){
+          const T = new THREE.Matrix4().makeTranslation(0, -minY, 0);
+          selectedObjects.forEach(o=>{
+            const current = getWorldMatrix(o);
+            setWorldMatrix(o, new THREE.Matrix4().multiplyMatrices(T, current));
+          });
+          updateMultiSelectPivot();
+          rebuildSelectionOutlines();
+        }
+      } else {
+        const sel=transformControls.object; if(sel){ const box=new THREE.Box3().setFromObject(sel); const minY=box.min.y; sel.position.y-=minY; }
+      }
+    });
 
     // Delete (supports multi-select)
     window.addEventListener('keydown',e=>{
       if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){
         const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
-        toDelete.forEach(sel=>{
+  toDelete.forEach(sel=>{
           scene.remove(sel);
           const idx=objects.indexOf(sel);
           if(idx>-1)objects.splice(idx,1);
         });
         selectedObjects = [];
         transformControls.detach();
+  clearSelectionOutlines();
         updateVisibilityUI();
       }
     });
@@ -492,6 +664,14 @@
 
     // Resize & single animation loop with AR support
     window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
+    // Keep outlines in sync while dragging single object too
+    transformControls.addEventListener('objectChange', () => {
+      rebuildSelectionOutlines();
+    });
+    transformControlsRotate.addEventListener('objectChange', () => {
+      rebuildSelectionOutlines();
+    });
+
     renderer.setAnimationLoop(() => {
       try {
         if (!arActive) controls.update();
