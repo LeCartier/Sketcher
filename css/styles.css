@@ -140,6 +140,7 @@ canvas { z-index: 0; }
 	display: inline-block; white-space: nowrap; overflow: visible;
 	filter: drop-shadow(0 8px 24px rgba(0,0,0,.6));
 	transition: filter 120ms ease;
+	transform-style: preserve-3d;
 }
 #anarchOverlay .ao-line { position: relative; display: inline-block; }
 #anarchOverlay .ao-base { display: inline-block; }
@@ -192,6 +193,10 @@ body.anarch-active canvas, body.anarch-active #gridStage {
 		animation: aoFreezeJitter 110ms steps(1) 24;
 		filter: brightness(.98) contrast(1.05) saturate(.95);
 }
+/* Ensure animations still run on mobile Safari unless user prefers reduced motion */
+@media (prefers-reduced-motion: reduce) {
+	#anarchOverlay, #anarchOverlay * { animation: none !important; transition: none !important; }
+}
 @keyframes aoFreezeJitter {
 		0% { transform: translate(0,0); }
 		25% { transform: translate(0.5px, 0); }
@@ -200,8 +205,6 @@ body.anarch-active canvas, body.anarch-active #gridStage {
 		100% { transform: translate(0,0); }
 }
 
-/* Floating-button slot for AnArch trigger */
-.nav-top-right-5 { position: fixed; top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 224px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
 
 /* Prevent panels from blocking clicks outside their bounds */
 #toolbox, #ui-container { pointer-events: auto; }
