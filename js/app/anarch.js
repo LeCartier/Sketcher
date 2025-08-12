@@ -46,6 +46,18 @@ export function triggerAnArchSequence() {
   overlay.classList.add('crt');
   // Start text animations (slide/glitch words)
   requestAnimationFrame(() => overlay.classList.add('run'));
+  // Measure ext width and set CSS var to center when visible
+  const setExtWidth = () => {
+    const extEl = overlay.querySelector('.ao-ext');
+    if (!extEl) return;
+    const w = extEl.getBoundingClientRect().width;
+    overlay.style.setProperty('--extW', w + 'px');
+  };
+  // prepare before it becomes visible
+  setTimeout(setExtWidth, 500);
+  // mark ext visible during its on-screen window
+  setTimeout(() => overlay.classList.add('ext-visible'), 650);
+  setTimeout(() => overlay.classList.remove('ext-visible'), 1700);
   // Deterministic sequence:
   // 1) Quick static
   setTimeout(() => { overlay.classList.add('show-static'); }, 150);

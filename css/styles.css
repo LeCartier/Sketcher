@@ -183,7 +183,7 @@ canvas { z-index: 0; }
 /* Add mild RGB split when bars visible for extra drama */
 #anarchOverlay.show-bars .ao-base::before { transform: translate(-1px, 0); opacity: .32; }
 #anarchOverlay.show-bars .ao-base::after { transform: translate(1px, 0); opacity: .32; }
-#anarchOverlay .ao-line { position: relative; display: inline-block; }
+#anarchOverlay .ao-line { position: relative; display: inline-block; transform: translateX(var(--centerShift, 0)); }
 #anarchOverlay .ao-base { display: inline-block; }
 #anarchOverlay .ao-ext, #anarchOverlay .ao-y { position: absolute; left: calc(100% + 0.02em); }
 #anarchOverlay .ao-word { position: relative; display: inline-block; font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif; font-weight: 900; letter-spacing: 0.02em; }
@@ -195,6 +195,8 @@ canvas { z-index: 0; }
 /* Start text animations only after overlay is in the DOM to avoid race conditions */
 #anarchOverlay.run .ao-ext { animation: aoExtSlideIn 800ms 600ms cubic-bezier(.2,.9,.1,1) forwards, aoExtSlideOut 360ms 1700ms cubic-bezier(.4,.0,.2,1) forwards; }
 #anarchOverlay.run .ao-y { animation: aoYDrop 520ms 1820ms cubic-bezier(.2,.9,.1,1) forwards; }
+/* When extension is visible, shift left by half its width to keep phrase centered */
+#anarchOverlay.ext-visible { --centerShift: calc(-0.5 * var(--extW, 0px)); }
 /* Force immediate switch to Archy when .to-archy is set (post bars) */
 #anarchOverlay.to-archy .ao-ext { opacity: 0 !important; transform: translateY(-120%) !important; animation: none !important; }
 #anarchOverlay.to-archy .ao-y { opacity: 1 !important; transform: translateY(0) !important; animation: none !important; }
@@ -227,6 +229,14 @@ body.anarch-active .ao-base { animation: aoGlitch 1200ms steps(2) 2; }
 @keyframes aoCenterGlitchOut {
 	from { opacity: 1; filter: none; }
 	to { opacity: 0.15; filter: blur(0.2px) saturate(0.9); }
+}
+
+/* Mobile typography tuning to avoid off-screen overflow */
+@media (max-width: 480px) {
+	#anarchOverlay .ao-base,
+	#anarchOverlay .ao-ext,
+	#anarchOverlay .ao-y { font-size: clamp(32px, 6.6vw, 100px); letter-spacing: 0.01em; }
+	#anarchOverlay .ao-ext, #anarchOverlay .ao-y { left: calc(100% + 0.01em); }
 }
 @keyframes aoNoiseFlicker {
 	0% { opacity: 0.06; }
