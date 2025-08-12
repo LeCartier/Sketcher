@@ -15,7 +15,7 @@
     }
   </script>
   <div id="ui-container">
-  <div>
+  <div id="modePanel" style="display:none;" aria-hidden="true">
       <label for="modeSelect" data-i18n="mode.label">Mode:</label>
       <select id="modeSelect">
         <option value="edit" selected data-i18n="mode.edit">Edit</option>
@@ -30,7 +30,12 @@
   <!-- ...existing code... -->
     
     <input id="modelInput" type="file" accept=".gltf,.glb,.obj" style="display:none;">
-    <div id="uploadStatus" style="font-size:12px; color:#555; margin-top:4px;" data-i18n="status.noModelSelected">No model selected</div>
+  </div>
+  <!-- Popup showing the model currently being placed (appears next to the toolbox) -->
+  <div id="placingPopup" role="status" aria-live="polite" aria-atomic="true" style="display:none;">
+    <div class="placing-title">Placing</div>
+    <div id="placingName" class="placing-name">…</div>
+    <button id="placingCancel" class="placing-cancel" title="Cancel placement" aria-label="Cancel placement" type="button">×</button>
   </div>
   <div id="toolbox">
     <!-- 1) Click-Drag Create -->
@@ -122,12 +127,12 @@
     <button id="addScaleFigure" class="icon-btn" title="Add 6ft Scale Figure" aria-label="Add 6ft Scale Figure">
       <span class="sr-only">Add 6ft Scale Figure</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="6" r="2" fill="#222"/>
-        <rect x="11" y="8" width="2" height="6" fill="#999" stroke="#222" stroke-width="1.2"/>
-        <line x1="12" y1="14" x2="8.5" y2="19" stroke="#222" stroke-width="1.5"/>
-        <line x1="12" y1="14" x2="15.5" y2="19" stroke="#222" stroke-width="1.5"/>
-        <line x1="12" y1="10" x2="8.5" y2="12.5" stroke="#222" stroke-width="1.5"/>
-        <line x1="12" y1="10" x2="15.5" y2="12.5" stroke="#222" stroke-width="1.5"/>
+  <circle cx="12" cy="5.5" r="2.6" fill="#222"/>
+  <rect x="10.5" y="8" width="3" height="7.2" fill="#999" stroke="#222" stroke-width="1.4"/>
+  <line x1="12" y1="15.2" x2="7.8" y2="20" stroke="#222" stroke-width="1.8"/>
+  <line x1="12" y1="15.2" x2="16.2" y2="20" stroke="#222" stroke-width="1.8"/>
+  <line x1="12" y1="10.8" x2="7.8" y2="13.6" stroke="#222" stroke-width="1.8"/>
+  <line x1="12" y1="10.8" x2="16.2" y2="13.6" stroke="#222" stroke-width="1.8"/>
       </svg>
     </button>
 
@@ -172,9 +177,11 @@
     <button id="toggleSceneManager" class="icon-btn toggle-btn" title="Scene Manager" aria-label="Scene Manager" aria-pressed="false">
       <span class="sr-only">Scene Manager</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-        <path d="M8 8h8v8H8z" fill="none" stroke="#222" stroke-width="2"/>
-        <circle cx="12" cy="12" r="2" fill="#222"/>
+        <!-- Tic-tac-toe grid with one filled square -->
+        <g fill="none" stroke="#222" stroke-width="1.8">
+          <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+        </g>
+        <rect x="8" y="8" width="8" height="8" fill="#222"/>
       </svg>
     </button>
     <div id="sceneManagerGroup" class="collapse" aria-hidden="true">
@@ -194,16 +201,7 @@
           <path d="M8 14h8" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
-      <button id="openScenes" class="icon-btn" title="My Scenes" aria-label="My Scenes">
-        <span class="sr-only">My Scenes</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="3" y="5" width="18" height="14" fill="none" stroke="#222" stroke-width="2"/>
-          <path d="M3 9h18" stroke="#222" stroke-width="2"/>
-        </svg>
-      </button>
-      <div id="scenesDrawer" class="collapse" aria-hidden="true" style="padding:6px 4px;">
-        <div id="scenesList" style="max-height:180px; overflow:auto; font-size:12px; color:#222;"></div>
-      </div>
+  <!-- My Scenes moved to Columbarium → load UI removed on main page -->
     </div>
 
     <!-- 5) Import (moved above Settings) -->
@@ -237,8 +235,11 @@
     <button id="toggleSettings" class="icon-btn toggle-btn" title="Settings" aria-label="Settings" aria-pressed="false">
       <span class="sr-only">Settings</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/>
-        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="#222" stroke-width="2"/>
+        <!-- Gear icon -->
+        <g fill="none" stroke="#222" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19.4 12.94a7.5 7.5 0 0 0 0-1.88l2.02-1.57a.6.6 0 0 0 .14-.78l-1.91-3.3a.6.6 0 0 0-.73-.27l-2.38.96a7.6 7.6 0 0 0-1.62-.94l-.36-2.54A.6.6 0 0 0 14 .8h-3.82a.6.6 0 0 0-.59.49l-.36 2.54c-.57.23-1.12.53-1.62.94l-2.38-.96a.6.6 0 0 0-.73.27l-1.91 3.3a.6.6 0 0 0 .14.78L4.6 11.06a7.5 7.5 0 0 0 0 1.88l-2.02 1.57a.6.6 0 0 0-.14.78l1.91 3.3c.13.22.4.32.64.23l2.38-.96c.5.41 1.05.72 1.62.94l.36 2.54c.05.29.3.49.59.49H14c.29 0 .54-.2.59-.49l.36-2.54c.57-.23 1.12-.53 1.62-.94l2.38.96c.24.09.51-.01.64-.23l1.91-3.3a.6.6 0 0 0-.14-.78l-2.02-1.57z"/>
+          <circle cx="12" cy="12" r="3.5"/>
+        </g>
       </svg>
     </button>
     <div id="settingsGroup" class="collapse" aria-hidden="true">
@@ -253,11 +254,10 @@
     <button id="toggleViews" class="icon-btn toggle-btn" title="Views" aria-label="Views" aria-pressed="false">
       <span class="sr-only">Views</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <!-- Line camera icon -->
-        <rect x="6" y="8" width="12" height="8" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-        <circle cx="12" cy="12" r="2.5" fill="none" stroke="#222" stroke-width="2"/>
-        <line x1="2" y1="12" x2="6" y2="12" stroke="#222" stroke-width="2"/>
-        <line x1="18" y1="12" x2="22" y2="12" stroke="#222" stroke-width="2"/>
+  <!-- Camera silhouette icon (enlarged to better match other icons) -->
+  <rect x="3" y="7" width="18" height="10" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+  <rect x="6.5" y="4.8" width="11" height="3.4" rx="1.7" ry="1.7" fill="none" stroke="#222" stroke-width="2"/>
+  <circle cx="12" cy="12" r="3.6" fill="none" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
     <div id="viewsGroup" class="collapse" aria-hidden="true">
@@ -299,8 +299,19 @@
       </button>
     </div>
   </div>
-  <div id="visibility-container">
-    <strong data-i18n="visibility.title">Visibility</strong>
+  <!-- Floating Visibility button (top-right cluster) -->
+  <button id="toVisibility" class="floating-nav nav-bottom-left" title="Visibility" aria-label="Visibility" type="button">
+    <!-- Eye icon -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </g>
+    </svg>
+  </button>
+  <!-- Visibility popup -->
+  <div id="visibilityPopup" style="display:none;">
+    <div class="visibility-header"><strong data-i18n="visibility.title">Visibility</strong></div>
     <div id="objectList"></div>
   </div>
   <!-- Floating button to Columbarium with smooth fade -->
@@ -313,8 +324,97 @@
       <rect x="8" y="8" width="8" height="8" fill="#fff" opacity=".8"/>
     </svg>
   </a>
-  <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.7); color:#fff; padding:6px 8px; border-radius:4px; font-family:sans-serif; font-size:12px; z-index:20;">
-    v…
+    <!-- Floating AR button (top-right, beside Columbarium) -->
+    <button id="toAR" class="floating-nav nav-top-right-2" title="Enter AR" aria-label="Enter AR" type="button">
+      <!-- Glasses icon: two lenses with a bridge and subtle temples -->
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+          <!-- Lenses pushed outward -->
+          <circle cx="7" cy="12" r="3.6"/>
+          <circle cx="17" cy="12" r="3.6"/>
+          <!-- Narrow bridge to reduce chain-like look -->
+          <path d="M10.8 11.6c.5-.35 1.9-.35 2.4 0"/>
+          <!-- Temples -->
+          <path d="M3.4 12h-1.2"/>
+          <path d="M20.6 12h1.2"/>
+        </g>
+      </svg>
+    </button>
+    <!-- Floating Legend button (top-right, beside AR) -->
+    <button id="toLegend" class="floating-nav nav-top-right-3" title="Legend" aria-label="Legend" type="button">
+      <!-- Info-circle icon -->
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 17v-6"/>
+          <circle cx="12" cy="8" r="1" fill="#fff" stroke="none"/>
+        </g>
+      </svg>
+    </button>
+    <!-- Legend popup -->
+    <div id="legendPopup" style="display:none;">
+      <div class="legend-grid">
+        <!-- Primitives -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <polygon points="3,11 12,4 21,11" fill="none" stroke="#fff" stroke-width="2"/>
+            <rect x="6" y="11" width="12" height="9" fill="none" stroke="#fff" stroke-width="2"/>
+            <rect x="11" y="14" width="2" height="6" fill="none" stroke="#fff" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="legend-label">Primitives</div>
+
+        <!-- Draw-Create -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="13" width="7" height="7" fill="none" stroke="#fff" stroke-width="2"/>
+            <circle cx="16" cy="8" r="3" fill="none" stroke="#fff" stroke-width="2"/>
+            <polygon points="12,14 20,20 12,20" fill="none" stroke="#fff" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="legend-label">Draw</div>
+
+        <!-- Utilities -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="9" width="18" height="10" rx="2" ry="2" fill="none" stroke="#fff" stroke-width="2"/>
+            <rect x="8" y="6" width="8" height="3" rx="1.5" ry="1.5" fill="none" stroke="#fff" stroke-width="2"/>
+            <path d="M8 9V7m8 2V7" stroke="#fff" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="legend-label">Utilities</div>
+
+        <!-- Scene Manager (tic-tac-toe) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8"><path d="M8 3v18M16 3v18M3 8h18M3 16h18"/></g><rect x="8" y="8" width="8" height="8" fill="#fff"/></svg>
+        </div>
+        <div class="legend-label">Scenes</div>
+
+        <!-- Import -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#fff" stroke-width="2"/><path d="M12 8v6" stroke="#fff" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#fff" stroke-width="2"/></svg>
+          </div>
+        <div class="legend-label">Import</div>
+
+        <!-- Settings (gear) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.4 12.94a7.5 7.5 0 0 0 0-1.88l2.02-1.57a.6.6 0 0 0 .14-.78l-1.91-3.3a.6.6 0 0 0-.73-.27l-2.38.96a7.6 7.6 0 0 0-1.62-.94l-.36-2.54A.6.6 0 0 0 14 .8h-3.82a.6.6 0 0 0-.59.49l-.36 2.54c-.57.23-1.12.53-1.62.94l-2.38-.96a.6.6 0 0 0-.73.27l-1.91 3.3a.6.6 0 0 0 .14.78L4.6 11.06a7.5 7.5 0 0 0 0 1.88l-2.02 1.57a.6.6 0 0 0-.14.78l1.91 3.3c.13.22.4.32.64.23l2.38-.96c.5.41 1.05.72 1.62.94l.36 2.54c.05.29.3.49.59.49H14c.29 0 .54-.2.59-.49l.36-2.54c.57-.23 1.12-.53 1.62-.94l2.38.96c.24.09.51-.01.64-.23l1.91-3.3a.6.6 0 0 0-.14-.78l-2.02-1.57z"/><circle cx="12" cy="12" r="3.5"/></g></svg>
+        </div>
+        <div class="legend-label">Settings</div>
+
+        <!-- Views (camera) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="8" width="14" height="9" rx="2" fill="none" stroke="#fff" stroke-width="2"/>
+            <rect x="8" y="6" width="8" height="3" rx="1.5" ry="1.5" fill="none" stroke="#fff" stroke-width="2"/>
+            <circle cx="12" cy="12.5" r="3" fill="none" stroke="#fff" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="legend-label">Views</div>
+      </div>
+    </div>
+  <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center;">
+    v1.0.0
   </div>
   <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <!-- Map modal overlay -->
@@ -348,6 +448,87 @@
           setTimeout(()=>{ window.location.href = href; }, 180);
         });
       }
+        // AR floating button triggers existing AR flow
+        const toAR = document.getElementById('toAR');
+        if (toAR) {
+          toAR.addEventListener('click', () => {
+            const arBtn = document.getElementById('arButton');
+            if (arBtn) arBtn.click();
+          });
+        }
+  // Legend button toggles popup below it
+        const toLegend = document.getElementById('toLegend');
+        const legendPopup = document.getElementById('legendPopup');
+        if (toLegend && legendPopup) {
+          const placePopup = () => {
+            // Position just under the legend button
+            const btnRect = toLegend.getBoundingClientRect();
+            const popup = legendPopup;
+            popup.style.left = Math.max(12, btnRect.right - popup.offsetWidth) + 'px';
+            popup.style.top = (btnRect.bottom + 10) + 'px';
+          };
+          const openPopup = () => {
+            legendPopup.style.display = 'block';
+            // Wait a frame for dimensions then place and animate open
+            requestAnimationFrame(() => {
+              placePopup();
+              legendPopup.classList.add('open');
+            });
+          };
+          const closePopup = () => {
+            legendPopup.classList.remove('open');
+            setTimeout(()=>{ legendPopup.style.display = 'none'; }, 180);
+          };
+          toLegend.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = legendPopup.classList.contains('open');
+            if (isOpen) closePopup(); else openPopup();
+          });
+          document.addEventListener('click', (e) => {
+            if (!legendPopup.contains(e.target) && e.target !== toLegend) {
+              if (legendPopup.classList.contains('open')) closePopup();
+            }
+          });
+          window.addEventListener('resize', () => { if (legendPopup.classList.contains('open')) placePopup(); });
+        }
+
+        // Visibility button toggles popup below it
+        const toVisibility = document.getElementById('toVisibility');
+        const visibilityPopup = document.getElementById('visibilityPopup');
+        if (toVisibility && visibilityPopup) {
+          const placeVisPopup = () => {
+            const btnRect = toVisibility.getBoundingClientRect();
+            const popup = visibilityPopup;
+            const rightOfBtn = btnRect.right + 10;
+            const centeredTop = btnRect.top + (btnRect.height / 2) - (popup.offsetHeight / 2);
+            const clampedLeft = Math.max(12, Math.min(rightOfBtn, window.innerWidth - popup.offsetWidth - 12));
+            const clampedTop = Math.max(12, Math.min(centeredTop, window.innerHeight - popup.offsetHeight - 12));
+            popup.style.left = clampedLeft + 'px';
+            popup.style.top = clampedTop + 'px';
+          };
+          const openVis = () => {
+            visibilityPopup.style.display = 'block';
+            requestAnimationFrame(() => {
+              placeVisPopup();
+              visibilityPopup.classList.add('open');
+            });
+          };
+          const closeVis = () => {
+            visibilityPopup.classList.remove('open');
+            setTimeout(()=>{ visibilityPopup.style.display = 'none'; }, 180);
+          };
+          toVisibility.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = visibilityPopup.classList.contains('open');
+            if (isOpen) closeVis(); else openVis();
+          });
+          document.addEventListener('click', (e) => {
+            if (!visibilityPopup.contains(e.target) && e.target !== toVisibility) {
+              if (visibilityPopup.classList.contains('open')) closeVis();
+            }
+          });
+          window.addEventListener('resize', () => { if (visibilityPopup.classList.contains('open')) placeVisPopup(); });
+        }
     });
     init();
   </script>

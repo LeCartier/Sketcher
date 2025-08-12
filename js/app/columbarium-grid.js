@@ -333,6 +333,15 @@ canvas.addEventListener('pointerdown', async (e) => {
   const x = e.clientX - rect.left; const y = e.clientY - rect.top;
   pointerDownPos = { x, y };
 
+  // Middle-click always pans, regardless of what's under the cursor
+  if (e.button === 1) {
+    e.preventDefault();
+    isPanning = true; panPointerId = e.pointerId; startPanX = x - offsetX; startPanY = y - offsetY;
+    canvas.setPointerCapture(e.pointerId);
+    canvas.classList.add('grabbing');
+    return;
+  }
+
   // Overlay interactions first
   if (expandedId) {
     const t = tiles.find(tt => tt.id === expandedId);
@@ -353,8 +362,8 @@ canvas.addEventListener('pointerdown', async (e) => {
           if (newName && newName.trim().length) { await localStore.updateSceneName(t.id, { name: newName.trim() }); await loadTiles(); draw(); }
           return;
         }
-        // Inside overlay: treat as potential toggle on pointerup
-        if (x>=o.x && x<=o.x+o.w && y>=o.y && y<=o.y+o.h) {
+        // Inside overlay: treat as potential toggle on pointerup (left-click only)
+        if (e.button === 0 && x>=o.x && x<=o.x+o.w && y>=o.y && y<=o.y+o.h) {
           dragTile = t; canvas.setPointerCapture(e.pointerId); return;
         }
       }
@@ -384,8 +393,8 @@ canvas.addEventListener('pointerdown', async (e) => {
     }
   }
 
-  // Otherwise start panning on empty space
-  if (e.button === 1 || e.button === 0) {
+  // Otherwise start panning on empty space (left-drag also pans if not on tile)
+  if (e.button === 0) {
     isPanning = true; panPointerId = e.pointerId; startPanX = x - offsetX; startPanY = y - offsetY; canvas.setPointerCapture(e.pointerId); canvas.classList.add('grabbing');
   }
 });

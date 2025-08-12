@@ -53,7 +53,10 @@ export async function init() {
 				const el = document.getElementById('version-badge');
 				if (el) el.textContent = `v${v.version} — ${v.date}`;
 			}
-		} catch {}
+		} catch {
+			const el = document.getElementById('version-badge');
+			if (el && !el.textContent) el.textContent = 'v1.0.0';
+		}
 	})();
 
 		async function loadWebXRPolyfillIfNeeded() {
@@ -183,7 +186,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const gridColorPicker = document.getElementById('gridColorPicker');
 	const uploadBtn=document.getElementById('uploadModel');
 	const fileInput=document.getElementById('modelInput');
-	const uploadStatus=document.getElementById('uploadStatus');
+	const placingPopup=document.getElementById('placingPopup');
+	const placingName=document.getElementById('placingName');
+	const placingCancel=document.getElementById('placingCancel');
 	const addFloorBtn=document.getElementById('addFloor');
 	const addWallBtn=document.getElementById('addWall');
 	const objectList=document.getElementById('objectList');
@@ -357,8 +362,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			return;
 		}
 if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCameraView('perspective'));
-		// Use orthographic for Plan/N/E/S/W, perspective for Axon
-		let useOrtho = ['plan','north','south','east','west'].includes(type);
+		// Use orthographic for Plan/N/E/S/W/Axon; orbiting will switch back to perspective
+		let useOrtho = ['plan','north','south','east','west','axon'].includes(type);
 		if (useOrtho) {
 			cameraType = 'orthographic';
 			const aspect = window.innerWidth / window.innerHeight;
@@ -404,6 +409,12 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					up = new THREE.Vector3(0,1,0);
 					look = center;
 					break;
+				case 'axon':
+					dist = Math.max(size.x, size.y, size.z) * 1.5 || 10;
+					pos = new THREE.Vector3(center.x + dist, center.y + dist, center.z + dist);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
 			}
 			orthoCamera.position.copy(pos);
 			orthoCamera.up.copy(up);
@@ -415,28 +426,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			tweenCamera(camera, orthoCamera, 600, () => { camera = orthoCamera; });
 		} else {
 			cameraType = 'perspective';
-			const box = new THREE.Box3();
-			objects.forEach(o => box.expandByObject(o));
-			const center = box.getCenter(new THREE.Vector3());
-			const size = box.getSize(new THREE.Vector3());
-			let pos, up, look, dist;
-			switch(type) {
-				case 'axon':
-					dist = Math.max(size.x, size.y, size.z) * 1.5 || 10;
-					pos = new THREE.Vector3(center.x + dist, center.y + dist, center.z + dist);
-					up = new THREE.Vector3(0,1,0);
-					look = center;
-					break;
-			}
-			// Smoothly transition from current camera to axon target
-			let targetCam = camera.clone();
-			targetCam.position.copy(pos);
-			targetCam.up.copy(up);
-			targetCam.lookAt(look);
-			targetCam.updateProjectionMatrix();
-			controls.target.copy(center);
-			controls.update();
-			tweenCamera(camera, targetCam, 600, () => { camera = targetCam; controls.object = camera; controls.update(); });
+			// Currently no other perspective-only quick views
 		}
 	// Always render with current camera
 	const originalRender = renderer.render.bind(renderer);
@@ -512,7 +502,33 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	// Upload model
 	uploadBtn.addEventListener('click',()=>fileInput.click());
-	fileInput.addEventListener('change',e=>{ const file=e.target.files[0]; if(!file)return; const url=URL.createObjectURL(file); const loader=file.name.endsWith('.obj')?new OBJLoader():new GLTFLoader(); loader.load(url,gltf=>{ loadedModel=gltf.scene||gltf; uploadStatus.textContent=file.name; URL.revokeObjectURL(url); }); });
+	fileInput.addEventListener('change',e=>{
+		const file=e.target.files[0]; if(!file)return;
+		const url=URL.createObjectURL(file);
+		const loader=file.name.toLowerCase().endsWith('.obj')?new OBJLoader():new GLTFLoader();
+		loader.load(url,gltf=>{
+			loadedModel=gltf.scene||gltf;
+			// Show placing popup with file name
+			if (placingName) placingName.textContent = file.name;
+			if (placingPopup) placingPopup.style.display = 'block';
+			URL.revokeObjectURL(url);
+		});
+	});
+
+	// Cancel current placement
+	if (placingCancel) placingCancel.addEventListener('click', ()=>{
+		loadedModel = null;
+		if (fileInput) fileInput.value = '';
+		if (placingPopup) placingPopup.style.display = 'none';
+	});
+	// Also allow Escape to cancel placement
+	window.addEventListener('keydown', (e)=>{
+		if (e.key === 'Escape' && loadedModel) {
+			loadedModel = null;
+			if (fileInput) fileInput.value = '';
+			if (placingPopup) placingPopup.style.display = 'none';
+		}
+	});
 
 	// OBJ export (now in utilities popup)
 	// Export Scene button wiring (only in Utilities group)
@@ -570,7 +586,20 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 		getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
 			const importPanelOpen = importGroup && importGroup.classList.contains('open');
-			if((mode==='import' || importPanelOpen) && loadedModel){ const hits=raycaster.intersectObjects(selectableTargets(),true); let dropPoint = null; if (hits.length) dropPoint = hits[0].point.clone().add(new THREE.Vector3(0, SURFACE_EPS, 0)); else dropPoint = intersectGround(); if(!dropPoint) return; const clone=loadedModel.clone(); clone.position.copy(dropPoint); addObjectToScene(clone); /* single placement */ loadedModel = null; if (fileInput) fileInput.value = ''; if (uploadStatus) uploadStatus.textContent = 'No model selected'; }
+			if((mode==='import' || importPanelOpen) && loadedModel){
+				const hits=raycaster.intersectObjects(selectableTargets(),true);
+				let dropPoint = null;
+				if (hits.length) dropPoint = hits[0].point.clone().add(new THREE.Vector3(0, SURFACE_EPS, 0));
+				else dropPoint = intersectGround();
+				if(!dropPoint) return;
+				const clone=loadedModel.clone();
+				clone.position.copy(dropPoint);
+				addObjectToScene(clone);
+				// single placement complete
+				loadedModel = null;
+				if (fileInput) fileInput.value = '';
+				if (placingPopup) placingPopup.style.display = 'none';
+			}
 		else if(mode==='edit'){
 			if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); controls.enabled=false; return; }
 			if(e.pointerType==='touch'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
