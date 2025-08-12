@@ -83,7 +83,9 @@ export async function init() {
 	let xrLocalSpace = null;
 
 	// Grid & lights
-	const grid = new THREE.GridHelper(20, 20, 0x888888, 0xcccccc);
+	const GRID_SIZE = 20;
+	const GRID_DIVS = 20;
+	let grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, 0xffffff, 0xffffff);
 	grid.receiveShadow = true; scene.add(grid);
 	scene.add(new THREE.AmbientLight(0xffffff,0.5));
 	const dirLight=new THREE.DirectionalLight(0xffffff,0.8); dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
@@ -216,6 +218,48 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
 			div.append(cb,span); objectList.append(div);
 		});
+	}
+
+	// Settings: background and grid colors (with persistence)
+	function disposeGrid(g){
+		try { g.geometry && g.geometry.dispose && g.geometry.dispose(); } catch {}
+		try {
+			if (Array.isArray(g.material)) g.material.forEach(m=>m && m.dispose && m.dispose());
+			else g.material && g.material.dispose && g.material.dispose();
+		} catch {}
+	}
+	function setGridColor(hex){
+		if (!grid) return;
+		const wasVisible = grid.visible;
+		const pos = grid.position.clone();
+		const rot = grid.rotation.clone();
+		scene.remove(grid);
+		disposeGrid(grid);
+		grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, hex, hex);
+		grid.receiveShadow = true;
+		grid.position.copy(pos);
+		grid.rotation.copy(rot);
+		grid.visible = wasVisible;
+		scene.add(grid);
+	}
+	// Apply saved or default colors on startup
+	try {
+		const savedBg = localStorage.getItem('sketcher.bgColor');
+		const bg = savedBg || (bgColorPicker ? bgColorPicker.value : '#1e1e1e');
+		renderer.setClearColor(bg);
+		if (bgColorPicker && savedBg) bgColorPicker.value = savedBg;
+		const savedGrid = localStorage.getItem('sketcher.gridColor');
+		if (gridColorPicker && savedGrid) gridColorPicker.value = savedGrid;
+		if (savedGrid) setGridColor(savedGrid); else if (gridColorPicker) setGridColor(gridColorPicker.value || '#ffffff');
+	} catch {}
+	// Live update handlers
+	if (bgColorPicker){
+		bgColorPicker.addEventListener('input',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} });
+		bgColorPicker.addEventListener('change',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} });
+	}
+	if (gridColorPicker){
+		gridColorPicker.addEventListener('input',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
+		gridColorPicker.addEventListener('change',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
 	}
 
 	// Mode change + toolbox
