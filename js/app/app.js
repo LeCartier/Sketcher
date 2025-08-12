@@ -287,7 +287,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				if (typeof scenesDrawer !== 'undefined' && scenesDrawer) { scenesDrawer.classList.remove('open'); scenesDrawer.setAttribute('aria-hidden','true'); }
 			}
 			if (showImport){ if (importGroup && toggleImportBtn){ importGroup.classList.remove('open'); importGroup.setAttribute('aria-hidden','true'); toggleImportBtn.setAttribute('aria-pressed','false'); } }
-			toolbox.style.top = `${uiContainer.offsetTop+uiContainer.offsetHeight+10}px`;
+			// Pin toolbox centered vertically on the left; keep collapsible animations intact
+			toolbox.style.position = 'fixed';
+			toolbox.style.left = '24px';
+			toolbox.style.top = '50%';
+			toolbox.style.transform = 'translateY(-50%)';
 		}
 		// Toolbox: collapsible groups, settings panel floats right
 		function closeAllPanels() {
@@ -766,5 +770,24 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	// Map Import wiring
 	setupMapImport({ THREE, renderer, fallbackMaterial: material, addObjectToScene, elements: { backdrop: mapBackdrop, container: mapContainer, searchInput: mapSearchInput, searchBtn: mapSearchBtn, closeBtn: mapCloseBtn, useFlatBtn: mapUseFlatBtn, useTopoBtn: mapUseTopoBtn, drawToggleBtn: mapDrawToggle, importBtn: mapImportBtn } });
+
+	// Deep-link load by sceneId from query string
+	(async () => {
+		try {
+			const params = new URLSearchParams(location.search);
+			const sceneId = params.get('sceneId');
+			if (sceneId) {
+				const rec = await localStore.getScene(sceneId);
+				if (rec && rec.json) {
+					clearSceneObjects();
+					const loader = new THREE.ObjectLoader();
+					const root = loader.parse(rec.json);
+					(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+					updateCameraClipping();
+					currentSceneId = rec.id; currentSceneName = rec.name || 'Untitled';
+				}
+			}
+		} catch {}
+	})();
 }
 

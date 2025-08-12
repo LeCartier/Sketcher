@@ -35,7 +35,7 @@
 </head>
 <body>
   <!-- Toolbox-like controls for Columbarium (consistent with editor) -->
-  <div id="cToolbox" style="position:absolute; top:80px; left:24px; z-index:11; background:rgba(255,255,255,0.96); box-shadow:0 2px 12px rgba(0,0,0,0.10); padding:8px 4px; width:56px; border-radius:14px; border:1px solid #e0e0e0; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:4px; text-align:center;">
+  <div id="cToolbox">
     <button id="cToggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
       <span class="sr-only">Import</span>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
@@ -70,7 +70,24 @@
 
   <!-- Floating button back to editor - top-left for consistency -->
   <a id="toEditorFloating" class="floating-nav nav-top-right" href="./index.html" title="Back to Editor" aria-label="Back to Editor">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+    <!-- Clean perspective grid icon -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Outer trapezoid (grid boundary) -->
+        <path d="M9 8 L15 8 L20 18 L4 18 Z" stroke-width="1.4" opacity=".95"/>
+        <!-- Horizontal grid lines (foreshortened) -->
+        <path d="M8 10 H16" stroke-width="1.2" opacity=".9"/>
+        <path d="M7 12 H17" stroke-width="1.1" opacity=".85"/>
+        <path d="M6 14 H18" stroke-width="1.05" opacity=".8"/>
+        <path d="M5 16 H19" stroke-width="1" opacity=".75"/>
+        <!-- Vertical convergence lines to top center -->
+        <path d="M4 18 L9 8" stroke-width="1" opacity=".8"/>
+        <path d="M8 18 L11 8" stroke-width="1" opacity=".8"/>
+        <path d="M12 18 L12 8" stroke-width="1" opacity=".8"/>
+        <path d="M16 18 L13 8" stroke-width="1" opacity=".8"/>
+        <path d="M20 18 L15 8" stroke-width="1" opacity=".8"/>
+      </g>
+    </svg>
   </a>
   <script type="module">
     // Page fade-in/out

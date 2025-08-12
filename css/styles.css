@@ -15,6 +15,8 @@
 }
 body { margin: 0; overflow: hidden; }
 canvas { display: block; touch-action: none; }
+/* Shared variables */
+:root { --toolbox-width: 56px; }
 /* Page fade transitions */
 html, body { height: 100%; }
 body { opacity: 0; transition: opacity 220ms ease; }
@@ -37,7 +39,7 @@ body.page-leave { opacity: 0; }
 	box-shadow: 0 2px 12px rgba(0,0,0,0.08);
 }
 #ui-container { top: 24px; left: 24px; right: auto; max-width: 320px; z-index: 12; }
-#toolbox { display: none; top: 80px; left: 24px; right: auto; z-index: 11; }
+#toolbox { display: none; left: 24px; right: auto; z-index: 11; position: fixed; top: 50%; transform: translateY(-50%); }
 #visibility-container { bottom: 24px; left: 24px; right: auto; max-width: 320px; z-index: 10; }
 .leaflet-container { z-index: 1; }
 #mapModalBackdrop { z-index: 1000; }
@@ -56,6 +58,13 @@ body > canvas { position: fixed; inset: 0; }
 	}
 	#ui-container { top: 0; }
 	#visibility-container { bottom: 0; }
+	/* On small screens, dock toolboxes near the top-left to avoid overlap */
+	#toolbox, #cToolbox {
+		position: fixed;
+		top: 20px;
+		left: 12px;
+		transform: none;
+	}
 	button, select, input { font-size: 14px !important; }
 }
 /* Icon button styling for toolbar icons */
@@ -95,8 +104,9 @@ body > canvas { position: fixed; inset: 0; }
 /* Shrink toolbox to icons only */
 #toolbox {
 	display: none;
-	position: absolute;
-	top: 80px;
+	position: fixed;
+	top: 50%;
+	transform: translateY(-50%);
 	left: 24px;
 	z-index: 11;
 	background: rgba(255,255,255,0.96);
@@ -104,7 +114,8 @@ body > canvas { position: fixed; inset: 0; }
 	padding: 8px 4px;
 	min-width: 0;
 	max-width: none;
-	width: 56px;
+	width: var(--toolbox-width);
+	box-sizing: border-box;
 	border-radius: 14px;
 	border: 1px solid #e0e0e0;
 	display: flex;
@@ -205,6 +216,30 @@ body > canvas { position: fixed; inset: 0; }
 }
 
 /* Columbarium toolbox icon alignment */
+#cToolbox {
+	position: fixed;
+	top: 50%;
+	transform: translateY(-50%);
+	left: 24px;
+	z-index: 11;
+	background: rgba(255,255,255,0.96);
+	box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+	padding: 8px 4px;
+	width: var(--toolbox-width);
+	box-sizing: border-box;
+	min-width: 0;
+	max-width: none;
+	border-radius: 14px;
+	border: 1px solid #e0e0e0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 4px;
+	text-align: center;
+	max-height: none;
+	overflow: visible;
+}
 #cToolbox .icon-btn {
 	margin: 0 auto;
 	width: 36px;
