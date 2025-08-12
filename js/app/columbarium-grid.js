@@ -116,7 +116,7 @@ async function createOverlay3D(tile, rect){
     openBtn.addEventListener('click', () => {
       const url = new URL('./index.html', location.href);
       url.searchParams.set('sceneId', tile.id);
-      document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = url.toString(); }, 180);
+      document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = url.toString(); }, 170);
     });
     delBtn.addEventListener('click', async () => {
       const ok = confirm('Delete this scene?'); if (!ok) return;
@@ -604,7 +604,7 @@ canvas.addEventListener('pointerdown', async (e) => {
           const url = new URL('./index.html', location.href);
           url.searchParams.set('sceneId', t.id);
           document.body.classList.add('page-leave');
-          setTimeout(()=>{ window.location.href = url.toString(); }, 180);
+          setTimeout(()=>{ window.location.href = url.toString(); }, 170);
           return;
         }
         // Delete button (only in expanded view)

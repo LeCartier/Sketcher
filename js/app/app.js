@@ -1126,6 +1126,21 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	// Map Import wiring
 	setupMapImport({ THREE, renderer, fallbackMaterial: material, addObjectToScene, elements: { backdrop: mapBackdrop, container: mapContainer, searchInput: mapSearchInput, searchBtn: mapSearchBtn, closeBtn: mapCloseBtn, useFlatBtn: mapUseFlatBtn, useTopoBtn: mapUseTopoBtn, drawToggleBtn: mapDrawToggle, importBtn: mapImportBtn } });
 
+	// Preserve current editor scene when navigating to Columbarium (session draft)
+	(() => {
+		try {
+			const toCol = document.getElementById('toColumbarium');
+			if (toCol) {
+				toCol.addEventListener('click', () => {
+					try {
+						const json = serializeScene();
+						sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json }));
+					} catch {}
+				}, { capture: false });
+			}
+		} catch {}
+	})();
+
 	// Deep-link load by sceneId from query string
 	(async () => {
 		try {
@@ -1140,7 +1155,25 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
 					updateCameraClipping();
 					currentSceneId = rec.id; currentSceneName = rec.name || 'Untitled';
+					// Opening a specific scene replaces any session draft
+					try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
 				}
+			} else {
+				// No explicit scene selected: attempt to restore session draft
+				try {
+					const raw = sessionStorage.getItem('sketcher:sessionDraft');
+					if (raw) {
+						const { json } = JSON.parse(raw);
+						if (json) {
+							clearSceneObjects();
+							const loader = new THREE.ObjectLoader();
+							const root = loader.parse(json);
+							(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+							updateCameraClipping();
+							// Do not set currentSceneId for session drafts
+						}
+					}
+				} catch {}
 			}
 		} catch {}
 	})();

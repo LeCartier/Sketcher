@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="./css/styles.css" />
 </head>
 <body>
+  <div id="pageFade" aria-hidden="true"></div>
   <script type="importmap">
     {
       "imports": {
@@ -309,6 +310,16 @@
       </g>
     </svg>
   </button>
+  <!-- Floating AnArch trigger -->
+  <button id="toAnArch" class="floating-nav nav-top-right-5" title="AnArch Glitch" aria-label="AnArch Glitch" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 4 L5 20 M12 4 L19 20 M7.5 15 H16.5"/>
+        <path d="M3 8 L7 8" opacity=".5"/>
+        <path d="M17 10 L21 10" opacity=".5"/>
+      </g>
+    </svg>
+  </button>
   <!-- Visibility popup -->
   <div id="visibilityPopup" style="display:none;">
     <div class="visibility-header"><strong data-i18n="visibility.title">Visibility</strong></div>
@@ -499,20 +510,30 @@
       </div>
   </div>
   <script type="module">
-    import { init } from './js/app/app.js';
+  import { init } from './js/app/app.js';
     // Fade-in on load
     document.addEventListener('DOMContentLoaded', () => {
       requestAnimationFrame(()=>document.body.classList.add('page-ready'));
       const link = document.getElementById('toColumbarium');
-      if (link) {
+    if (link) {
         link.addEventListener('click', (e) => {
           e.preventDefault();
           const href = link.getAttribute('href');
-          document.body.classList.add('page-leave');
-          setTimeout(()=>{ window.location.href = href; }, 180);
+      document.body.classList.add('page-leave');
+      setTimeout(()=>{ window.location.href = href; }, 170);
         });
       }
-        // AR floating button triggers existing AR flow
+        // AnArch glitch button
+        (async () => {
+          try {
+            const mod = await import('./js/app/anarch.js');
+            const toAnArch = document.getElementById('toAnArch');
+            if (mod && mod.triggerAnArchSequence && toAnArch) {
+              toAnArch.addEventListener('click', () => { try { mod.triggerAnArchSequence(); } catch {} });
+            }
+          } catch {}
+        })();
+  // AR floating button triggers existing AR flow
         const toAR = document.getElementById('toAR');
         if (toAR) {
           toAR.addEventListener('click', () => {

@@ -34,6 +34,7 @@
   </script>
 </head>
 <body>
+  <div id="pageFade" aria-hidden="true"></div>
   <!-- Toolbox-like controls for Columbarium (consistent with editor) -->
   <div id="cToolbox">
     <div id="cTopIcons">
@@ -127,6 +128,17 @@
       </g>
     </svg>
   </a>
+  <!-- Floating AnArch trigger button -->
+  <button id="toAnArch" class="floating-nav nav-top-right-5" title="AnArch Glitch" aria-label="AnArch Glitch" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <!-- Stylized A with shard lines -->
+      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 4 L5 20 M12 4 L19 20 M7.5 15 H16.5"/>
+        <path d="M3 8 L7 8" opacity=".5"/>
+        <path d="M17 10 L21 10" opacity=".5"/>
+      </g>
+    </svg>
+  </button>
   <script type="module">
     // Page fade-in/out
     document.addEventListener('DOMContentLoaded', () => {
@@ -135,8 +147,8 @@
       hooks.forEach(el => el.addEventListener('click', (e) => {
         e.preventDefault();
         const href = el.getAttribute('href');
-        document.body.classList.add('page-leave');
-        setTimeout(()=>{ window.location.href = href; }, 180);
+  document.body.classList.add('page-leave');
+  setTimeout(()=>{ window.location.href = href; }, 170);
       }));
     });
   // Load modules: preview/import wiring and interactive grid
@@ -155,6 +167,12 @@
   }
   const cCenterView = document.getElementById('cCenterView');
   if (cCenterView) cCenterView.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('columbarium:center')));
+  // AnArch trigger
+  (async () => { try {
+    const mod = await import('./js/app/anarch.js');
+    const toAnArch = document.getElementById('toAnArch');
+    if (mod && mod.triggerAnArchSequence && toAnArch) toAnArch.addEventListener('click', () => { try { mod.triggerAnArchSequence(); } catch {} });
+  } catch {} })();
   // Zones toolbox wiring
   const cToggleZones = document.getElementById('cToggleZones');
   const cZonesGroup = document.getElementById('cZonesGroup');

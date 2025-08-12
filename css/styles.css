@@ -31,6 +31,11 @@ canvas { display: block; touch-action: none; }
 	min-width: 160px;
 	z-index: 120;
 }
+/* Ensure custom pinch/zoom works on Columbarium canvas */
+#gridStage {
+	touch-action: none;
+	-ms-touch-action: none; /* IE/Edge legacy */
+}
 #placingPopup .placing-title {
 	font-family: sans-serif;
 	font-size: 11px;
@@ -62,11 +67,18 @@ canvas { display: block; touch-action: none; }
 }
 #placingPopup .placing-cancel:hover { background: #e8e8e8; }
 
-/* Page fade transitions */
+/* Page fade transitions: fade through black using an overlay */
 html, body { height: 100%; }
-body { opacity: 0; transition: opacity 220ms ease; }
-body.page-ready { opacity: 1; }
-body.page-leave { opacity: 0; }
+#pageFade {
+	position: fixed;
+	inset: 0;
+	background: #000;
+	opacity: 0; /* start transparent so site is visible even if JS fails */
+	pointer-events: none;
+	z-index: 99999;
+	transition: opacity 160ms ease;
+}
+body.page-leave #pageFade { opacity: 1; }
 /* Unify corner radius for all main UI panels */
 #ui-container, #toolbox {
 	position: absolute;
@@ -91,12 +103,113 @@ body.page-leave { opacity: 0; }
 #mapModalBackdrop { z-index: 1000; }
 canvas { z-index: 0; }
 
+/* AnArch glitch overlay */
+#anarchOverlay {
+	position: fixed;
+	inset: 0;
+	z-index: 100000;
+	pointer-events: auto;
+	opacity: 0; /* safe default */
+	/* Fade in immediately, fade out after the text sequence completes */
+	animation: aoOverlayIn 140ms ease forwards, aoOverlayOut 220ms ease 3800ms forwards;
+}
+#anarchOverlay .ao-bg {
+	position: absolute; inset: 0; background: #000; opacity: 0.95;
+}
+#anarchOverlay .ao-scanlines {
+	position: absolute; inset: 0; background-image:
+	  linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+	background-size: 100% 3px; mix-blend-mode: screen; opacity: .5;
+	animation: aoVShift 600ms linear infinite;
+}
+#anarchOverlay.crt { overflow: hidden; }
+#anarchOverlay.crt::before {
+	content: '';
+	position: absolute; inset: -4%;
+	background: radial-gradient(ellipse at center, rgba(255,255,255,0.06) 0%, rgba(0,0,0,0.15) 70%, rgba(0,0,0,0.6) 100%);
+	pointer-events: none;
+	transform: scale(1.02);
+	filter: blur(0.3px);
+}
+#anarchOverlay .ao-vignette { position:absolute; inset:-2%; pointer-events:none; box-shadow: inset 0 0 180px rgba(0,0,0,0.75); }
+#anarchOverlay .ao-flash { position:absolute; inset:0; background: radial-gradient(circle at center, rgba(255,255,255,0.8), rgba(255,255,255,0) 60%); opacity: 0; pointer-events:none; }
+#anarchOverlay.ao-burst .ao-flash { animation: aoFlash 200ms ease; }
+#anarchOverlay.ao-burst .ao-center { filter: drop-shadow(0 10px 32px rgba(0,150,255,0.5)); }
+#anarchOverlay .ao-center {
+	position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+	display: inline-block; white-space: nowrap; overflow: visible;
+	filter: drop-shadow(0 8px 24px rgba(0,0,0,.6));
+	transition: filter 120ms ease;
+}
+#anarchOverlay .ao-line { position: relative; display: inline-block; }
+#anarchOverlay .ao-base { display: inline-block; }
+#anarchOverlay .ao-ext, #anarchOverlay .ao-y { position: absolute; left: calc(100% + 0.02em); }
+#anarchOverlay .ao-word { position: relative; display: inline-block; font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif; font-weight: 900; letter-spacing: 0.02em; }
+#anarchOverlay .ao-base { font-size: clamp(42px, 8vw, 120px); color: #fff; text-shadow: 0 0 18px rgba(255,255,255,0.15), 0 0 48px rgba(0,153,255,0.25); }
+#anarchOverlay .ao-ext { font-size: clamp(42px, 8vw, 120px); color: #66f; opacity: 0; transform: translateY(-120%);
+	animation: aoExtSlideIn 900ms 900ms cubic-bezier(.2,.9,.1,1) forwards, aoExtSlideOut 420ms 2200ms cubic-bezier(.4,.0,.2,1) forwards; }
+#anarchOverlay .ao-y { font-size: clamp(42px, 8vw, 120px); color: #f55; opacity: 0; transform: translateY(-160%);
+	animation: aoYDrop 600ms 2700ms cubic-bezier(.2,.9,.1,1) forwards; }
+
+/* RGB split glitch on base word */
+#anarchOverlay .ao-base::before, #anarchOverlay .ao-base::after {
+	content: attr(data-text);
+	position: absolute; left: 0; top: 0; color: #0ff; mix-blend-mode: screen; opacity: .25; filter: blur(0.6px);
+}
+#anarchOverlay .ao-base::after { color: #f0f; transform: translate(0,0); }
+body.anarch-active .ao-base { animation: aoGlitch 1200ms steps(2) 2; }
+
+/* Keyframes */
+@keyframes aoOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes aoOverlayOut { 99% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes aoVShift { 0% { background-position-y: 0; } 100% { background-position-y: 3px; } }
+@keyframes aoFlash { from { opacity: 0.9; } to { opacity: 0; } }
+@keyframes aoGlitch {
+	0% { transform: translate(0,0); }
+	10% { transform: translate(-2px, 0.5px); }
+	20% { transform: translate(1.5px, -1px) skewX(0.5deg); }
+	30% { transform: translate(-1px, 1px); }
+	40% { transform: translate(2px, -0.5px); }
+	50% { transform: translate(-1.5px, 0.5px); }
+	60% { transform: translate(0.5px, -1px); }
+	70% { transform: translate(-0.5px, 0.5px); }
+	80% { transform: translate(1px, -0.5px); }
+	90% { transform: translate(-1px, 0.5px); }
+	100% { transform: translate(0,0); }
+}
+@keyframes aoExtSlideIn { from { opacity: 0; transform: translateY(-120%); }
+	60% { opacity: 1; transform: translateY(0); }
+	100% { opacity: 1; transform: translateY(0); } }
+@keyframes aoExtSlideOut { from { opacity: 1; transform: translateY(0); }
+	100% { opacity: 0; transform: translateY(-120%); } }
+@keyframes aoYDrop { from { opacity: 0; transform: translateY(-160%); }
+  60% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 1; transform: translateY(0); } }
+
+/* Subtle freeze/jitter on underlying canvas during sequence */
+body.anarch-active canvas, body.anarch-active #gridStage {
+		will-change: transform, filter;
+		animation: aoFreezeJitter 110ms steps(1) 24;
+		filter: brightness(.98) contrast(1.05) saturate(.95);
+}
+@keyframes aoFreezeJitter {
+		0% { transform: translate(0,0); }
+		25% { transform: translate(0.5px, 0); }
+		50% { transform: translate(-0.5px, 0); }
+		75% { transform: translate(0, 0.5px); }
+		100% { transform: translate(0,0); }
+}
+
+/* Floating-button slot for AnArch trigger */
+.nav-top-right-5 { position: fixed; top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 224px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+
 /* Prevent panels from blocking clicks outside their bounds */
 #toolbox, #ui-container { pointer-events: auto; }
 body > canvas { position: fixed; inset: 0; }
 #objectList div { display: flex; align-items: center; margin-bottom: 4px; }
 #objectList input[type="checkbox"] { margin-right: 6px; }
 #objectList span { flex: 1; cursor: pointer; }
+body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 @media (max-width: 600px) {
 	#ui-container {
 		left: 0; right: 0; max-width: 100vw; min-width: 0; padding: 6px; font-size: 12px;
