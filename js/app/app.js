@@ -2,6 +2,35 @@
 // Exports an init function executed by index.html
 
 export async function init() {
+	// Helper for smooth camera transition
+	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
+		const start = {
+			position: fromCam.position.clone(),
+			up: fromCam.up.clone(),
+			target: controls.target.clone(),
+		};
+		const end = {
+			position: toCam.position.clone(),
+			up: toCam.up.clone(),
+			target: controls.target.clone(),
+		};
+		let startTime = performance.now();
+		function animate() {
+			let t = Math.min(1, (performance.now() - startTime) / duration);
+			fromCam.position.lerpVectors(start.position, end.position, t);
+			fromCam.up.lerpVectors(start.up, end.up, t);
+			controls.target.lerpVectors(start.target, end.target, t);
+			fromCam.lookAt(controls.target);
+			fromCam.updateProjectionMatrix();
+			controls.update();
+			if (t < 1) {
+				requestAnimationFrame(animate);
+			} else if (onComplete) {
+				onComplete();
+			}
+		}
+		animate();
+	}
 		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
@@ -37,8 +66,10 @@ export async function init() {
 
 	// Scene
 	const scene = new THREE.Scene();
-	const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
+	let cameraType = 'perspective';
+	let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
 	camera.position.set(5,5,5); camera.lookAt(0,0,0);
+	let orthoCamera = null;
 	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true });
 	renderer.setSize(window.innerWidth, window.innerHeight);
 	renderer.shadowMap.enabled = true;
@@ -121,6 +152,8 @@ export async function init() {
 	transformControlsRotate.addEventListener('objectChange', () => { if(transformControlsRotate.object===multiSelectPivot) applyMultiDelta(); });
 
 	// UI refs
+const viewPerspectiveBtn = document.getElementById('viewPerspective');
+const viewAxonBtn = document.getElementById('viewAxon');
 	const uiContainer=document.getElementById('ui-container');
 	const modeSelect=document.getElementById('modeSelect');
 	const editUI=document.getElementById('edit-ui');
@@ -137,6 +170,13 @@ export async function init() {
 	const importGroup = document.getElementById('importGroup');
 	const toggleSettingsBtn = document.getElementById('toggleSettings');
 	const settingsGroup = document.getElementById('settingsGroup');
+	const toggleViewsBtn = document.getElementById('toggleViews');
+	const viewsGroup = document.getElementById('viewsGroup');
+	const viewPlanBtn = document.getElementById('viewPlan');
+	const viewNorthBtn = document.getElementById('viewNorth');
+	const viewSouthBtn = document.getElementById('viewSouth');
+	const viewEastBtn = document.getElementById('viewEast');
+	const viewWestBtn = document.getElementById('viewWest');
 	const bgColorPicker = document.getElementById('bgColorPicker');
 	const gridColorPicker = document.getElementById('gridColorPicker');
 	const uploadBtn=document.getElementById('uploadModel');
@@ -207,13 +247,13 @@ export async function init() {
 		}
 		// Toolbox: collapsible groups, settings panel floats right
 		function closeAllPanels() {
-			[primsGroup, drawCreateGroup, importGroup, utilsGroup, sceneManagerGroup].forEach(panel => {
+			[primsGroup, drawCreateGroup, importGroup, sceneManagerGroup, utilsGroup, viewsGroup].forEach(panel => {
 				if(panel) {
 					panel.classList.remove('open');
 					panel.setAttribute('aria-hidden','true');
 				}
 			});
-			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleUtilsBtn, toggleSceneManagerBtn].forEach(btn => {
+			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleSceneManagerBtn, toggleUtilsBtn, toggleViewsBtn].forEach(btn => {
 				if(btn) btn.setAttribute('aria-pressed','false');
 			});
 			// Hide settings panel
@@ -242,22 +282,144 @@ export async function init() {
 	if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
 	if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
 	if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
-	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
 	if (toggleSceneManagerBtn && sceneManagerGroup) togglePanel(toggleSceneManagerBtn, sceneManagerGroup);
+	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
+	if (toggleViewsBtn && viewsGroup) togglePanel(toggleViewsBtn, viewsGroup);
 	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
-	// Settings: background and grid color pickers
-	if (bgColorPicker) {
-		bgColorPicker.addEventListener('input', e => {
-			renderer.setClearColor(e.target.value);
-		});
+	// Camera view logic for standard views
+	function setCameraView(type) {
+		if (type === 'perspective') {
+			cameraType = 'perspective';
+			const box = new THREE.Box3();
+			objects.forEach(o => box.expandByObject(o));
+			const center = box.getCenter(new THREE.Vector3());
+			const size = box.getSize(new THREE.Vector3());
+			let dist = Math.max(size.x, size.y, size.z) * 1.5 || 10;
+			let pos = new THREE.Vector3(center.x + dist, center.y + dist, center.z + dist);
+			let up = new THREE.Vector3(0,1,0);
+			let look = center;
+			let perspCamera = camera.clone();
+			perspCamera.position.copy(pos);
+			perspCamera.up.copy(up);
+			perspCamera.lookAt(look);
+			perspCamera.updateProjectionMatrix();
+			controls.target.copy(center);
+			controls.update();
+			tweenCamera(camera, perspCamera, 600, () => { camera = perspCamera; controls.object = camera; controls.update(); });
+			return;
+		}
+if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCameraView('perspective'));
+		// Use orthographic for Plan/N/E/S/W, perspective for Axon
+		let useOrtho = ['plan','north','south','east','west'].includes(type);
+		if (useOrtho) {
+			cameraType = 'orthographic';
+			const aspect = window.innerWidth / window.innerHeight;
+			const box = new THREE.Box3();
+			objects.forEach(o => box.expandByObject(o));
+			const center = box.getCenter(new THREE.Vector3());
+			const size = box.getSize(new THREE.Vector3());
+			const orthoSize = Math.max(size.x, size.y, size.z) * 0.7 || 10;
+			orthoCamera = new THREE.OrthographicCamera(
+				-orthoSize * aspect, orthoSize * aspect,
+				orthoSize, -orthoSize,
+				-5000, 5000
+			);
+			let pos, up, look, dist;
+			switch(type) {
+				case 'plan':
+					dist = Math.max(size.x, size.y, size.z) * 1.2 || 10;
+					pos = new THREE.Vector3(center.x, center.y + dist, center.z);
+					up = new THREE.Vector3(0,1,0); // match axon navigation axis
+					look = center;
+					break;
+				case 'north':
+					dist = size.z * 1.2 || 10;
+					pos = new THREE.Vector3(center.x, center.y, box.min.z - dist);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
+				case 'south':
+					dist = size.z * 1.2 || 10;
+					pos = new THREE.Vector3(center.x, center.y, box.max.z + dist);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
+				case 'east':
+					dist = size.x * 1.2 || 10;
+					pos = new THREE.Vector3(box.max.x + dist, center.y, center.z);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
+				case 'west':
+					dist = size.x * 1.2 || 10;
+					pos = new THREE.Vector3(box.min.x - dist, center.y, center.z);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
+			}
+			orthoCamera.position.copy(pos);
+			orthoCamera.up.copy(up);
+			orthoCamera.lookAt(look);
+			orthoCamera.updateProjectionMatrix();
+			controls.object = orthoCamera;
+			controls.target.copy(center);
+			controls.update();
+			tweenCamera(camera, orthoCamera, 600, () => { camera = orthoCamera; });
+		} else {
+			cameraType = 'perspective';
+			const box = new THREE.Box3();
+			objects.forEach(o => box.expandByObject(o));
+			const center = box.getCenter(new THREE.Vector3());
+			const size = box.getSize(new THREE.Vector3());
+			let pos, up, look, dist;
+			switch(type) {
+				case 'axon':
+					dist = Math.max(size.x, size.y, size.z) * 1.5 || 10;
+					pos = new THREE.Vector3(center.x + dist, center.y + dist, center.z + dist);
+					up = new THREE.Vector3(0,1,0);
+					look = center;
+					break;
+			}
+			// Smoothly transition from current camera to axon target
+			let targetCam = camera.clone();
+			targetCam.position.copy(pos);
+			targetCam.up.copy(up);
+			targetCam.lookAt(look);
+			targetCam.updateProjectionMatrix();
+			controls.target.copy(center);
+			controls.update();
+			tweenCamera(camera, targetCam, 600, () => { camera = targetCam; controls.object = camera; controls.update(); });
+		}
+	// Always render with current camera
+	const originalRender = renderer.render.bind(renderer);
+	renderer.render = function(scene, cam) {
+		originalRender(scene, camera);
+	};
+	// Listen for orbit and revert to perspective
+	controls.addEventListener('start', () => {
+		if (cameraType === 'orthographic') {
+			cameraType = 'perspective';
+			let perspCamera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
+			perspCamera.position.copy(camera.position);
+			perspCamera.up.copy(camera.up);
+			perspCamera.quaternion.copy(camera.quaternion);
+			perspCamera.updateMatrixWorld();
+			perspCamera.updateProjectionMatrix();
+			controls.object = perspCamera;
+			controls.target.copy(controls.target);
+			controls.update();
+			tweenCamera(camera, perspCamera, 600, () => { camera = perspCamera; controls.object = camera; controls.update(); });
+		}
+	});
 	}
-	if (gridColorPicker && grid) {
-		gridColorPicker.addEventListener('input', e => {
-			grid.material.color.set(e.target.value);
-		});
-	}
+	if (viewAxonBtn) viewAxonBtn.addEventListener('click', () => setCameraView('axon'));
+	if (viewPlanBtn) viewPlanBtn.addEventListener('click', () => setCameraView('plan'));
+	if (viewNorthBtn) viewNorthBtn.addEventListener('click', () => setCameraView('north'));
+	if (viewSouthBtn) viewSouthBtn.addEventListener('click', () => setCameraView('south'));
+	if (viewEastBtn) viewEastBtn.addEventListener('click', () => setCameraView('east'));
+	if (viewWestBtn) viewWestBtn.addEventListener('click', () => setCameraView('west'));
 
-		// AR visibility
+	// AR visibility
 		if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
 		if (typeof applyAutoTouchMapping === 'function') applyAutoTouchMapping();
 	});
@@ -329,9 +491,18 @@ export async function init() {
 	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
 	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } }
 
-	const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (navigator.msMaxTouchPoints > 0);
-	function applyAutoTouchMapping(){ if(isTouchDevice){ controls.touches = (mode === 'edit') ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN }; } else { controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN }; } }
+	// Trackpad support: allow pan/rotate/zoom for laptop users
+	function isTrackpadEvent(e) {
+		// Heuristic: if pointerType is 'touch' but device is not mobile, likely a trackpad
+		return e.pointerType === 'touch' && !isTouchDevice && navigator.userAgent.match(/Mac|Windows/);
+	}
+	function applyAutoTouchMapping(){
+		// On laptops, allow two-finger drag to pan, pinch to zoom, single-finger drag to rotate
+		controls.touches = (mode === 'edit') ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
+	}
 	applyAutoTouchMapping();
+	// For non-touch devices, enable mouse drag for rotate, two-finger drag for pan, pinch for zoom
+	controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 
 	// Draw-create tools
 	let activeDrawTool=null; let isDragging=false; let startPt=new THREE.Vector3(); let previewMesh=null;

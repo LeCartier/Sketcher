@@ -249,6 +249,55 @@
         <input id="gridColorPicker" type="color" value="#cccccc" style="margin-left:8px;">
       </label>
     </div>
+    <!-- Views parent button and group -->
+    <button id="toggleViews" class="icon-btn toggle-btn" title="Views" aria-label="Views" aria-pressed="false">
+      <span class="sr-only">Views</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Line camera icon -->
+        <rect x="6" y="8" width="12" height="8" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+        <circle cx="12" cy="12" r="2.5" fill="none" stroke="#222" stroke-width="2"/>
+        <line x1="2" y1="12" x2="6" y2="12" stroke="#222" stroke-width="2"/>
+        <line x1="18" y1="12" x2="22" y2="12" stroke="#222" stroke-width="2"/>
+      </svg>
+    </button>
+    <div id="viewsGroup" class="collapse" aria-hidden="true">
+      <button id="viewAxon" class="icon-btn" title="Axonometric View (Ortho)" aria-label="Axonometric View (Ortho)">
+        <span class="sr-only">Axonometric View (Ortho)</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">A</text>
+        </svg>
+      </button>
+      <button id="viewPlan" class="icon-btn" title="Plan View" aria-label="Plan View">
+        <span class="sr-only">Plan View</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">P</text>
+        </svg>
+      </button>
+      <button id="viewNorth" class="icon-btn" title="North Elevation" aria-label="North Elevation">
+        <span class="sr-only">North Elevation</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">N</text>
+        </svg>
+      </button>
+      <button id="viewEast" class="icon-btn" title="East Elevation" aria-label="East Elevation">
+        <span class="sr-only">East Elevation</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">E</text>
+        </svg>
+      </button>
+      <button id="viewSouth" class="icon-btn" title="South Elevation" aria-label="South Elevation">
+        <span class="sr-only">South Elevation</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">S</text>
+        </svg>
+      </button>
+      <button id="viewWest" class="icon-btn" title="West Elevation" aria-label="West Elevation">
+        <span class="sr-only">West Elevation</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <text x="12" y="16" text-anchor="middle" font-size="16" fill="#222" font-family="Arial" font-weight="bold">W</text>
+        </svg>
+      </button>
+    </div>
   </div>
   <div id="visibility-container">
     <strong data-i18n="visibility.title">Visibility</strong>

@@ -213,7 +213,7 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 			}).addTo(map);
 			map.setView([37.8, -96], 4);
 
-			// Drawing handlers
+			// Drawing handlers (mouse and touch)
 			map.on('mousedown', (e) => {
 				if (drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
 				drawing = true; startLatLng = e.latlng;
@@ -226,9 +226,32 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 				if (!drawnRect) drawnRect = L.rectangle(b, { color: '#0078ff', weight: 1, fillOpacity: 0.05 }).addTo(map);
 				else drawnRect.setBounds(b);
 			});
+			// Touch support for region drawing
+			map.getContainer().addEventListener('touchstart', function(ev) {
+				if (drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
+				if (ev.touches.length !== 1) return;
+				const touch = ev.touches[0];
+				const rect = map.getContainer().getBoundingClientRect();
+				const point = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
+				const latlng = map.containerPointToLatLng(point);
+				drawing = true; startLatLng = latlng;
+				if (drawnRect) { drawnRect.remove(); drawnRect = null; }
+				map.getContainer().classList.add('crosshair');
+			}, { passive: false });
+			map.getContainer().addEventListener('touchmove', function(ev) {
+				if (!drawing || !startLatLng) return;
+				if (ev.touches.length !== 1) return;
+				const touch = ev.touches[0];
+				const point = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
+				const latlng = map.containerPointToLatLng(point);
+				const b = L.latLngBounds(startLatLng, latlng);
+				if (!drawnRect) drawnRect = L.rectangle(b, { color: '#0078ff', weight: 1, fillOpacity: 0.05 }).addTo(map);
+				else drawnRect.setBounds(b);
+			}, { passive: false });
 			const stopDraw = () => { drawing = false; startLatLng = null; map.getContainer().classList.remove('crosshair'); };
 			map.on('mouseup', stopDraw);
 			map.on('mouseout', stopDraw);
+			map.getContainer().addEventListener('touchend', stopDraw, { passive: false });
 		}
 	}
 	function close() { if (backdrop) backdrop.style.display = 'none'; }

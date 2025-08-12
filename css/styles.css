@@ -102,14 +102,21 @@ body > canvas { position: fixed; inset: 0; }
 	width: 56px;
 	border-radius: 14px;
 	border: 1px solid #e0e0e0;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-start;
+	align-items: center;
+	gap: 4px;
+	max-height: none;
+	overflow: visible;
 }
 #toolbox .icon-btn {
 	display: flex;
-	margin: 0 0 8px 0;
-	width: 44px;
-	height: 44px;
-	min-width: 44px;
-	min-height: 44px;
+	margin: 0 auto;
+	width: 36px;
+	height: 36px;
+	min-width: 36px;
+	min-height: 36px;
 	background: transparent;
 	border-radius: 12px;
 	box-shadow: none;
@@ -119,16 +126,26 @@ body > canvas { position: fixed; inset: 0; }
 /* Remove popup style for utilities, use collapse animation only */
 /* Collapsible groups */
 .collapse {
+	position: static;
+	min-width: 0;
+	width: 100%;
+	background: #f9f9f9;
+	border-radius: 8px;
+	box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+	padding: 6px 4px;
+	font-size: 13px;
+	z-index: 101;
 	overflow: hidden;
 	max-height: 0;
 	opacity: 0;
-	transform: translateY(-4px);
-	transition: max-height 220ms ease, opacity 180ms ease, transform 220ms ease;
+	transform: translateY(-8px) scale(0.98);
+	transition: max-height 180ms cubic-bezier(.4,.2,.2,1), opacity 120ms cubic-bezier(.4,.2,.2,1), transform 180ms cubic-bezier(.4,.2,.2,1);
 }
 .collapse.open {
-	max-height: 500px; /* sufficient for contents */
+	display: block;
+	max-height: 320px; /* more compact */
 	opacity: 1;
-	transform: translateY(0);
+	transform: translateY(0) scale(1);
 }
 /* Resize color pickers for settings group in toolbox */
 #settingsGroup input[type="color"] {
