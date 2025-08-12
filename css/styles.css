@@ -195,10 +195,10 @@ body > canvas { position: fixed; inset: 0; }
 	position: static;
 	min-width: 0;
 	width: 100%;
-	background: #f9f9f9;
+	background: transparent; /* closed state has no background */
 	border-radius: 8px;
-	box-shadow: 0 1px 6px rgba(0,0,0,0.08);
-	padding: 6px 4px;
+	box-shadow: none; /* closed state has no shadow */
+	padding: 0; /* closed state has no padding to avoid extra spacing */
 	font-size: 13px;
 	z-index: 101;
 	overflow: hidden;
@@ -212,6 +212,9 @@ body > canvas { position: fixed; inset: 0; }
 	max-height: 320px; /* more compact */
 	opacity: 1;
 	transform: translateY(0) scale(1);
+	padding: 6px 4px; /* restore padding when open */
+	background: #f9f9f9; /* restore background when open */
+	box-shadow: 0 1px 6px rgba(0,0,0,0.08); /* restore shadow when open */
 }
 /* Resize color pickers for settings group in toolbox */
 #settingsGroup input[type="color"] {
@@ -223,6 +226,23 @@ body > canvas { position: fixed; inset: 0; }
 	vertical-align: middle;
 	margin-left: 8px;
 	box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+
+/* Subtle page-edge vignette overlay */
+.page-vignette {
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 50; /* above grid and toolbox, below floating nav/modals */
+}
+.page-vignette::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	/* soft edge fade using inset box-shadow for performance */
+	box-shadow:
+		inset 0 0 180px rgba(0,0,0,0.45),
+		inset 0 0 60px rgba(0,0,0,0.12);
 }
 .toggle-btn[aria-pressed="true"] { outline: 2px solid #222; border-radius: 6px; }
 .icon-btn[aria-pressed="true"] { outline: 2px solid #222; border-radius: 6px; }
@@ -349,7 +369,29 @@ body > canvas { position: fixed; inset: 0; }
 #visibilityPopup #objectList div { display:flex; align-items:center; gap:8px; padding:4px 2px; border-radius:6px; }
 #visibilityPopup #objectList div:hover { background: rgba(255,255,255,0.06); }
 #visibilityPopup input[type="checkbox"] { accent-color: #fff; }
-#visibilityPopup span { color: #fff; }
+#visibilityPopup span { color: #fff; font-family: sans-serif; font-size: 12px; }
+
+/* Scan HUD */
+#scanHud {
+	position: fixed;
+	left: max(12px, env(safe-area-inset-left, 0px) + 12px);
+	bottom: max(12px, env(safe-area-inset-bottom, 0px) + 12px);
+	background: rgba(24,24,24,0.95);
+	color: #fff;
+	border: 1px solid #2a2a2a;
+	box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+	border-radius: 12px;
+	padding: 10px 12px;
+	z-index: 240;
+	min-width: 180px;
+}
+#scanHud .scan-hud-title { font-family: sans-serif; font-size: 11px; color: #ddd; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 4px; }
+#scanHud .scan-hud-status { font-family: sans-serif; font-size: 12px; color: #fff; opacity: 0.95; }
+#scanHud .scan-hud-cancel {
+	position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+	border: none; border-radius: 50%; background: #2a2a2a; color: #fff; cursor: pointer;
+}
+#scanHud .scan-hud-cancel:hover { background: #333; }
 
 /* Columbarium toolbox icon alignment */
 #cToolbox {
@@ -371,13 +413,13 @@ body > canvas { position: fixed; inset: 0; }
 	flex-direction: column;
 	align-items: center;
 	justify-content: flex-start;
-	gap: 4px;
+	gap: 4px; /* match main toolbox vertical rhythm */
 	text-align: center;
 	max-height: none;
 	overflow: visible;
 }
 #cToolbox .icon-btn {
-	margin: 0 auto;
+	margin: 0 auto; /* let container gap control spacing */
 	width: 36px;
 	height: 36px;
 	min-width: 36px;
@@ -385,8 +427,16 @@ body > canvas { position: fixed; inset: 0; }
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	border-radius: 12px; /* match index toolbox buttons */
 }
 #cToolbox .collapse { width: 100%; }
+#cToolbox > .collapse { margin: 0; }
+#cToolbox .collapse .row { display:flex; align-items:center; gap: 8px; padding: 4px 0; }
+#cToolbox .collapse .row.center { justify-content: center; }
+#cToolbox .collapse .row.end { justify-content: flex-end; }
+#cToolbox .collapse .icon-btn { margin: 0; }
+/* Top icon stack (Import, Center, Zones) */
+#cTopIcons { display:flex; flex-direction:column; align-items:center; gap: 4px; width:100%; }
 
 /* Subtle grid background pattern (dark mode friendly) */
 .grid-bg {

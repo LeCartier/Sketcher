@@ -1,16 +1,24 @@
-// Lightweight local scene storage using IndexedDB
+// Lightweight local storage using IndexedDB
 const DB_NAME = 'sketcher-db';
-const DB_VERSION = 1; // store schema stays the same; we can include extra fields like posX/posY without migration
+// v2: add 'zones' store for Columbarium grid zoning
+const DB_VERSION = 2;
 const STORE = 'scenes';
+const ZONES = 'zones';
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
+      // scenes store
       if (!db.objectStoreNames.contains(STORE)) {
         const store = db.createObjectStore(STORE, { keyPath: 'id' });
         store.createIndex('by_updated', 'updatedAt');
+      }
+      // zones store
+      if (!db.objectStoreNames.contains(ZONES)) {
+        const z = db.createObjectStore(ZONES, { keyPath: 'id' });
+        z.createIndex('by_updated', 'updatedAt');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -103,5 +111,72 @@ export async function updateSceneName(id, { name }) {
   if (typeof name === 'string' && name.trim().length) rec.name = name.trim();
   rec.updatedAt = Date.now();
   await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+// -------------------- Columbarium Zones API --------------------
+export async function listZones() {
+  const db = await openDB();
+  const tx = db.transaction(ZONES, 'readonly');
+  const store = tx.objectStore(ZONES);
+  const items = await new Promise((res, rej) => {
+    const out = []; const r = store.openCursor();
+    r.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else { res(out.sort((a,b)=>b.updatedAt-a.updatedAt)); } };
+    r.onerror = () => rej(r.error);
+  });
+  return items.map(z => ({ id: z.id, x: z.x, y: z.y, w: z.w, h: z.h, color: z.color, name: z.name, updatedAt: z.updatedAt }));
+}
+
+export async function saveZone({ x, y, w, h, color, name }) {
+  const db = await openDB();
+  const tx = db.transaction(ZONES, 'readwrite');
+  const store = tx.objectStore(ZONES);
+  const zone = {
+    id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    x: Number(x) || 0,
+    y: Number(y) || 0,
+    w: Number(w) || 0,
+    h: Number(h) || 0,
+    color: typeof color === 'string' ? color : '#ffbf00',
+    name: typeof name === 'string' && name.trim().length ? name.trim() : undefined,
+    updatedAt: Date.now(),
+  };
+  await new Promise((res, rej) => { const r = store.put(zone); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+  return zone.id;
+}
+
+export async function updateZone(id, props) {
+  const db = await openDB();
+  const tx = db.transaction(ZONES, 'readwrite');
+  const store = tx.objectStore(ZONES);
+  const rec = await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+  if (!rec) return;
+  if (props) {
+    if (props.x !== undefined) rec.x = Number(props.x);
+    if (props.y !== undefined) rec.y = Number(props.y);
+    if (props.w !== undefined) rec.w = Number(props.w);
+    if (props.h !== undefined) rec.h = Number(props.h);
+    if (props.color !== undefined && typeof props.color === 'string') rec.color = props.color;
+    if (props.name !== undefined && typeof props.name === 'string') rec.name = props.name.trim();
+  }
+  rec.updatedAt = Date.now();
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function deleteZone(id) {
+  const db = await openDB();
+  const tx = db.transaction(ZONES, 'readwrite');
+  const store = tx.objectStore(ZONES);
+  await new Promise((res, rej) => { const r = store.delete(id); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function clearZones() {
+  const db = await openDB();
+  const tx = db.transaction(ZONES, 'readwrite');
+  const store = tx.objectStore(ZONES);
+  await new Promise((res, rej) => { const r = store.clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
   await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
 }

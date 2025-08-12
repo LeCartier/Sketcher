@@ -473,6 +473,12 @@
   <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center;">
     v1.0.0
   </div>
+      <!-- Room Scan HUD -->
+      <div id="scanHud" style="display:none;">
+        <div class="scan-hud-title">Room Scan</div>
+        <div id="scanHudStatus" class="scan-hud-status">Preparing…</div>
+        <button id="scanHudCancel" class="scan-hud-cancel" title="Cancel scan" aria-label="Cancel scan" type="button">×</button>
+      </div>
   <div id="error-banner" style="position:fixed;left:0;right:0;bottom:0;background:#ffe3e3;color:#900;padding:6px 10px;font-family:sans-serif;font-size:12px;display:none;z-index:9999;"></div>
   <!-- Map modal overlay -->
   <div id="mapModalBackdrop">
@@ -485,11 +491,12 @@
       </div>
       <div id="mapContainer"></div>
       <div id="mapModalFooter">
-        <div style="font-size:12px;color:#444;">
-  <!-- Settings panel floats outside toolbox -->
-    </div>
-  <!-- Removed floating settings panel markup; settingsGroup is only inside toolbox as a collapse -->
-    </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="mapUseFlat" class="btn primary" title="Import a flat plane textured with satellite imagery">Import Flat</button>
+          <button id="mapUseTopo" class="btn" title="Import topography with satellite imagery">Import Topo</button>
+        </div>
+        <div style="font-size:12px;color:#444;">Select a region with Draw Box, then choose an import type.</div>
+      </div>
   </div>
   <script type="module">
     import { init } from './js/app/app.js';

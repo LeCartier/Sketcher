@@ -87,7 +87,13 @@ async function stitchEsriImageryToCanvas(bounds, targetMaxTiles = 64) {
 	return { canvas, zoom: z };
 }
 
-async function fetchElevationsGrid(bounds, cols, rows) {
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+async function fetchElevationsGrid(bounds, cols, rows, options = {}) {
+	const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 100;
+	const concurrency = Number.isFinite(options.concurrency) ? options.concurrency : 2;
+	const maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : 3;
+	const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 12000;
 	const sw = bounds.getSouthWest();
 	const ne = bounds.getNorthEast();
 	const lats = []; const lons = [];
@@ -106,23 +112,51 @@ async function fetchElevationsGrid(bounds, cols, rows) {
 			locations.push({ latitude: lats[j], longitude: lons[i] });
 		}
 	}
-	// Batch POST to open-elevation (limit to 100 per request to be safe)
+	// Batch POST to open-elevation (limit batch size), with retries and concurrency
 	const elevations = new Array(locations.length).fill(0);
-	const batchSize = 100;
+	const tasks = [];
 	for (let start = 0; start < locations.length; start += batchSize) {
 		const slice = locations.slice(start, start + batchSize);
-		const resp = await fetch('https://api.open-elevation.com/api/v1/lookup', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ locations: slice })
-		});
-		if (!resp.ok) throw new Error('Elevation service error');
-		const json = await resp.json();
-		const results = json.results || [];
-		for (let k = 0; k < results.length; k++) {
-			elevations[start + k] = results[k].elevation; // meters
-		}
+		const runTask = async () => {
+			let attempt = 0;
+			while (true) {
+				attempt++;
+				const controller = new AbortController();
+				const to = setTimeout(()=>controller.abort(), timeoutMs);
+				try {
+					const resp = await fetch('https://api.open-elevation.com/api/v1/lookup', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ locations: slice }),
+						signal: controller.signal,
+					});
+					clearTimeout(to);
+					if (!resp.ok) throw new Error('Elevation service error ' + resp.status);
+					const json = await resp.json();
+					const results = json.results || [];
+					for (let k = 0; k < results.length; k++) {
+						elevations[start + k] = results[k].elevation; // meters
+					}
+					return;
+				} catch (e) {
+					clearTimeout(to);
+					if (attempt > maxRetries) throw e;
+					// Exponential backoff with jitter
+					const delay = Math.min(3000, 250 * Math.pow(2, attempt)) + Math.random() * 250;
+					await sleep(delay);
+				}
+			}
+		};
+		tasks.push(runTask);
 	}
+	// Run tasks with limited concurrency
+	let idx = 0; const runners = new Array(Math.min(concurrency, tasks.length)).fill(0).map(async () => {
+		while (idx < tasks.length) {
+			const my = idx++;
+			await tasks[my]();
+		}
+	});
+	await Promise.all(runners);
 	return { elevations, cols, rows };
 }
 
@@ -139,6 +173,7 @@ function meshFromBoundsFlat(THREE, bounds, textureCanvas, fallbackMaterial) {
 	const { widthFt, depthFt } = computeFeetSizeFromBounds(bounds);
 	const geo = new THREE.PlaneGeometry(widthFt, depthFt, 1, 1);
 	geo.rotateX(-Math.PI / 2);
+	// Flat plane lies on y=0 by default
 	let mat;
 		if (textureCanvas) {
 			const tex = new THREE.CanvasTexture(textureCanvas);
@@ -160,12 +195,14 @@ function meshFromBoundsTopo(THREE, bounds, elevGrid, fallbackMaterial, textureCa
 	geo.rotateX(-Math.PI / 2);
 	// Convert and center elevations
 	const feetElev = elevations.map(m => m * FEET_PER_METER);
-	const mean = feetElev.reduce((a, b) => a + b, 0) / feetElev.length;
+	// Anchor to center: subtract the elevation at the region center so that sits at y=0
+	const centerIdx = (Math.floor(rows / 2) * cols) + Math.floor(cols / 2);
+	const centerFeet = Number.isFinite(feetElev[centerIdx]) ? feetElev[centerIdx] : 0;
 	const pos = geo.attributes.position;
 	let idx = 0;
 	for (let j = 0; j < rows; j++) {
 		for (let i = 0; i < cols; i++) {
-			const y = feetElev[idx++] - mean; // center around y=0
+	const y = feetElev[idx++] - centerFeet; // center at y=0
 			const vi = j * cols + i;
 			pos.setY(vi, y);
 		}
@@ -202,6 +239,32 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 	let drawnRect = null;
 	let drawing = false; let startLatLng = null;
 
+	function setDrawMode(on){
+		if (!map) return;
+		if (on){
+			try {
+				map.dragging && map.dragging.disable();
+				map.boxZoom && map.boxZoom.disable();
+				map.doubleClickZoom && map.doubleClickZoom.disable();
+				map.scrollWheelZoom && map.scrollWheelZoom.disable();
+				map.touchZoom && map.touchZoom.disable();
+				map.keyboard && map.keyboard.disable && map.keyboard.disable();
+			} catch {}
+			map.getContainer().classList.add('crosshair');
+		} else {
+			try {
+				map.dragging && map.dragging.enable();
+				map.boxZoom && map.boxZoom.enable();
+				map.doubleClickZoom && map.doubleClickZoom.enable();
+				map.scrollWheelZoom && map.scrollWheelZoom.enable();
+				map.touchZoom && map.touchZoom.enable();
+				map.keyboard && map.keyboard.enable && map.keyboard.enable();
+			} catch {}
+			map.getContainer().classList.remove('crosshair');
+			drawing = false; startLatLng = null;
+		}
+	}
+
 	async function open() {
 		if (backdrop) backdrop.style.display = 'flex';
 		const L = await ensureLeafletLoaded();
@@ -215,10 +278,13 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 
 			// Drawing handlers (mouse and touch)
 			map.on('mousedown', (e) => {
-				if (drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
+				if (!drawToggleBtn || drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
+				// prevent map pan and start drawing
+				try { e.originalEvent && e.originalEvent.preventDefault && e.originalEvent.preventDefault(); } catch {}
+				try { e.originalEvent && e.originalEvent.stopPropagation && e.originalEvent.stopPropagation(); } catch {}
+				setDrawMode(true);
 				drawing = true; startLatLng = e.latlng;
 				if (drawnRect) { drawnRect.remove(); drawnRect = null; }
-				map.getContainer().classList.add('crosshair');
 			});
 			map.on('mousemove', (e) => {
 				if (!drawing || !startLatLng) return;
@@ -228,19 +294,20 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 			});
 			// Touch support for region drawing
 			map.getContainer().addEventListener('touchstart', function(ev) {
-				if (drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
+				if (!drawToggleBtn || drawToggleBtn.getAttribute('aria-pressed') !== 'true') return;
 				if (ev.touches.length !== 1) return;
+				try { ev.preventDefault(); } catch {}
 				const touch = ev.touches[0];
-				const rect = map.getContainer().getBoundingClientRect();
 				const point = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
 				const latlng = map.containerPointToLatLng(point);
+				setDrawMode(true);
 				drawing = true; startLatLng = latlng;
 				if (drawnRect) { drawnRect.remove(); drawnRect = null; }
-				map.getContainer().classList.add('crosshair');
 			}, { passive: false });
 			map.getContainer().addEventListener('touchmove', function(ev) {
 				if (!drawing || !startLatLng) return;
 				if (ev.touches.length !== 1) return;
+				try { ev.preventDefault(); } catch {}
 				const touch = ev.touches[0];
 				const point = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
 				const latlng = map.containerPointToLatLng(point);
@@ -248,13 +315,20 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 				if (!drawnRect) drawnRect = L.rectangle(b, { color: '#0078ff', weight: 1, fillOpacity: 0.05 }).addTo(map);
 				else drawnRect.setBounds(b);
 			}, { passive: false });
-			const stopDraw = () => { drawing = false; startLatLng = null; map.getContainer().classList.remove('crosshair'); };
+			const stopDraw = () => { drawing = false; startLatLng = null; };
 			map.on('mouseup', stopDraw);
 			map.on('mouseout', stopDraw);
 			map.getContainer().addEventListener('touchend', stopDraw, { passive: false });
 		}
+		// Reset draw mode when opening
+		if (drawToggleBtn) { drawToggleBtn.setAttribute('aria-pressed','false'); }
+		setDrawMode(false);
 	}
-	function close() { if (backdrop) backdrop.style.display = 'none'; }
+	function close() {
+		setDrawMode(false);
+		if (drawToggleBtn) drawToggleBtn.setAttribute('aria-pressed','false');
+		if (backdrop) backdrop.style.display = 'none';
+	}
 
 	async function doSearch() {
 		const q = (searchInput && searchInput.value || '').trim();
@@ -307,15 +381,22 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 	async function importTopo() {
 		const bounds = getSelectedBounds();
 		try {
-			// Choose grid density by area size
-			const { widthFt, depthFt } = computeFeetSizeFromBounds(bounds);
-			const maxDim = Math.max(widthFt, depthFt);
-			const target = maxDim > 20000 ? 32 : 64; // fewer samples for huge areas
-			const cols = target, rows = target;
-			const grid = await fetchElevationsGrid(bounds, cols, rows);
+				// Choose grid density by area size and cap total points for reliability
+				const { widthFt, depthFt } = computeFeetSizeFromBounds(bounds);
+				const areaFt2 = widthFt * depthFt;
+				let target = 64;
+				if (areaFt2 > 50_000_000) target = 24; // very large areas -> coarse grid
+				else if (areaFt2 > 10_000_000) target = 32;
+				const MAX_POINTS = 1800; // cap total elevation queries
+				let cols = target, rows = target;
+				while (cols * rows > MAX_POINTS) { if (cols > rows) cols--; else rows--; }
+				cols = Math.max(16, cols); rows = Math.max(16, rows);
+				const grid = await fetchElevationsGrid(bounds, cols, rows, { batchSize: 100, concurrency: 3, maxRetries: 3, timeoutMs: 15000 });
 			let canvas = null;
 			try {
-				const stitched = await stitchEsriImageryToCanvas(bounds);
+					// Reduce imagery tile count for large areas
+					const targetTiles = areaFt2 > 10_000_000 ? 36 : 64;
+					const stitched = await stitchEsriImageryToCanvas(bounds, targetTiles);
 				canvas = stitched.canvas;
 			} catch (e) { /* ignore imagery failure */ }
 			const mesh = meshFromBoundsTopo(THREE, bounds, grid, fallbackMaterial, canvas);
@@ -333,6 +414,7 @@ export function setupMapImport({ THREE, renderer, fallbackMaterial, addObjectToS
 	if (drawToggleBtn) drawToggleBtn.addEventListener('click', () => {
 		const p = drawToggleBtn.getAttribute('aria-pressed') === 'true';
 		drawToggleBtn.setAttribute('aria-pressed', String(!p));
+		setDrawMode(!p);
 	});
 	if (searchBtn) searchBtn.addEventListener('click', doSearch);
 	if (searchInput) searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });

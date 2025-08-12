@@ -128,7 +128,7 @@ importInput.addEventListener('change', async (e) => {
   }
 });
 
-async function generateSceneThumbnail(json){
+export async function generateSceneThumbnail(json){
   try {
     const { ObjectLoader, Scene, WebGLRenderer, PerspectiveCamera, GridHelper, AmbientLight, DirectionalLight, Vector3, Box3 } = await import('../vendor/three.module.js');
     const loader = new ObjectLoader();

@@ -36,10 +36,29 @@
 <body>
   <!-- Toolbox-like controls for Columbarium (consistent with editor) -->
   <div id="cToolbox">
-    <button id="cToggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
+    <div id="cTopIcons">
+      <button id="cToggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
       <span class="sr-only">Import</span>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+      <button id="cCenterView" class="icon-btn" title="Center View" aria-label="Center View">
+      <span class="sr-only">Center View</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#222"/></svg>
     </button>
+      <!-- Zones tool -->
+      <button id="cToggleZones" class="icon-btn toggle-btn" title="Zones" aria-label="Zones" aria-pressed="false">
+      <span class="sr-only">Zones</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Transparent container box -->
+        <rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="#222" stroke-width="2"/>
+        <!-- Solid color plus in top-left corner -->
+        <g id="zonesParentPlus" fill="#ffbf00">
+          <rect x="5" y="5" width="6" height="2" rx="1"/>
+          <rect x="7" y="3" width="2" height="6" rx="1"/>
+        </g>
+      </svg>
+    </button>
+    </div>
     <div id="cImportGroup" class="collapse" aria-hidden="true" style="width:100%;">
       <button id="importBtn" class="icon-btn" title="Import Scene JSON" aria-label="Import Scene JSON">
         <span class="sr-only">Import Scene JSON</span>
@@ -47,12 +66,31 @@
       </button>
   <input id="importInput" type="file" accept="application/json,.json,.gltf,.glb,.obj" style="display:none" />
     </div>
-    <button id="cCenterView" class="icon-btn" title="Center View" aria-label="Center View">
-      <span class="sr-only">Center View</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#222"/></svg>
-    </button>
+    <div id="cZonesGroup" class="collapse" aria-hidden="true">
+  <div class="row center">
+        <button id="zoneCreate" class="icon-btn toggle-btn" title="Create Zone" aria-label="Create Zone" aria-pressed="false">
+          <span class="sr-only">Create Zone</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+  <div class="row center" style="padding: 4px 0;">
+        <input id="zoneColor" type="color" value="#ffbf00" title="Zone Color" aria-label="Zone Color" style="width:36px;height:36px;padding:0;border:none;background:none;box-shadow:0 1px 4px rgba(0,0,0,0.08);"/>
+      </div>
+  <div class="row end">
+        <button id="zoneClear" class="icon-btn" title="Clear All Zones" aria-label="Clear All Zones">
+          <span class="sr-only">Clear All Zones</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" fill="none" stroke="#222" stroke-width="2" />
+            <line x1="7" y1="17" x2="17" y2="7" stroke="#222" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+    </div>
   </div>
   <canvas id="gridStage" aria-label="Columbarium Grid"></canvas>
+  <div class="page-vignette" aria-hidden="true"></div>
 
   <div id="viewerBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal">
@@ -117,6 +155,35 @@
   }
   const cCenterView = document.getElementById('cCenterView');
   if (cCenterView) cCenterView.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('columbarium:center')));
+  // Zones toolbox wiring
+  const cToggleZones = document.getElementById('cToggleZones');
+  const cZonesGroup = document.getElementById('cZonesGroup');
+  const zoneColor = document.getElementById('zoneColor');
+  const zoneCreate = document.getElementById('zoneCreate');
+  const zoneClear = document.getElementById('zoneClear');
+  if (cToggleZones && cZonesGroup) {
+    cToggleZones.addEventListener('click', () => {
+      const isOpen = cZonesGroup.classList.contains('open');
+      cZonesGroup.classList.toggle('open', !isOpen);
+      cZonesGroup.setAttribute('aria-hidden', isOpen ? 'true' : 'false');
+      cToggleZones.setAttribute('aria-pressed', isOpen ? 'false' : 'true');
+      // Toggle overall zones edit mode
+      window.dispatchEvent(new CustomEvent('zones:edit', { detail: { on: !isOpen } }));
+      if (isOpen) {
+        // Reset child state when collapsing
+        if (zoneCreate) zoneCreate.setAttribute('aria-pressed','false');
+        window.dispatchEvent(new CustomEvent('zones:mode', { detail: { mode: 'idle' } }));
+      }
+    });
+  }
+  if (zoneColor) zoneColor.addEventListener('input', ()=> window.dispatchEvent(new CustomEvent('zones:color', { detail: { color: zoneColor.value } })));
+  if (zoneCreate) zoneCreate.addEventListener('click', ()=> {
+    const pressed = zoneCreate.getAttribute('aria-pressed') === 'true';
+    const next = !pressed;
+    zoneCreate.setAttribute('aria-pressed', next ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('zones:mode', { detail: { mode: next ? 'draw' : 'idle' } }));
+  });
+  if (zoneClear) zoneClear.addEventListener('click', ()=> { if (confirm('Clear all zones?')) window.dispatchEvent(new CustomEvent('zones:clear')); });
   </script>
 </body>
 </html>
