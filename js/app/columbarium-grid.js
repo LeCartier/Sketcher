@@ -3,6 +3,8 @@ import * as localStore from './local-store.js';
 // Pannable/zoomable 2D grid with draggable tiles representing scenes
 const canvas = document.getElementById('gridStage');
 const ctx = canvas.getContext('2d');
+// Disable default browser touch gestures to allow custom pinch/zoom
+try { canvas.style.touchAction = 'none'; } catch {}
 
 // View transform (world -> screen: x' = offsetX + x*scale)
 let offsetX = 0, offsetY = 0;
@@ -23,6 +25,11 @@ let isCollapsing = false;      // direction flag
 // Input/drag state
 let isPanning = false; let startPanX = 0, startPanY = 0; let panPointerId = null;
 let dragTile = null; let pointerDownPos = null; let dragCenterDelta = { x: 0, y: 0 };
+// Middle mouse double-click detection
+let lastMidDownTime = 0; let lastMidDownPos = { x: 0, y: 0 };
+// Touch pinch state
+let isPinching = false; const touchPoints = new Map(); // id -> { x, y }
+let pinchStartDist = 0; let pinchStartScale = 1; let pinchStartCenter = { x: 0, y: 0 }; let pinchStartWorld = { x: 0, y: 0 };
 
 // Tiles cache
 let tiles = [];
@@ -491,7 +498,6 @@ function drawDeleteX(rect){
 
 function draw(){
   if (!canvas.width || !canvas.height) return;
-  if (tiles.length && !anyTileVisible()) centerOnTiles();
   clear();
   drawGrid();
   drawZones();
@@ -532,14 +538,44 @@ canvas.addEventListener('pointerdown', async (e) => {
   const x = e.clientX - rect.left; const y = e.clientY - rect.top;
   pointerDownPos = { x, y };
 
-  // Middle-click always pans, regardless of what's under the cursor
+  // Track touch pointers for pinch
+  if (e.pointerType === 'touch') {
+    touchPoints.set(e.pointerId, { x, y });
+    if (touchPoints.size === 2) {
+      // Enter pinch mode
+      const pts = [...touchPoints.values()];
+      const dx = pts[1].x - pts[0].x; const dy = pts[1].y - pts[0].y;
+      pinchStartDist = Math.hypot(dx, dy) || 1;
+      pinchStartScale = scale;
+      pinchStartCenter = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      pinchStartWorld = screenToWorld(pinchStartCenter.x, pinchStartCenter.y);
+      isPinching = true; isPanning = false; dragTile = null; dragZone = null; hoverZoneHit = null;
+    }
+    // Capture this pointer
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
+  }
+
+  // Middle-click always pans, regardless of what's under the cursor (double-click recenters)
   if (e.button === 1) {
     e.preventDefault();
+    // Detect double middle-click to center view
+    const now = performance.now();
+    const dt = now - lastMidDownTime;
+    const d = Math.hypot(x - lastMidDownPos.x, y - lastMidDownPos.y);
+    if (dt < 300 && d < 8) {
+      centerOnTiles(); draw();
+      lastMidDownTime = 0; lastMidDownPos = { x: 0, y: 0 };
+      return;
+    }
+    lastMidDownTime = now; lastMidDownPos = { x, y };
     isPanning = true; panPointerId = e.pointerId; startPanX = x - offsetX; startPanY = y - offsetY;
     canvas.setPointerCapture(e.pointerId);
     canvas.classList.add('grabbing');
     return;
   }
+
+  // If a pinch is active, don't start other interactions
+  if (isPinching) { return; }
 
   // Zones interactions (below overlay handling): allow drawing or selecting prior to overlay/tile drag
   if (zonesEditOn && zonesMode === 'draw' && e.button === 0) {
@@ -650,6 +686,34 @@ canvas.addEventListener('pointerdown', async (e) => {
 canvas.addEventListener('pointermove', (e) => {
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+  // Update touch pointer position if tracking
+  if (e.pointerType === 'touch' && touchPoints.has(e.pointerId)) {
+    touchPoints.set(e.pointerId, { x, y });
+  }
+  // Handle pinch zoom
+  if (isPinching && touchPoints.size >= 2) {
+    const pts = [...touchPoints.values()].slice(0,2);
+    const dx = pts[1].x - pts[0].x; const dy = pts[1].y - pts[0].y;
+    const dist = Math.max(1, Math.hypot(dx, dy));
+    const factor = dist / Math.max(1, pinchStartDist);
+    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchStartScale * factor));
+    if (newScale !== scale) {
+      scale = newScale;
+      // Keep pinch center locked to same world point
+      const c = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      offsetX = c.x - pinchStartWorld.x * scale;
+      offsetY = c.y - pinchStartWorld.y * scale;
+    } else {
+      // Even if scale same, allow panning by moving center
+      const c = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      const prevC = pinchStartCenter;
+      offsetX += (c.x - prevC.x);
+      offsetY += (c.y - prevC.y);
+      pinchStartCenter = c; pinchStartWorld = screenToWorld(c.x, c.y);
+    }
+    draw();
+    return;
+  }
   // Hover detection for zones to update cursor when idle
   if (!isPanning && !dragTile && !dragZone) {
     hoverZoneHit = null;
@@ -729,6 +793,13 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 canvas.addEventListener('pointerup', async (e) => {
+  // Touch bookkeeping
+  if (e.pointerType === 'touch') {
+    touchPoints.delete(e.pointerId);
+    if (touchPoints.size < 2 && isPinching) {
+      isPinching = false;
+    }
+  }
   if (dragZone) {
     // Persist zone change
     const z = dragZone; dragZone = null; const st = dragZoneStart; dragZoneStart = null;
@@ -761,7 +832,11 @@ canvas.addEventListener('pointerup', async (e) => {
   if (isPanning && (panPointerId === e.pointerId)) { isPanning = false; panPointerId = null; canvas.classList.remove('grabbing'); }
   canvas.releasePointerCapture(e.pointerId);
 });
-canvas.addEventListener('pointercancel', () => { dragTile = null; isPanning = false; panPointerId = null; canvas.classList.remove('grabbing'); });
+canvas.addEventListener('pointercancel', (e) => {
+  if (e && e.pointerType === 'touch') { touchPoints.delete(e.pointerId); }
+  if (touchPoints.size < 2) { isPinching = false; }
+  dragTile = null; isPanning = false; panPointerId = null; canvas.classList.remove('grabbing');
+});
 
 // ---------- Data loading ----------
 async function loadTiles(){

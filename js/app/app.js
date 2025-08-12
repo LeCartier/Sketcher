@@ -804,7 +804,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 
 	// Draw-create tools
-	let activeDrawTool=null; let isDragging=false; let startPt=new THREE.Vector3(); let previewMesh=null;
+	let activeDrawTool=null; let isDragging=false; let startPt=new THREE.Vector3(); let previewMesh=null; let dragStartScreenY=0;
 	const dcBoxBtn=document.getElementById('dcBox'); const dcSphereBtn=document.getElementById('dcSphere'); const dcCylinderBtn=document.getElementById('dcCylinder'); const dcConeBtn=document.getElementById('dcCone');
 	function armDrawTool(kind){ activeDrawTool=kind; if(toggleDrawCreateBtn && drawCreateGroup){ if(toggleDrawCreateBtn.getAttribute('aria-pressed')!=='true'){ toggleDrawCreateBtn.click(); } } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed', String(btn && btn.id==='dc'+kind.charAt(0).toUpperCase()+kind.slice(1))); }); }
 	if(dcBoxBtn) dcBoxBtn.addEventListener('click',()=>armDrawTool('box'));
@@ -836,7 +836,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				if (placingPopup) placingPopup.style.display = 'none';
 			}
 		else if(mode==='edit'){
-			if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); controls.enabled=false; return; }
+			if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); dragStartScreenY = e.clientY; controls.enabled=false; return; }
 			if(e.pointerType==='touch'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
 			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
 			const hits=raycaster.intersectObjects(selectableObjects,true);
@@ -865,14 +865,24 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	// Draw-create preview
 	renderer.domElement.addEventListener('pointermove',e=>{
 		if(!isDragging||!activeDrawTool) return; getPointer(e); raycaster.setFromCamera(pointer,camera);
-		const pt=intersectGround(); if(!pt) return; const dx=pt.x-startPt.x, dz=pt.z-startPt.z; const sx=Math.max(0.1,Math.abs(dx)), sz=Math.max(0.1,Math.abs(dz));
-		const r=Math.max(sx,sz)/2; const h=1; const cx=startPt.x+dx/2, cz=startPt.z+dz/2, cy=h/2+Math.min(startPt.y,pt.y);
+		const pt=intersectGround(); if(!pt) return;
+		// Footprint on base plane
+		const dx=pt.x-startPt.x, dz=pt.z-startPt.z; const sx=Math.max(0.1,Math.abs(dx)), sz=Math.max(0.1,Math.abs(dz));
+		const r=Math.max(sx,sz)/2;
+		// Height from vertical drag in screen space (up increases height)
+		const dyPx = (dragStartScreenY - e.clientY);
+		const camDist = camera.position.distanceTo(controls.target || new THREE.Vector3());
+		const pxToWorld = Math.max(0.002, camDist / 600); // sensitivity scaling
+		const h = Math.max(0.1, Math.abs(dyPx) * pxToWorld);
+		const cx=startPt.x+dx/2, cz=startPt.z+dz/2;
+		const cyBox = startPt.y + h/2; // center Y for extruded shapes resting on base
+		const cySphere = startPt.y + r; // sphere rests on base
 		if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; }
-		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), material.clone()); }
-		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), material.clone()); }
-		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), material.clone()); }
-		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), material.clone()); }
-		if(previewMesh){ previewMesh.position.set(cx,cy,cz); scene.add(previewMesh); }
+		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), material.clone()); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
+		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		if(previewMesh){ scene.add(previewMesh); }
 	});
 	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); });
 	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
