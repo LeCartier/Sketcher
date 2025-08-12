@@ -74,11 +74,21 @@ export async function init() {
 	camera.position.set(5,5,5); camera.lookAt(0,0,0);
 	let orthoCamera = null;
 	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true });
+	renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 	renderer.setSize(window.innerWidth, window.innerHeight);
 	renderer.shadowMap.enabled = true;
 	document.body.appendChild(renderer.domElement);
 	renderer.xr.enabled = true;
 	let arActive = false;
+	// Room Scan (beta) state
+	let scanActive = false;
+	let scanSession = null;
+	let scanViewerSpace = null;
+	let scanLocalSpace = null;
+	let scanHitTestSource = null;
+	let scanGroup = null; // preview group in meters
+	const SCAN_M_TO_FT = 3.28084;
+	const scanExtents = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
 	let arContent = null; // cloned scene content for AR
 	let arPlaced = false;
 	let xrHitTestSource = null;
@@ -90,13 +100,18 @@ export async function init() {
 	const GRID_DIVS = 20;
 	let grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, 0xffffff, 0xffffff);
 	grid.receiveShadow = true; scene.add(grid);
+	try {
+	  if (Array.isArray(grid.material)) grid.material.forEach(m => { if (m) m.depthWrite = false; });
+	  else if (grid.material) grid.material.depthWrite = false;
+	} catch {}
 	scene.add(new THREE.AmbientLight(0xffffff,0.5));
 	const dirLight=new THREE.DirectionalLight(0xffffff,0.8); dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
 
 	// Controls + gizmos
 	const controls=new OrbitControls(camera,renderer.domElement);
-	controls.enableDamping=true; controls.dampingFactor=0.05;
+	controls.enableDamping=true; controls.dampingFactor=0.085;
 	controls.enablePan=true; controls.enableZoom=true; controls.enableRotate=true;
+	controls.rotateSpeed = 0.9; controls.zoomSpeed = 0.95; controls.panSpeed = 0.9;
 	controls.mouseButtons={LEFT:THREE.MOUSE.NONE,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.PAN};
 	controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
 	window.addEventListener('keydown',e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.PAN;});
@@ -244,6 +259,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		grid.receiveShadow = true;
 		grid.position.copy(pos);
 		grid.rotation.copy(rot);
+		// Keep depthWrite disabled to reduce shimmer/flicker
+		try {
+		  if (Array.isArray(grid.material)) grid.material.forEach(m => { if (m) m.depthWrite = false; });
+		  else if (grid.material) grid.material.depthWrite = false;
+		} catch {}
 		grid.visible = wasVisible;
 		scene.add(grid);
 	}
@@ -500,6 +520,81 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		} catch (e) { alert('Failed to start AR: ' + (e?.message || e)); console.error(e); }
 	});
 
+	// Room Scan (beta) using WebXR hit-test to approximate room rectangle
+	document.addEventListener('sketcher:startRoomScan', async () => {
+		if (scanActive) return; // already running
+		await loadWebXRPolyfillIfNeeded();
+		const isSecure = window.isSecureContext || location.protocol === 'https:';
+		if (!isSecure) { alert('Room Scan requires HTTPS.'); return; }
+		try {
+			const xr = navigator.xr; if (!xr) throw new Error('WebXR not available');
+			const supported = await xr.isSessionSupported('immersive-ar');
+			if (!supported) { alert('Room Scan not supported on this device/browser.'); return; }
+			scanSession = await xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor', 'hit-test'] });
+			renderer.xr.setSession(scanSession);
+			scanActive = true;
+			// Hide grid during scan
+			if (grid) grid.visible = false;
+			// Build preview group in meters
+			scanGroup = new THREE.Group(); scanGroup.name = 'Room Scan Preview'; scene.add(scanGroup);
+			// Reset extents
+			scanExtents.minX = scanExtents.minZ = Infinity; scanExtents.maxX = scanExtents.maxZ = -Infinity;
+			// Spaces + hit test
+			scanViewerSpace = await scanSession.requestReferenceSpace('viewer');
+			scanLocalSpace = await scanSession.requestReferenceSpace('local-floor');
+			scanHitTestSource = await scanSession.requestHitTestSource({ space: scanViewerSpace });
+			alert('Room Scan: move device to map the floor; tap once to finish.');
+			const endScan = () => {
+				if (!scanActive) return;
+				scanActive = false;
+				try { if (scanHitTestSource && scanHitTestSource.cancel) scanHitTestSource.cancel(); } catch {}
+				scanHitTestSource = null; scanViewerSpace = null; scanLocalSpace = null;
+				// Convert preview to scene objects in feet
+				if (isFinite(scanExtents.minX) && isFinite(scanExtents.maxX) && isFinite(scanExtents.minZ) && isFinite(scanExtents.maxZ)) {
+					const widthM = Math.max(0.2, scanExtents.maxX - scanExtents.minX);
+					const depthM = Math.max(0.2, scanExtents.maxZ - scanExtents.minZ);
+					const wallH_M = 2.4;
+					// Floor
+					{
+						const thickness_ft = 0.2;
+						const geo = new THREE.BoxGeometry(widthM * SCAN_M_TO_FT, thickness_ft, depthM * SCAN_M_TO_FT);
+						const mesh = new THREE.Mesh(geo, material.clone());
+						// Align the floor top surface to world Y=0 (level 0)
+						const cx_ft = ((scanExtents.minX + scanExtents.maxX) / 2) * SCAN_M_TO_FT;
+						const cz_ft = ((scanExtents.minZ + scanExtents.maxZ) / 2) * SCAN_M_TO_FT;
+						mesh.position.set(cx_ft, -thickness_ft/2, cz_ft);
+						mesh.name = 'Scan Floor';
+						addObjectToScene(mesh);
+					}
+					// Walls (thin boxes along rectangle edges)
+					const t = 0.2; // ~0.2 ft thickness
+					const cx_ft = ((scanExtents.minX + scanExtents.maxX) / 2) * SCAN_M_TO_FT;
+					const cz_ft = ((scanExtents.minZ + scanExtents.maxZ) / 2) * SCAN_M_TO_FT;
+					const w_ft = (scanExtents.maxX - scanExtents.minX) * SCAN_M_TO_FT;
+					const d_ft = (scanExtents.maxZ - scanExtents.minZ) * SCAN_M_TO_FT;
+					const h_ft = wallH_M * SCAN_M_TO_FT;
+					const y_ft = h_ft / 2;
+					// North wall
+					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, (scanExtents.maxZ * SCAN_M_TO_FT)); mesh.name = 'Scan Wall N'; addObjectToScene(mesh); }
+					// South wall
+					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, (scanExtents.minZ * SCAN_M_TO_FT)); mesh.name = 'Scan Wall S'; addObjectToScene(mesh); }
+					// East wall
+					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set((scanExtents.maxX * SCAN_M_TO_FT), y_ft, cz_ft); mesh.name = 'Scan Wall E'; addObjectToScene(mesh); }
+					// West wall
+					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set((scanExtents.minX * SCAN_M_TO_FT), y_ft, cz_ft); mesh.name = 'Scan Wall W'; addObjectToScene(mesh); }
+				}
+				// Cleanup preview
+				if (scanGroup) { scene.remove(scanGroup); scanGroup = null; }
+				// Show grid again
+				if (grid) grid.visible = true;
+				// End session if still running
+				try { const s = renderer.xr.getSession && renderer.xr.getSession(); if (s) s.end(); } catch {}
+			};
+			scanSession.addEventListener('end', endScan);
+			scanSession.addEventListener('select', endScan);
+		} catch (e) { alert('Failed to start Room Scan: ' + (e?.message || e)); console.error(e); }
+	});
+
 	// Upload model
 	uploadBtn.addEventListener('click',()=>fileInput.click());
 	fileInput.addEventListener('change',e=>{
@@ -691,9 +786,40 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	window.addEventListener('resize',()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
 	renderer.setAnimationLoop((t, frame) => {
 		try {
-			if (!arActive) {
-				controls.update();
-			} else {
+			if (scanActive) {
+				// Accumulate floor hit-test points and update preview
+				const session = renderer.xr.getSession && renderer.xr.getSession();
+				if (session && scanHitTestSource && frame && scanLocalSpace) {
+					const results = frame.getHitTestResults(scanHitTestSource);
+					if (results && results.length) {
+						const pose = results[0].getPose(scanLocalSpace);
+						if (pose) {
+							const px = pose.transform.position.x; const pz = pose.transform.position.z;
+							scanExtents.minX = Math.min(scanExtents.minX, px);
+							scanExtents.maxX = Math.max(scanExtents.maxX, px);
+							scanExtents.minZ = Math.min(scanExtents.minZ, pz);
+							scanExtents.maxZ = Math.max(scanExtents.maxZ, pz);
+							// Update preview geometry
+							if (isFinite(scanExtents.minX) && isFinite(scanExtents.maxX) && isFinite(scanExtents.minZ) && isFinite(scanExtents.maxZ)) {
+								const w = Math.max(0.1, scanExtents.maxX - scanExtents.minX);
+								const d = Math.max(0.1, scanExtents.maxZ - scanExtents.minZ);
+								const cx = (scanExtents.minX + scanExtents.maxX) / 2;
+								const cz = (scanExtents.minZ + scanExtents.maxZ) / 2;
+								// Clear and rebuild simple preview (thin floor + low outline walls)
+								scanGroup.clear();
+								const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), new THREE.MeshBasicMaterial({ color: 0x00ff88, opacity: 0.25, transparent: true }));
+								floor.position.set(cx, 0.01, cz);
+								scanGroup.add(floor);
+								const wallH = 0.5; const t = 0.02; // low preview walls
+								const n = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); n.position.set(cx, wallH/2, scanExtents.maxZ); scanGroup.add(n);
+								const s = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); s.position.set(cx, wallH/2, scanExtents.minZ); scanGroup.add(s);
+								const e = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); e.position.set(scanExtents.maxX, wallH/2, cz); scanGroup.add(e);
+								const wMesh = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); wMesh.position.set(scanExtents.minX, wallH/2, cz); scanGroup.add(wMesh);
+							}
+						}
+					}
+				}
+			} else if (arActive) {
 				// Perform one-time placement when AR starts using hit-test
 				const session = renderer.xr.getSession && renderer.xr.getSession();
 				if (session && xrHitTestSource && !arPlaced && frame && xrLocalSpace) {

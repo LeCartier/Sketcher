@@ -411,8 +411,65 @@
           </svg>
         </div>
         <div class="legend-label">Views</div>
+
+        <!-- AR (glasses) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+              <circle cx="7" cy="12" r="3.6"/>
+              <circle cx="17" cy="12" r="3.6"/>
+              <path d="M10.8 11.6c.5-.35 1.9-.35 2.4 0"/>
+              <path d="M3.4 12h-1.2"/>
+              <path d="M20.6 12h1.2"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">AR</div>
+
+        <!-- Room Scan (point cloud) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="#fff" stroke="none">
+              <circle cx="7" cy="9" r="1.2"/>
+              <circle cx="10" cy="7" r="1.1"/>
+              <circle cx="13" cy="9" r="1.2"/>
+              <circle cx="16" cy="8" r="1.0"/>
+              <circle cx="8.5" cy="12" r="1.3"/>
+              <circle cx="11.5" cy="12.5" r="1.1"/>
+              <circle cx="14.5" cy="12" r="1.3"/>
+              <circle cx="18" cy="11" r="1.0"/>
+              <circle cx="6.5" cy="14.5" r="1.0" opacity=".85"/>
+              <circle cx="9.5" cy="15" r="1.2" opacity=".9"/>
+              <circle cx="12.5" cy="15.5" r="1.0" opacity=".9"/>
+              <circle cx="15.5" cy="15" r="1.2" opacity=".85"/>
+              <circle cx="18.5" cy="14" r="1.0" opacity=".8"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Room Scan</div>
       </div>
     </div>
+      <!-- Floating Room Scan button (top-right, beside Legend) -->
+      <button id="toRoomScan" class="floating-nav nav-top-right-4" title="Scan Room (beta)" aria-label="Scan Room" type="button">
+        <!-- Point cloud icon: scattered dots forming a loose cloud -->
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <g fill="#fff" stroke="none">
+            <circle cx="7" cy="9" r="1.2"/>
+            <circle cx="10" cy="7" r="1.1"/>
+            <circle cx="13" cy="9" r="1.2"/>
+            <circle cx="16" cy="8" r="1.0"/>
+            <circle cx="8.5" cy="12" r="1.3"/>
+            <circle cx="11.5" cy="12.5" r="1.1"/>
+            <circle cx="14.5" cy="12" r="1.3"/>
+            <circle cx="18" cy="11" r="1.0"/>
+            <circle cx="6.5" cy="14.5" r="1.0" opacity=".85"/>
+            <circle cx="9.5" cy="15" r="1.2" opacity=".9"/>
+            <circle cx="12.5" cy="15.5" r="1.0" opacity=".9"/>
+            <circle cx="15.5" cy="15" r="1.2" opacity=".85"/>
+            <circle cx="18.5" cy="14" r="1.0" opacity=".8"/>
+          </g>
+        </svg>
+      </button>
   <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center;">
     v1.0.0
   </div>
@@ -528,6 +585,14 @@
             }
           });
           window.addEventListener('resize', () => { if (visibilityPopup.classList.contains('open')) placeVisPopup(); });
+        }
+        // Room Scan button triggers scan flow
+        const toRoomScan = document.getElementById('toRoomScan');
+        if (toRoomScan) {
+          toRoomScan.addEventListener('click', () => {
+            // Delegate to app.js handler
+            document.dispatchEvent(new CustomEvent('sketcher:startRoomScan'));
+          });
         }
     });
     init();
