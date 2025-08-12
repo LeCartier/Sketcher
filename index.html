@@ -303,6 +303,10 @@
     <strong data-i18n="visibility.title">Visibility</strong>
     <div id="objectList"></div>
   </div>
+  <!-- Floating button to Columbarium with smooth fade -->
+  <a id="toColumbarium" class="floating-nav nav-top-right" href="./columbarium.html" title="Open Columbarium" aria-label="Open Columbarium">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M3 12h18v2H3zM12 3h2v18h-2z" opacity=".9"/></svg>
+  </a>
   <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.7); color:#fff; padding:6px 8px; border-radius:4px; font-family:sans-serif; font-size:12px; z-index:20;">
     v…
   </div>
@@ -326,6 +330,19 @@
   </div>
   <script type="module">
     import { init } from './js/app/app.js';
+    // Fade-in on load
+    document.addEventListener('DOMContentLoaded', () => {
+      requestAnimationFrame(()=>document.body.classList.add('page-ready'));
+      const link = document.getElementById('toColumbarium');
+      if (link) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const href = link.getAttribute('href');
+          document.body.classList.add('page-leave');
+          setTimeout(()=>{ window.location.href = href; }, 180);
+        });
+      }
+    });
     init();
   </script>
 </body>

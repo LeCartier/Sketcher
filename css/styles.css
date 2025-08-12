@@ -15,6 +15,11 @@
 }
 body { margin: 0; overflow: hidden; }
 canvas { display: block; touch-action: none; }
+/* Page fade transitions */
+html, body { height: 100%; }
+body { opacity: 0; transition: opacity 220ms ease; }
+body.page-ready { opacity: 1; }
+body.page-leave { opacity: 0; }
 /* Unify corner radius for all main UI panels */
 #ui-container, #toolbox, #visibility-container {
 	position: absolute;
@@ -160,3 +165,66 @@ body > canvas { position: fixed; inset: 0; }
 }
 .toggle-btn[aria-pressed="true"] { outline: 2px solid #222; border-radius: 6px; }
 .icon-btn[aria-pressed="true"] { outline: 2px solid #222; border-radius: 6px; }
+
+/* Floating navigation button */
+.floating-nav {
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	width: 52px;
+	height: 52px;
+	border-radius: 50%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(24,24,24,0.9);
+	color: #fff;
+	border: 1px solid #2a2a2a;
+	box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+	text-decoration: none;
+	z-index: 200;
+	transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+.floating-nav:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.35); background: rgba(28,28,28,0.95); }
+.floating-nav svg { width: 24px; height: 24px; display:block; }
+
+/* Top-left placement variant */
+.nav-top-left {
+	left: 20px;
+	top: 20px;
+	right: auto;
+	bottom: auto;
+}
+
+/* Top-right placement variant */
+.nav-top-right {
+	right: 20px;
+	top: 20px;
+	left: auto;
+	bottom: auto;
+}
+
+/* Columbarium toolbox icon alignment */
+#cToolbox .icon-btn {
+	margin: 0 auto;
+	width: 36px;
+	height: 36px;
+	min-width: 36px;
+	min-height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+#cToolbox .collapse { width: 100%; }
+
+/* Subtle grid background pattern (dark mode friendly) */
+.grid-bg {
+	background-color: #111;
+	background-image:
+		linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+		linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+	background-size: 64px 64px, 64px 64px, 16px 16px, 16px 16px;
+	background-position: 0 0, 0 0, 0 0, 0 0;
+}

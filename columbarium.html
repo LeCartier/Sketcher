@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Sketcher – Columbarium</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; background:#111; color:#eee; }
+  .btn { background:#1f6feb; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:13px; }
+  .btn.secondary { background:#333; color:#ddd; }
+  .btn:disabled { opacity:0.6; cursor:not-allowed; }
+  /* Pannable grid canvas */
+  #gridStage { position: fixed; top:0; left:0; width:100vw; height:100vh; z-index: 0; display: block; cursor: grab; }
+  #gridStage.grabbing { cursor: grabbing; }
+  /* UI overlay for controls can stack above */
+  .row { display:flex; gap:6px; }
+    a.link { color:#9ecbff; text-decoration:none; }
+    a.link:hover { text-decoration:underline; }
+    /* Modal viewer */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; z-index:99; }
+    .modal { width:min(92vw, 960px); height:min(82vh, 640px); background:#111; border:1px solid #333; border-radius:8px; overflow:hidden; display:flex; flex-direction:column; }
+    .modal header { border-bottom:1px solid #333; }
+    .modal main { flex:1; position:relative; }
+    .canvas-wrap { position:absolute; inset:0; }
+    .modal footer { border-top:1px solid #333; padding:8px; display:flex; justify-content:flex-end; gap:8px; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./js/vendor/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Toolbox-like controls for Columbarium (consistent with editor) -->
+  <div id="cToolbox" style="position:absolute; top:80px; left:24px; z-index:11; background:rgba(255,255,255,0.96); box-shadow:0 2px 12px rgba(0,0,0,0.10); padding:8px 4px; width:56px; border-radius:14px; border:1px solid #e0e0e0; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:4px; text-align:center;">
+    <button id="cToggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
+      <span class="sr-only">Import</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+    </button>
+    <div id="cImportGroup" class="collapse" aria-hidden="true" style="width:100%;">
+      <button id="importBtn" class="icon-btn" title="Import Scene JSON" aria-label="Import Scene JSON">
+        <span class="sr-only">Import Scene JSON</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+  <input id="importInput" type="file" accept="application/json,.json,.gltf,.glb,.obj" style="display:none" />
+    </div>
+    <button id="cCenterView" class="icon-btn" title="Center View" aria-label="Center View">
+      <span class="sr-only">Center View</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#222"/></svg>
+    </button>
+  </div>
+  <canvas id="gridStage" aria-label="Columbarium Grid"></canvas>
+
+  <div id="viewerBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal">
+      <header>
+        <h1 id="viewerTitle" style="font-size:16px; font-weight:600; margin:0;">Preview</h1>
+      </header>
+      <main>
+        <div class="canvas-wrap"><canvas id="viewerCanvas"></canvas></div>
+      </main>
+      <footer>
+        <button id="viewerClose" class="btn secondary">Close</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Floating button back to editor - top-left for consistency -->
+  <a id="toEditorFloating" class="floating-nav nav-top-right" href="./index.html" title="Back to Editor" aria-label="Back to Editor">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+  </a>
+  <script type="module">
+    // Page fade-in/out
+    document.addEventListener('DOMContentLoaded', () => {
+      requestAnimationFrame(()=>document.body.classList.add('page-ready'));
+  const hooks = [document.getElementById('toEditorFloating')].filter(Boolean);
+      hooks.forEach(el => el.addEventListener('click', (e) => {
+        e.preventDefault();
+        const href = el.getAttribute('href');
+        document.body.classList.add('page-leave');
+        setTimeout(()=>{ window.location.href = href; }, 180);
+      }));
+    });
+  // Load modules: preview/import wiring and interactive grid
+  import('./js/app/columbarium.js');
+  import('./js/app/columbarium-grid.js');
+  // Toolbox behavior
+  const cToggleImport = document.getElementById('cToggleImport');
+  const cImportGroup = document.getElementById('cImportGroup');
+  if (cToggleImport && cImportGroup) {
+    cToggleImport.addEventListener('click', () => {
+      const isOpen = cImportGroup.classList.contains('open');
+      cImportGroup.classList.toggle('open', !isOpen);
+      cImportGroup.setAttribute('aria-hidden', isOpen ? 'true' : 'false');
+      cToggleImport.setAttribute('aria-pressed', isOpen ? 'false' : 'true');
+    });
+  }
+  const cCenterView = document.getElementById('cCenterView');
+  if (cCenterView) cCenterView.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('columbarium:center')));
+  </script>
+</body>
+</html>
