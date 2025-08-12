@@ -382,6 +382,17 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 .floating-nav:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.35); background: rgba(28,28,28,0.95); }
 .floating-nav svg { width: 24px; height: 24px; display:block; }
 
+/* Mobile alignment for floating buttons */
+@media (max-width: 640px) {
+	.floating-nav { width: 48px; height: 48px; }
+	.floating-nav svg { width: 22px; height: 22px; }
+	.nav-top-right { top: max(12px, env(safe-area-inset-top, 0px) + 12px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+	.nav-top-right-2 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 56px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+	.nav-top-right-3 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 112px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+	.nav-top-right-4 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 168px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+	.nav-top-right-5 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 224px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+}
+
 /* Top-left placement variant */
 .nav-top-left {
 	left: 20px;
@@ -428,6 +439,14 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 		top: 20px;
 		left: auto;
 		bottom: auto;
+}
+
+/* Fifth top-right button (shifted further left) */
+.nav-top-right-5 {
+	right: 276px; /* 52px button * 4 + gaps */
+	top: 20px;
+	left: auto;
+	bottom: auto;
 }
 
 /* Legend popup styles */
