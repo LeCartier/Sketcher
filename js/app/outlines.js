@@ -22,7 +22,7 @@ export function rebuildSelectionOutlines(THREE, scene, selectedObjects) {
 	const addOutlineForMesh = (mesh) => {
 		if (!mesh || !mesh.geometry) return;
 		const edges = new THREE.EdgesGeometry(mesh.geometry, 40);
-		const mat = new THREE.LineBasicMaterial({ color: 0x111111 });
+		const mat = new THREE.LineBasicMaterial({ color: 0xffa500 });
 		const line = new THREE.LineSegments(edges, mat);
 		// Render in world space so it overlays regardless of parent transforms
 		line.matrixAutoUpdate = false;

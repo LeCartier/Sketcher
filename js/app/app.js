@@ -100,6 +100,62 @@ export async function init() {
 	let xrViewerSpace = null;
 	let xrLocalSpace = null;
 
+	// Snap highlight
+	let snapHighlight = null;
+	function ensureSnapHighlight(){
+		if (snapHighlight) return snapHighlight;
+		const mat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.7, depthTest: true });
+		const g = new THREE.PlaneGeometry(1,1);
+		snapHighlight = new THREE.Mesh(g, mat);
+		snapHighlight.name = '__SnapHighlight';
+		snapHighlight.visible = false;
+		scene.add(snapHighlight);
+		return snapHighlight;
+	}
+
+	function hideSnapHighlight(){ if (snapHighlight) snapHighlight.visible = false; }
+
+	function showSnapHighlightAt(movingBox, snapInfo){
+		const hl = ensureSnapHighlight();
+		if (!snapInfo || !snapInfo.axis || !snapInfo.otherBox) { hl.visible = false; return; }
+		const bA = movingBox; const bB = snapInfo.otherBox;
+		const axis = snapInfo.axis;
+		// Build a thin plane aligned with the snapping faces. Size spans the overlap of the orthogonal axes.
+		let cx=0, cy=0, cz=0, sx=0.05, sy=0.05, sz=0.05, rot = new THREE.Euler(0,0,0);
+		if (axis === 'x'){
+			cx = snapInfo.movingFace==='max' ? bA.max.x : bA.min.x;
+			cy = (Math.max(bA.min.y, bB.min.y) + Math.min(bA.max.y, bB.max.y)) * 0.5;
+			cz = (Math.max(bA.min.z, bB.min.z) + Math.min(bA.max.z, bB.max.z)) * 0.5;
+			sy = Math.max(0.01, Math.min(bA.max.y, bB.max.y) - Math.max(bA.min.y, bB.min.y));
+			sz = Math.max(0.01, Math.min(bA.max.z, bB.max.z) - Math.max(bA.min.z, bB.min.z));
+			rot.set(0, Math.PI/2, 0);
+		}
+		else if (axis === 'y'){
+			cx = (Math.max(bA.min.x, bB.min.x) + Math.min(bA.max.x, bB.max.x)) * 0.5;
+			cy = snapInfo.movingFace==='max' ? bA.max.y : bA.min.y;
+			cz = (Math.max(bA.min.z, bB.min.z) + Math.min(bA.max.z, bB.max.z)) * 0.5;
+			sx = Math.max(0.01, Math.min(bA.max.x, bB.max.x) - Math.max(bA.min.x, bB.min.x));
+			sz = Math.max(0.01, Math.min(bA.max.z, bB.max.z) - Math.max(bA.min.z, bB.min.z));
+			rot.set(Math.PI/2, 0, 0);
+		}
+		else { // z
+			cx = (Math.max(bA.min.x, bB.min.x) + Math.min(bA.max.x, bB.max.x)) * 0.5;
+			cy = (Math.max(bA.min.y, bB.min.y) + Math.min(bA.max.y, bB.max.y)) * 0.5;
+			cz = snapInfo.movingFace==='max' ? bA.max.z : bA.min.z;
+			sx = Math.max(0.01, Math.min(bA.max.x, bB.max.x) - Math.max(bA.min.x, bB.min.x));
+			sy = Math.max(0.01, Math.min(bA.max.y, bB.max.y) - Math.max(bA.min.y, bB.min.y));
+			rot.set(0, 0, 0);
+		}
+		// Update plane geometry and transform
+		const g = hl.geometry;
+		g.dispose();
+		hl.geometry = new THREE.PlaneGeometry(Math.max(0.01, sx), Math.max(0.01, sy || sz));
+		// For X/Z we rotate to align with face; plane draws in X by width, Y by height
+		hl.position.set(cx, cy, cz);
+		hl.rotation.set(rot.x, rot.y, rot.z);
+		hl.visible = true;
+	}
+
 	// Manual Room Scan fallback (non-AR)
 	let manualScanActive = false;
 	let manualScanPreview = null; // THREE.Group
@@ -322,6 +378,63 @@ export async function init() {
 	// Single selection display mode: 'gizmo' (default) or 'handles'
 	let singleSelectionMode = 'gizmo';
 
+	// Soft snapping config (feet): snap when within SNAP_ENTER; allow pushing past with up to SNAP_OVERLAP before releasing
+	const SNAP_ENABLED = true;
+	const SNAP_ENTER = 0.3; // start snapping within this gap
+	const SNAP_OVERLAP = 0.06; // allow up to this much overlap while still snapping
+	let snapGuard = false; // prevent re-entrant snaps
+
+	function getWorldBoxOf(object){
+		const box = new THREE.Box3();
+		try { box.setFromObject(object); } catch {}
+		return box;
+	}
+
+	function getCombinedWorldBox(objectsArr){
+		const box = new THREE.Box3();
+		box.makeEmpty();
+		for (const o of objectsArr){
+			try { box.expandByObject(o); } catch {}
+		}
+		return box;
+	}
+
+	function computeSnapDelta(movingBox, excludeSet){
+		if (!SNAP_ENABLED) return { delta: new THREE.Vector3(0,0,0), axis: null, other: null, otherBox: null, movingFace: null, otherFace: null };
+		let best = { axis: null, delta: 0, score: Infinity, other: null, otherBox: null, movingFace: null, otherFace: null };
+		for (const other of objects){
+			if (!other || excludeSet.has(other)) continue;
+			const b = getWorldBoxOf(other); if (!isFinite(b.min.x) || !isFinite(b.max.x)) continue;
+			// X faces
+			const dx1 = b.min.x - movingBox.max.x; // moving right -> other left (movingFace=max, otherFace=min)
+			const dx2 = b.max.x - movingBox.min.x; // moving left -> other right (movingFace=min, otherFace=max)
+			// Y faces
+			const dy1 = b.min.y - movingBox.max.y; // moving up -> other bottom (movingFace=max, otherFace=min)
+			const dy2 = b.max.y - movingBox.min.y; // moving down -> other top (movingFace=min, otherFace=max)
+			// Z faces
+			const dz1 = b.min.z - movingBox.max.z; // moving forward -> other back (movingFace=max, otherFace=min)
+			const dz2 = b.max.z - movingBox.min.z; // moving back -> other front (movingFace=min, otherFace=max)
+			const candidates = [
+				{ axis:'x', delta: dx1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
+				{ axis:'x', delta: dx2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
+				{ axis:'y', delta: dy1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
+				{ axis:'y', delta: dy2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
+				{ axis:'z', delta: dz1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
+				{ axis:'z', delta: dz2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
+			];
+			for (const c of candidates){
+				const d = c.delta;
+				if (d <= SNAP_ENTER && d >= -SNAP_OVERLAP){
+					const score = Math.abs(d);
+					if (score < best.score){ best = { axis: c.axis, delta: d, score, other: c.other, otherBox: c.otherBox, movingFace: c.movingFace, otherFace: c.otherFace }; }
+				}
+			}
+		}
+		if (!best.axis) return { delta: new THREE.Vector3(0,0,0), axis: null, other: null, otherBox: null, movingFace: null, otherFace: null };
+		const deltaVec = best.axis === 'x' ? new THREE.Vector3(best.delta,0,0) : (best.axis === 'y' ? new THREE.Vector3(0,best.delta,0) : new THREE.Vector3(0,0,best.delta));
+		return { delta: deltaVec, axis: best.axis, other: best.other, otherBox: best.otherBox, movingFace: best.movingFace, otherFace: best.otherFace };
+	}
+
 	// Outline helpers
 	function clearSelectionOutlines(){ selectionOutlines = outlines.clearSelectionOutlines(scene, selectionOutlines); }
 	function rebuildSelectionOutlines(){ selectionOutlines = outlines.clearSelectionOutlines(scene, selectionOutlines); selectionOutlines = outlines.rebuildSelectionOutlines(THREE, scene, selectedObjects); }
@@ -330,57 +443,145 @@ export async function init() {
 		let handlesGroup = null;
 		let handleMeshes = [];
 		let handleDrag = null; // { mesh, info, target, start:{box,center,objWorldPos,objScale,originOffset}, dragPlane }
-		function clearHandles(){ if (handlesGroup){ scene.remove(handlesGroup); handlesGroup = null; } handleMeshes = []; handleDrag = null; controls.enabled = true; }
+		// Track last target/matrix to know when to update handle positions
+		let lastHandleTarget = null;
+		let lastHandleMatrix = new THREE.Matrix4();
+		let lastHandleScale = new THREE.Vector3(1,1,1);
+		function clearHandles(){ if (handlesGroup){ scene.remove(handlesGroup); handlesGroup = null; } handleMeshes = []; handleDrag = null; controls.enabled = true; lastHandleTarget = null; }
 		function buildHandlesForObject(obj){
 				clearHandles(); if (!obj) return; handleDrag = null; controls.enabled = true;
-			const box = new THREE.Box3().setFromObject(obj);
-			if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
-			handlesGroup = new THREE.Group(); handlesGroup.name = '__HandlesGroup'; scene.add(handlesGroup);
-			const min = box.min.clone(); const max = box.max.clone(); const ctr = box.getCenter(new THREE.Vector3());
-			const xs=[min.x,max.x], ys=[min.y,max.y], zs=[min.z,max.z];
-			const mk = (pos, kind, mask, anchor) => {
+				// Helpers
+				function computeLocalOBB(target){
+					const invWorld = new THREE.Matrix4().copy(target.matrixWorld).invert();
+					const boxLocal = new THREE.Box3(); boxLocal.makeEmpty();
+					const v = new THREE.Vector3();
+					target.traverseVisible(node => {
+						if (!node.isMesh || !node.geometry) return;
+						const geom = node.geometry;
+						if (!geom.boundingBox) geom.computeBoundingBox();
+						const bb = geom.boundingBox; if (!bb) return;
+						for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
+							v.set(xi?bb.max.x:bb.min.x, yi?bb.max.y:bb.min.y, zi?bb.max.z:bb.min.z);
+							v.applyMatrix4(node.matrixWorld); // to world
+							v.applyMatrix4(invWorld); // into target local
+							boxLocal.expandByPoint(v);
+						}
+					});
+					return boxLocal;
+				}
+				function getTRMatrix(target){
+					const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+					target.matrixWorld.decompose(pos, quat, scl);
+					return new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1));
+				}
+				// Compute oriented box in local space for visual placement
+				obj.updateMatrixWorld(true);
+				const boxLocal = computeLocalOBB(obj);
+				if (!isFinite(boxLocal.min.x) || !isFinite(boxLocal.max.x)) return;
+				// Bake current object scale into the local box coordinates so handles don't scale visually
+				const sObj = obj.scale.clone();
+				const minL = boxLocal.min.clone().multiply(sObj);
+				const maxL = boxLocal.max.clone().multiply(sObj);
+				const ctrL = boxLocal.getCenter(new THREE.Vector3()).multiply(sObj);
+				// Also compute world AABB for anchor math (preserve existing drag behavior)
+				const boxW = new THREE.Box3().setFromObject(obj);
+				const minW = boxW.min.clone(); const maxW = boxW.max.clone(); const ctrW = boxW.getCenter(new THREE.Vector3());
+				// Create a TR-aligned group so handles rotate/translate with object but ignore its scale
+				handlesGroup = new THREE.Group(); handlesGroup.name = '__HandlesGroup'; handlesGroup.matrixAutoUpdate = false;
+				handlesGroup.matrix.copy(getTRMatrix(obj)); handlesGroup.matrixWorldNeedsUpdate = true; scene.add(handlesGroup);
+				const xsL=[minL.x,maxL.x], ysL=[minL.y,maxL.y], zsL=[minL.z,maxL.z];
+				const xsW=[minW.x,maxW.x], ysW=[minW.y,maxW.y], zsW=[minW.z,maxW.z];
+			const mk = (pos, kind, mask, anchor, sel) => {
 				const geo = new THREE.SphereGeometry(0.105, 16, 12);
 				const color = (kind==='center')?0x0066ff : (kind==='face'?0x00aa55 : (kind==='edge'?0xff8800:0xdd2255));
 				const mat = new THREE.MeshBasicMaterial({ color, depthTest: true });
-				const m = new THREE.Mesh(geo, mat); m.position.copy(pos);
-				m.userData.__handle = { kind, mask, anchor: anchor.clone() };
+				const m = new THREE.Mesh(geo, mat);
+				// Place in object's local frame; group carries TR to world
+				m.position.copy(pos);
+				m.userData.__handle = { kind, mask, anchor: anchor.clone(), sel };
 				m.renderOrder = 10; handlesGroup.add(m); handleMeshes.push(m);
 			};
 			// corners (8)
 			for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
-				const p = new THREE.Vector3(xs[xi], ys[yi], zs[zi]);
-				const a = new THREE.Vector3(xs[1-xi], ys[1-yi], zs[1-zi]);
-				mk(p, 'corner', [1,1,1], a);
+				const p = new THREE.Vector3(xsL[xi], ysL[yi], zsL[zi]);
+				const a = new THREE.Vector3(xsL[1-xi], ysL[1-yi], zsL[1-zi]);
+				mk(p, 'corner', [1,1,1], a, { type:'corner', xi, yi, zi });
 			}
 			// edges X (y,z vary)
 			for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
-				const p = new THREE.Vector3(ctr.x, ys[yi], zs[zi]);
-				const a = new THREE.Vector3(ctr.x, ys[1-yi], zs[1-zi]);
-				mk(p, 'edge', [0,1,1], a);
+				const p = new THREE.Vector3(ctrL.x, ysL[yi], zsL[zi]);
+				const a = new THREE.Vector3(ctrL.x, ysL[1-yi], zsL[1-zi]);
+				mk(p, 'edge', [0,1,1], a, { type:'edgeX', yi, zi });
 			}
 			// edges Y (x,z vary)
 			for (let xi=0; xi<2; xi++) for (let zi=0; zi<2; zi++){
-				const p = new THREE.Vector3(xs[xi], ctr.y, zs[zi]);
-				const a = new THREE.Vector3(xs[1-xi], ctr.y, zs[1-zi]);
-				mk(p, 'edge', [1,0,1], a);
+				const p = new THREE.Vector3(xsL[xi], ctrL.y, zsL[zi]);
+				const a = new THREE.Vector3(xsL[1-xi], ctrL.y, zsL[1-zi]);
+				mk(p, 'edge', [1,0,1], a, { type:'edgeY', xi, zi });
 			}
 			// edges Z (x,y vary)
 			for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++){
-				const p = new THREE.Vector3(xs[xi], ys[yi], ctr.z);
-				const a = new THREE.Vector3(xs[1-xi], ys[1-yi], ctr.z);
-				mk(p, 'edge', [1,1,0], a);
+				const p = new THREE.Vector3(xsL[xi], ysL[yi], ctrL.z);
+				const a = new THREE.Vector3(xsL[1-xi], ysL[1-yi], ctrL.z);
+				mk(p, 'edge', [1,1,0], a, { type:'edgeZ', xi, yi });
 			}
 			// faces (6)
-			mk(new THREE.Vector3(min.x, ctr.y, ctr.z), 'face', [1,0,0], new THREE.Vector3(max.x, ctr.y, ctr.z));
-			mk(new THREE.Vector3(max.x, ctr.y, ctr.z), 'face', [1,0,0], new THREE.Vector3(min.x, ctr.y, ctr.z));
-			mk(new THREE.Vector3(ctr.x, min.y, ctr.z), 'face', [0,1,0], new THREE.Vector3(ctr.x, max.y, ctr.z));
-			mk(new THREE.Vector3(ctr.x, max.y, ctr.z), 'face', [0,1,0], new THREE.Vector3(ctr.x, min.y, ctr.z));
-			mk(new THREE.Vector3(ctr.x, ctr.y, min.z), 'face', [0,0,1], new THREE.Vector3(ctr.x, ctr.y, max.z));
-			mk(new THREE.Vector3(ctr.x, ctr.y, max.z), 'face', [0,0,1], new THREE.Vector3(ctr.x, ctr.y, min.z));
+			mk(new THREE.Vector3(minL.x, ctrL.y, ctrL.z), 'face', [1,0,0], new THREE.Vector3(maxL.x, ctrL.y, ctrL.z), { type:'faceX', side:-1 });
+			mk(new THREE.Vector3(maxL.x, ctrL.y, ctrL.z), 'face', [1,0,0], new THREE.Vector3(minL.x, ctrL.y, ctrL.z), { type:'faceX', side:1 });
+			mk(new THREE.Vector3(ctrL.x, minL.y, ctrL.z), 'face', [0,1,0], new THREE.Vector3(ctrL.x, maxL.y, ctrL.z), { type:'faceY', side:-1 });
+			mk(new THREE.Vector3(ctrL.x, maxL.y, ctrL.z), 'face', [0,1,0], new THREE.Vector3(ctrL.x, minL.y, ctrL.z), { type:'faceY', side:1 });
+			mk(new THREE.Vector3(ctrL.x, ctrL.y, minL.z), 'face', [0,0,1], new THREE.Vector3(ctrL.x, ctrL.y, maxL.z), { type:'faceZ', side:-1 });
+			mk(new THREE.Vector3(ctrL.x, ctrL.y, maxL.z), 'face', [0,0,1], new THREE.Vector3(ctrL.x, ctrL.y, minL.z), { type:'faceZ', side:1 });
 			// center
-			mk(ctr, 'center', [0,0,0], ctr.clone());
+			mk(ctrL, 'center', [0,0,0], ctrW.clone(), { type:'center' });
+
+			// Remember this target for sync
+			obj.updateMatrixWorld(true);
+			lastHandleTarget = obj;
+			lastHandleMatrix.copy(obj.matrixWorld);
+			lastHandleScale.copy(obj.scale);
 		}
 		function updateHandles(){ if (selectedObjects.length===1) buildHandlesForObject(selectedObjects[0]); else clearHandles(); }
+
+		// During a handle drag, refresh positions to reflect changing extents without a full rebuild
+		function refreshHandlePositionsDuringDrag(target){
+			if (!handlesGroup || !handleMeshes || !handleMeshes.length) return;
+			target.updateMatrixWorld(true);
+			// Recompute TR and local OBB (scaled local) like buildHandles
+			const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+			target.matrixWorld.decompose(pos, quat, scl);
+			const TR = new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1));
+			const invTR = TR.clone().invert();
+			const boxL = new THREE.Box3(); boxL.makeEmpty();
+			const v = new THREE.Vector3();
+			target.traverseVisible(node => {
+				if (!node.isMesh || !node.geometry) return;
+				const geom = node.geometry; if (!geom.boundingBox) geom.computeBoundingBox();
+				const bb = geom.boundingBox; if (!bb) return;
+				for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
+					v.set(xi?bb.max.x:bb.min.x, yi?bb.max.y:bb.min.y, zi?bb.max.z:bb.min.z);
+					v.applyMatrix4(node.matrixWorld);
+					v.applyMatrix4(invTR);
+					boxL.expandByPoint(v);
+				}
+			});
+			const minL = boxL.min.clone(); const maxL = boxL.max.clone(); const ctrL = boxL.getCenter(new THREE.Vector3());
+			const xsL=[minL.x,maxL.x], ysL=[minL.y,maxL.y], zsL=[minL.z,maxL.z];
+			for (const m of handleMeshes){
+				const info = m.userData.__handle && m.userData.__handle.sel;
+				if (!info) continue;
+				switch(info.type){
+					case 'corner': m.position.set(xsL[info.xi], ysL[info.yi], zsL[info.zi]); break;
+					case 'edgeX': m.position.set(ctrL.x, ysL[info.yi], zsL[info.zi]); break;
+					case 'edgeY': m.position.set(xsL[info.xi], ctrL.y, zsL[info.zi]); break;
+					case 'edgeZ': m.position.set(xsL[info.xi], ysL[info.yi], ctrL.z); break;
+					case 'faceX': m.position.set(info.side<0?minL.x:maxL.x, ctrL.y, ctrL.z); break;
+					case 'faceY': m.position.set(ctrL.x, info.side<0?minL.y:maxL.y, ctrL.z); break;
+					case 'faceZ': m.position.set(ctrL.x, ctrL.y, info.side<0?minL.z:maxL.z); break;
+					case 'center': m.position.copy(ctrL); break;
+				}
+			}
+		}
 
 	const getWorldMatrix = transforms.getWorldMatrix; const setWorldMatrix = transforms.setWorldMatrix;
 	function updateMultiSelectPivot(){
@@ -396,6 +597,14 @@ export async function init() {
 			if (singleSelectionMode === 'handles'){
 				transformControls.detach(); transformControlsRotate.detach();
 				updateHandles();
+				// Ensure initial TR sync for the handles group
+				if (handlesGroup && selectedObjects[0]){
+					selectedObjects[0].updateMatrixWorld(true);
+					const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+					selectedObjects[0].matrixWorld.decompose(pos, quat, scl);
+					handlesGroup.matrix.copy(new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1)));
+					handlesGroup.matrixWorldNeedsUpdate = true;
+				}
 			} else {
 				clearHandles();
 				transformControls.attach(selectedObjects[0]);
@@ -410,9 +619,32 @@ export async function init() {
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
 	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); }
 	transformControls.addEventListener('dragging-changed', e => { if(e.value && transformControls.object===multiSelectPivot) captureMultiStart(); });
-	transformControls.addEventListener('objectChange', () => { if(transformControls.object===multiSelectPivot) applyMultiDelta(); });
+	transformControls.addEventListener('dragging-changed', e => { if (!e.value) { hideSnapHighlight(); saveSessionDraftSoon(); } });
+	transformControls.addEventListener('objectChange', () => {
+		if(transformControls.object===multiSelectPivot) { applyMultiDelta(); return; }
+		// Soft snap for single-object translate moves
+		if (SNAP_ENABLED && selectedObjects.length===1 && transformControls.object===selectedObjects[0]){
+			const target = selectedObjects[0];
+			const movingBox = new THREE.Box3().setFromObject(target);
+			const exclude = new Set([target]);
+			const snap = computeSnapDelta(movingBox, exclude);
+			if (snap.delta.lengthSq() > 0){
+				const parent = target.parent || scene;
+				const newWorldPos = target.getWorldPosition(new THREE.Vector3()).add(snap.delta);
+				const newLocal = parent.worldToLocal(newWorldPos.clone());
+				target.position.copy(newLocal);
+				target.updateMatrixWorld(true);
+				rebuildSelectionOutlines();
+				showSnapHighlightAt(movingBox, snap);
+			}
+			else { hideSnapHighlight(); }
+			// Debounced autosave as objects move
+			saveSessionDraftSoon();
+		}
+	});
 	transformControlsRotate.addEventListener('dragging-changed', e => { if(e.value && transformControlsRotate.object===multiSelectPivot) captureMultiStart(); });
-	transformControlsRotate.addEventListener('objectChange', () => { if(transformControlsRotate.object===multiSelectPivot) applyMultiDelta(); });
+	transformControlsRotate.addEventListener('dragging-changed', e => { if (!e.value) saveSessionDraftSoon(); });
+	transformControlsRotate.addEventListener('objectChange', () => { if(transformControlsRotate.object===multiSelectPivot) applyMultiDelta(); saveSessionDraftSoon(); });
 
 	// UI refs
 const viewPerspectiveBtn = document.getElementById('viewPerspective');
@@ -472,15 +704,33 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let currentSceneId = null;
 	let currentSceneName = '';
 
+	// --- Session draft autosave (persist state across reloads/navigation) ---
+	function serializeScene() {
+		// Build a root group of current objects and use Object3D.toJSON
+		const root = buildExportRootFromObjects(objects);
+		return root.toJSON();
+	}
+	let __saveDraftTimer = null;
+	function saveSessionDraftNow(){
+		try {
+			const json = serializeScene();
+			sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json }));
+		} catch {}
+	}
+	function saveSessionDraftSoon(delay=250){
+		if (__saveDraftTimer) clearTimeout(__saveDraftTimer);
+		__saveDraftTimer = setTimeout(saveSessionDraftNow, delay);
+	}
+
 	// Visibility UI
 	function updateVisibilityUI(){
 		objectList.innerHTML='';
 		objects.forEach(obj=>{
 			const div=document.createElement('div');
-			const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=obj.visible; cb.addEventListener('change',()=>obj.visible=cb.checked);
+			const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=obj.visible; cb.addEventListener('change',()=>{ obj.visible=cb.checked; saveSessionDraftSoon(); });
 			const span=document.createElement('span'); span.textContent=obj.name; span.style.flex='1'; span.style.cursor='pointer';
 			if(selectedObjects.includes(obj)) span.style.background='#ffe066';
-			span.addEventListener('dblclick',()=>{ const inp=document.createElement('input'); inp.type='text'; inp.value=obj.name; inp.style.flex='1'; inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI();}); inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();}); div.replaceChild(inp,span); inp.focus(); });
+			span.addEventListener('dblclick',()=>{ const inp=document.createElement('input'); inp.type='text'; inp.value=obj.name; inp.style.flex='1'; inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI(); saveSessionDraftSoon();}); inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();}); div.replaceChild(inp,span); inp.focus(); });
 			span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
 			div.append(cb,span); objectList.append(div);
 		});
@@ -1036,7 +1286,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	function updateCameraClipping(){ if (!objects.length) return; const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o)); if (box.isEmpty()) return; const size = new THREE.Vector3(); box.getSize(size); const radius = Math.max(size.x, size.y, size.z) * 0.75; const far = Math.min(100000, Math.max(1000, radius * 12)); camera.near = Math.max(0.01, far / 50000); camera.far = far; camera.updateProjectionMatrix(); if (controls){ controls.maxDistance = far * 0.95; } }
 	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
-	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } }
+	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } saveSessionDraftSoon(); }
 
 	// Trackpad support: allow pan/rotate/zoom for laptop users
 	function isTrackpadEvent(e) {
@@ -1064,7 +1314,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
 	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
 	const SURFACE_EPS = 0.01;
-		renderer.domElement.addEventListener('pointerdown',e=>{
+			renderer.domElement.addEventListener('pointerdown',e=>{
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
 		if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 		getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
@@ -1075,14 +1325,36 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					const h = hits[0].object;
 					// begin drag on handle
 					const target = selectedObjects[0];
-					const startBox = new THREE.Box3().setFromObject(target);
-					const startCenter = startBox.getCenter(new THREE.Vector3());
-					const objWorldPos = new THREE.Vector3(); target.getWorldPosition(objWorldPos);
-					const objScale = target.scale.clone();
-					const originOffset = objWorldPos.clone().sub(startCenter);
+					target.updateMatrixWorld(true);
 					const camDir = new THREE.Vector3(); camera.getWorldDirection(camDir);
 					const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, h.getWorldPosition(new THREE.Vector3()));
-					handleDrag = { mesh: h, info: h.userData.__handle, target, start: { box: startBox.clone(), center: startCenter.clone(), objWorldPos: objWorldPos.clone(), objScale: objScale.clone(), originOffset: originOffset.clone() }, dragPlane: plane };
+					// Decompose to build TR (no scale) and its inverse
+					const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+					target.matrixWorld.decompose(pos, quat, scl);
+					const TR = new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1));
+					const invTR = TR.clone().invert();
+					// Compute initial local-scaled bounding box (in the same frame used by handles)
+					const boxL = new THREE.Box3(); boxL.makeEmpty();
+					const v = new THREE.Vector3();
+					target.traverseVisible(node => {
+						if (!node.isMesh || !node.geometry) return;
+						const geom = node.geometry; if (!geom.boundingBox) geom.computeBoundingBox();
+						const bb = geom.boundingBox; if (!bb) return;
+						for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
+							v.set(xi?bb.max.x:bb.min.x, yi?bb.max.y:bb.min.y, zi?bb.max.z:bb.min.z);
+							v.applyMatrix4(node.matrixWorld); // world
+							v.applyMatrix4(invTR); // into target's TR-local (scaled local) frame
+							boxL.expandByPoint(v);
+						}
+					});
+					const centerL = boxL.getCenter(new THREE.Vector3());
+					// Origin offset in world: object's world position relative to world center of the box
+					const objWorldPos = new THREE.Vector3(); target.getWorldPosition(objWorldPos);
+					const startCenterW = centerL.clone().applyMatrix4(TR);
+					const originOffset = objWorldPos.clone().sub(startCenterW);
+					const objScale = target.scale.clone();
+					const pivotL = h.userData.__handle.anchor.clone();
+					handleDrag = { mesh: h, info: h.userData.__handle, target, start: { boxL: boxL.clone(), centerL: centerL.clone(), objWorldPos: objWorldPos.clone(), objScale: objScale.clone(), originOffset: originOffset.clone(), TR, invTR, pos0: pos.clone(), quat0: quat.clone(), pivotL }, dragPlane: plane };
 					controls.enabled = false;
 					return; // consume
 				}
@@ -1096,7 +1368,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				if(!dropPoint) return;
 				const clone=loadedModel.clone();
 				clone.position.copy(dropPoint);
-				addObjectToScene(clone);
+				addObjectToScene(clone); saveSessionDraftSoon();
 				// single placement complete
 				loadedModel = null;
 				if (fileInput) fileInput.value = '';
@@ -1142,7 +1414,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
 		}
 		// end handle drag if active
-		if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); }
+		if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); hideSnapHighlight(); saveSessionDraftSoon(); }
 	});
 
 	// Grouping logic for toolbox button
@@ -1153,21 +1425,43 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		const group=new THREE.Group(); group.position.copy(center);
 		selectedObjects.forEach(obj=>{ obj.updateMatrixWorld(); const worldPos = new THREE.Vector3(); worldPos.setFromMatrixPosition(obj.matrixWorld); obj.position.copy(worldPos.sub(center)); group.add(obj); });
 		group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
-		scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping();
+		scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftSoon();
 	}
 
 	// Draw-create preview
-	renderer.domElement.addEventListener('pointermove',e=>{
+		renderer.domElement.addEventListener('pointermove',e=>{
 		// Handle dragging
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
-			const pt = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(handleDrag.dragPlane, pt)) return;
+			const ptW = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(handleDrag.dragPlane, ptW)) return;
 			const { target, info, start } = handleDrag; const mask = info.mask;
-			const box0 = start.box; const min0 = box0.min.clone(); const max0 = box0.max.clone();
-			let min = min0.clone(); let max = max0.clone();
+			// Convert hit point to object-local coordinates using the cached inverse TRS
+			const ptL = ptW.clone().applyMatrix4(start.invTR);
+			// Work from the initial TR-local box extents
+			const box0L = start.boxL; const min0L = box0L.min.clone(); const max0L = box0L.max.clone();
+			let min = min0L.clone(); let max = max0L.clone();
 			if (info.kind === 'center'){
-				const delta = pt.clone().sub(handleDrag.mesh.position.clone());
-				const newWorldPos = start.objWorldPos.clone().add(delta);
+				// Move the object by the delta in world space along the drag plane
+				const deltaW = ptW.clone().sub(handleDrag.mesh.getWorldPosition(new THREE.Vector3()));
+				let newWorldPos = start.objWorldPos.clone().add(deltaW);
+				// Soft snap: adjust by nearest face-to-face delta
+				if (SNAP_ENABLED && !snapGuard){
+					snapGuard = true;
+					const parent = target.parent || scene;
+					const newLocal = parent.worldToLocal(newWorldPos.clone());
+					// Temporarily set position to compute box at new pose
+					const oldPos = target.position.clone();
+					target.position.copy(newLocal);
+					target.updateMatrixWorld(true);
+					const movingBox = new THREE.Box3().setFromObject(target);
+					const exclude = new Set([target]);
+					const snap = computeSnapDelta(movingBox, exclude);
+					// Revert and apply snap in world
+					target.position.copy(oldPos);
+					newWorldPos.add(snap.delta);
+					if (snap.axis) showSnapHighlightAt(movingBox, snap); else hideSnapHighlight();
+					snapGuard = false;
+				}
 				const parent = target.parent || scene; const newLocal = parent.worldToLocal(newWorldPos.clone());
 					target.position.copy(newLocal);
 					rebuildSelectionOutlines();
@@ -1175,20 +1469,35 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			}
 			const anchor = info.anchor.clone();
 			const minSize = 0.1;
-			if (mask[0]){ if (Math.abs(anchor.x - min0.x) < Math.abs(anchor.x - max0.x)) { max.x = Math.max(anchor.x + minSize, pt.x); min.x = anchor.x; } else { min.x = Math.min(anchor.x - minSize, pt.x); max.x = anchor.x; } }
-			if (mask[1]){ if (Math.abs(anchor.y - min0.y) < Math.abs(anchor.y - max0.y)) { max.y = Math.max(anchor.y + minSize, pt.y); min.y = anchor.y; } else { min.y = Math.min(anchor.y - minSize, pt.y); max.y = anchor.y; } }
-			if (mask[2]){ if (Math.abs(anchor.z - min0.z) < Math.abs(anchor.z - max0.z)) { max.z = Math.max(anchor.z + minSize, pt.z); min.z = anchor.z; } else { min.z = Math.min(anchor.z - minSize, pt.z); max.z = anchor.z; } }
-			const size0 = max0.clone().sub(min0); const size1 = max.clone().sub(min);
+			if (mask[0]){ if (Math.abs(anchor.x - min0L.x) < Math.abs(anchor.x - max0L.x)) { max.x = Math.max(anchor.x + minSize, ptL.x); min.x = anchor.x; } else { min.x = Math.min(anchor.x - minSize, ptL.x); max.x = anchor.x; } }
+			if (mask[1]){ if (Math.abs(anchor.y - min0L.y) < Math.abs(anchor.y - max0L.y)) { max.y = Math.max(anchor.y + minSize, ptL.y); min.y = anchor.y; } else { min.y = Math.min(anchor.y - minSize, ptL.y); max.y = anchor.y; } }
+			if (mask[2]){ if (Math.abs(anchor.z - min0L.z) < Math.abs(anchor.z - max0L.z)) { max.z = Math.max(anchor.z + minSize, ptL.z); min.z = anchor.z; } else { min.z = Math.min(anchor.z - minSize, ptL.z); max.z = anchor.z; } }
+			const size0 = max0L.clone().sub(min0L); const size1 = max.clone().sub(min);
 			const s = new THREE.Vector3(
 				mask[0] ? Math.max(0.01, size1.x / Math.max(0.01, size0.x)) : 1,
 				mask[1] ? Math.max(0.01, size1.y / Math.max(0.01, size0.y)) : 1,
 				mask[2] ? Math.max(0.01, size1.z / Math.max(0.01, size0.z)) : 1
 			);
-			const ctr1 = min.clone().add(max).multiplyScalar(0.5);
-			target.scale.set(start.objScale.x * s.x, start.objScale.y * s.y, start.objScale.z * s.z);
-			const newWorldPos = ctr1.clone().add(start.originOffset);
+			// Compute new scale and adjust translation to keep pivot fixed in world
+			const pivotL = start.pivotL;
+			const scaleNew = new THREE.Vector3(start.objScale.x * s.x, start.objScale.y * s.y, start.objScale.z * s.z);
+			const scaleOld = start.objScale;
+			// World pivot using initial TR
+			const pivotW0 = pivotL.clone().applyMatrix4(start.TR);
+			// Delta in local to keep pivot fixed under scaling: (1 - s) * pivotL
+			const deltaLocal = new THREE.Vector3(
+				(1 - s.x) * pivotL.x,
+				(1 - s.y) * pivotL.y,
+				(1 - s.z) * pivotL.z
+			);
+			// Rotate deltaLocal into world and add to original world position
+			const deltaWorld = deltaLocal.clone().applyQuaternion(start.quat0);
+			const newWorldPos = start.pos0.clone().add(deltaWorld);
+			// Apply new scale and position
+			target.scale.copy(scaleNew);
 			const parent = target.parent || scene; const newLocal = parent.worldToLocal(newWorldPos.clone());
 				target.position.copy(newLocal);
+				refreshHandlePositionsDuringDrag(target);
 				rebuildSelectionOutlines();
 			return;
 		}
@@ -1228,7 +1537,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		} catch {}
 		if(previewMesh){ scene.add(previewMesh); }
 	});
-	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); });
+	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); saveSessionDraftSoon(); });
 	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
 
 	// Primitives + utilities
@@ -1259,6 +1568,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				});
 				updateMultiSelectPivot();
 				rebuildSelectionOutlines();
+				saveSessionDraftSoon();
 			}
 		} else {
 			const sel=transformControls.object;
@@ -1266,11 +1576,12 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				const box=new THREE.Box3().setFromObject(sel);
 				const minY=box.min.y;
 				sel.position.y-=minY;
+				saveSessionDraftSoon();
 			}
 		}
 	}
 	// Delete
-	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); } });
+	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftSoon(); } });
 
 	// Keep outlines syncing
 	transformControls.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
@@ -1280,6 +1591,22 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	window.addEventListener('resize',()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
 	renderer.setAnimationLoop((t, frame) => {
 		try {
+				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes
+				if (handlesGroup && lastHandleTarget && selectedObjects.length === 1 && selectedObjects[0] === lastHandleTarget) {
+					lastHandleTarget.updateMatrixWorld(true);
+					// Update group TR so handles rotate/translate with object
+					const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+					lastHandleTarget.matrixWorld.decompose(pos, quat, scl);
+					const tr = new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1));
+					if (!handlesGroup.matrix.equals(tr)) { handlesGroup.matrix.copy(tr); handlesGroup.matrixWorldNeedsUpdate = true; }
+					// During drag, live-update positions for smooth feedback; otherwise rebuild on scale change
+					if (handleDrag) {
+						refreshHandlePositionsDuringDrag(lastHandleTarget);
+					} else if (Math.abs(scl.x-lastHandleScale.x)>1e-6 || Math.abs(scl.y-lastHandleScale.y)>1e-6 || Math.abs(scl.z-lastHandleScale.z)>1e-6) {
+						lastHandleScale.copy(scl);
+						buildHandlesForObject(lastHandleTarget);
+					}
+				}
 			// If infinite grid mode, keep grid centered beneath camera target to simulate endlessness
 			if (grid && gridInfiniteBtn && gridInfiniteBtn.getAttribute('aria-pressed') === 'true') {
 				const target = controls && controls.target ? controls.target : new THREE.Vector3();
@@ -1409,6 +1736,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		clearSceneObjects();
 		currentSceneId = null;
 		currentSceneName = '';
+		try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
 		updateCameraClipping();
 	});
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
@@ -1444,6 +1772,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					// Track current scene for overwrite on Save
 					currentSceneId = id;
 					currentSceneName = name || 'Untitled';
+					// Replace session draft with this loaded scene
+					try { sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json: rec.json })); } catch {}
 				} catch(e){ alert('Failed to load scene'); console.error(e); }
 			});
 			const btnDelete = document.createElement('button'); btnDelete.textContent='Delete'; btnDelete.className='btn'; btnDelete.style.fontSize='11px'; btnDelete.addEventListener('click', async ()=>{ await localStore.deleteScene(id); if (currentSceneId === id) { currentSceneId = null; currentSceneName = ''; } refreshScenesList(); });
