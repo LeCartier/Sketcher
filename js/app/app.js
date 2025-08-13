@@ -37,7 +37,7 @@ export async function init() {
 			}
 		} catch {
 			const el = document.getElementById('version-badge');
-			if (el && !el.textContent) el.textContent = 'v1.0.0';
+			if (el && !el.textContent) el.textContent = 'v1.1.0';
 		}
 	})();
 
@@ -563,6 +563,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const gridSizeInput = document.getElementById('gridSizeInput');
 	const gridDivsInput = document.getElementById('gridDivsInput');
 	const gridInfiniteBtn = document.getElementById('gridInfiniteBtn');
+	const matOriginalBtn = document.getElementById('matOriginal');
+	const matCardboardBtn = document.getElementById('matCardboard');
+	const matMdfBtn = document.getElementById('matMdf');
 	const uploadBtn=document.getElementById('uploadModel');
 	const fileInput=document.getElementById('modelInput');
 	const placingPopup=document.getElementById('placingPopup');
@@ -737,6 +740,160 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const hex = (gridColorPicker && gridColorPicker.value) || '#ffffff';
 		setGridColor(hex);
 	}
+
+	// --- Global Material Style (Original/Cardboard/MDF) ---
+	// Preserve original materials for each mesh so we can restore them later
+	const __originalMaterials = new WeakMap();
+	function forEachMeshInScene(cb){
+		const stack = [...scene.children];
+		while (stack.length){
+			const o = stack.pop();
+			if (!o) continue;
+			// Skip helpers (grid, lights, cameras, gizmos, scan previews, etc.)
+			if (__isHelperObject(o)) { continue; }
+			if (!o.visible) { if (o.children && o.children.length) stack.push(...o.children); continue; }
+			if (o.isMesh) cb(o);
+			if (o.children && o.children.length) stack.push(...o.children);
+		}
+	}
+	function ensureOriginalMaterial(mesh){ if (!__originalMaterials.has(mesh)) __originalMaterials.set(mesh, mesh.material); }
+
+	// Texture/material caches (shared instances)
+	let __cardboardMat = null; // final shared material (photo if available, else procedural)
+	let __mdfMat = null;       // final shared material (photo if available, else procedural)
+
+	// Procedural fallback textures (lightweight, immediate)
+	function makeNoiseCanvas(w=256,h=256,opts={}){
+		const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
+		ctx.fillStyle=opts.base||'#c9a46a'; ctx.fillRect(0,0,w,h);
+		const grains=opts.grains||800; const alpha=opts.alpha||0.06; const size=opts.size||1.2; const hueJitter=opts.hueJitter||0;
+		for(let i=0;i<grains;i++){
+			const x=Math.random()*w, y=Math.random()*h; const s=(Math.random()*size)+0.4; const a=alpha*Math.random();
+			ctx.fillStyle=`rgba(0,0,0,${a.toFixed(3)})`; ctx.fillRect(x,y,s,s);
+			if (hueJitter>0){ ctx.fillStyle=`rgba(255,255,255,${(a*0.5).toFixed(3)})`; ctx.fillRect(x+0.5,y+0.5,s*0.7,s*0.7); }
+		}
+		// Subtle vertical stripes for corrugation hint
+		if (opts.stripes){
+			ctx.globalAlpha = 0.05; ctx.fillStyle = '#000';
+			const period = opts.period || 18;
+			for(let x=0;x<w;x+=period){ ctx.fillRect(x,0,1,h); }
+			ctx.globalAlpha = 1;
+		}
+		return c;
+	}
+	function makeCardboardMaterialProcedural(){
+		const texCanvas = makeNoiseCanvas(512,512,{ base:'#c9a46a', grains:1400, alpha:0.08, size:1.4, hueJitter:0.2, stripes:true, period:22 });
+		const tex = new THREE.CanvasTexture(texCanvas);
+		if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+		tex.anisotropy = 8; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1.5,1.5);
+		return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
+	}
+	function makeMDFMaterialProcedural(){
+		const texCanvas = makeNoiseCanvas(512,512,{ base:'#b8aa8f', grains:1200, alpha:0.06, size:1.2, hueJitter:0.15, stripes:false });
+		const tex = new THREE.CanvasTexture(texCanvas);
+		if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+		tex.anisotropy = 8; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1.8,1.8);
+		return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide });
+	}
+	function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
+	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ ensureOriginalMaterial(m); m.material = sharedMat; }); }
+
+	// Loader helpers for photoreal textures (optional assets)
+	const __textureLoader = new THREE.TextureLoader();
+	function setTexCommon(tex, { sRGB=false, repeat=1.5 }={}){
+		try { if (sRGB && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace; } catch {}
+		tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(repeat, repeat);
+		tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 8);
+		tex.needsUpdate = true; return tex;
+	}
+	async function loadTextureAny(urls, opts){
+		for (const u of urls){
+			try { const tex = await __textureLoader.loadAsync(u); return setTexCommon(tex, opts); } catch (e) { /* try next */ }
+		}
+		return null;
+	}
+	async function buildPhotoMaterial(kind){
+		const base = `./assets/textures/`;
+		if (kind === 'cardboard'){
+			const map = await loadTextureAny([base+'cardboard_basecolor.jpg', base+'cardboard_basecolor.png'], { sRGB:true, repeat:1.6 });
+			if (!map) return makeCardboardMaterialProcedural();
+			const normalMap = await loadTextureAny([base+'cardboard_normal.jpg', base+'cardboard_normal.png']);
+			const roughnessMap = await loadTextureAny([base+'cardboard_roughness.jpg', base+'cardboard_roughness.png']);
+			const mat = new THREE.MeshStandardMaterial({ map, normalMap: normalMap||undefined, roughnessMap: roughnessMap||undefined, roughness: roughnessMap?1.0:0.9, metalness: 0.0, side: THREE.DoubleSide });
+			if (normalMap) mat.normalScale = new THREE.Vector2(0.6, 0.6);
+			return mat;
+		}
+		if (kind === 'mdf'){
+			const map = await loadTextureAny([base+'mdf_basecolor.jpg', base+'mdf_basecolor.png'], { sRGB:true, repeat:1.8 });
+			if (!map) return makeMDFMaterialProcedural();
+			const normalMap = await loadTextureAny([base+'mdf_normal.jpg', base+'mdf_normal.png']);
+			const roughnessMap = await loadTextureAny([base+'mdf_roughness.jpg', base+'mdf_roughness.png']);
+			const mat = new THREE.MeshStandardMaterial({ map, normalMap: normalMap||undefined, roughnessMap: roughnessMap||undefined, roughness: roughnessMap?1.0:0.85, metalness: 0.0, side: THREE.DoubleSide });
+			if (normalMap) mat.normalScale = new THREE.Vector2(0.35, 0.35);
+			return mat;
+		}
+		return null;
+	}
+
+	// Material style orchestration
+	let currentMaterialStyle = 'original';
+	let __materialLoadPromise = null;
+	function getActiveSharedMaterial(style){
+		if (style === 'cardboard') return __cardboardMat || null;
+		if (style === 'mdf') return __mdfMat || null;
+		return null;
+	}
+	function getProceduralSharedMaterial(style){
+		if (style === 'cardboard') {
+			if (!__cardboardMat) { __cardboardMat = makeCardboardMaterialProcedural(); try { __cardboardMat.userData = { ...( __cardboardMat.userData||{} ), procedural: true }; } catch {} }
+			return __cardboardMat;
+		}
+		if (style === 'mdf') {
+			if (!__mdfMat) { __mdfMat = makeMDFMaterialProcedural(); try { __mdfMat.userData = { ...( __mdfMat.userData||{} ), procedural: true }; } catch {} }
+			return __mdfMat;
+		}
+		return null;
+	}
+	function setMaterialButtons(style){
+		if (matOriginalBtn) matOriginalBtn.setAttribute('aria-pressed', style==='original'?'true':'false');
+		if (matCardboardBtn) matCardboardBtn.setAttribute('aria-pressed', style==='cardboard'?'true':'false');
+		if (matMdfBtn) matMdfBtn.setAttribute('aria-pressed', style==='mdf'?'true':'false');
+	}
+	function applyMaterialStyle(style){
+		style = style || 'original';
+		currentMaterialStyle = style;
+		// Persist selection
+		try { localStorage.setItem('sketcher.materialStyle', style); } catch {}
+		// Immediate path
+		if (style === 'original') { restoreOriginalMaterials(); setMaterialButtons(style); return; }
+		// Apply procedural immediately, then upgrade to photo when ready
+		const proc = getProceduralSharedMaterial(style);
+		applyUniformMaterial(proc);
+		setMaterialButtons(style);
+		// Kick off async load (debounced to one in-flight per style)
+		const need = (style === 'cardboard' && (!__cardboardMat || __cardboardMat.userData?.procedural))
+		         || (style === 'mdf' && (!__mdfMat || __mdfMat.userData?.procedural));
+		if (!need) return;
+		__materialLoadPromise = (async () => {
+			const mat = await buildPhotoMaterial(style);
+			// Tag whether material is procedural for future decisions
+			if (mat && !mat.map) { try { mat.userData = { ...(mat.userData||{}), procedural: true }; } catch {} }
+			if (style === 'cardboard') __cardboardMat = mat;
+			if (style === 'mdf') __mdfMat = mat;
+			// Only apply if the style hasn't changed mid-load
+			if (currentMaterialStyle === style && mat) applyUniformMaterial(mat);
+		})();
+	}
+	// Initialize selected material style from storage and wire buttons
+	(function(){
+		let saved = 'original';
+		try { const s = localStorage.getItem('sketcher.materialStyle'); if (s) saved = s; } catch {}
+		if (matOriginalBtn) matOriginalBtn.addEventListener('click', ()=> applyMaterialStyle('original'));
+		if (matCardboardBtn) matCardboardBtn.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
+		if (matMdfBtn) matMdfBtn.addEventListener('click', ()=> applyMaterialStyle('mdf'));
+		applyMaterialStyle(saved);
+		setMaterialButtons(saved);
+	})();
 
 	// Edge fade overlay for infinite grid
 	function ensurePageVignette(on){ /* no-op: grid edge fade handled in shader now */ }
@@ -1300,7 +1457,22 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	function updateCameraClipping(){ if (!objects.length) return; const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o)); if (box.isEmpty()) return; const size = new THREE.Vector3(); box.getSize(size); const radius = Math.max(size.x, size.y, size.z) * 0.75; const far = Math.min(100000, Math.max(1000, radius * 12)); camera.near = Math.max(0.01, far / 50000); camera.far = far; camera.updateProjectionMatrix(); if (controls){ controls.maxDistance = far * 0.95; } }
 	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
-	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } saveSessionDraftNow(); }
+	function addObjectToScene(obj, { select = false } = {}){
+		scene.add(obj); objects.push(obj);
+		// Apply current material style to this object (shared instance)
+		if (currentMaterialStyle === 'cardboard' || currentMaterialStyle === 'mdf'){
+			const shared = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle);
+			const stack = [obj];
+			while (stack.length){
+				const o = stack.pop();
+				if (o.isMesh){ ensureOriginalMaterial(o); o.material = shared; }
+				if (o.children && o.children.length) stack.push(...o.children);
+			}
+		}
+		updateVisibilityUI(); updateCameraClipping();
+		if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); }
+		saveSessionDraftNow();
+	}
 
 	// Trackpad support: allow pan/rotate/zoom for laptop users
 	function isTrackpadEvent(e) {

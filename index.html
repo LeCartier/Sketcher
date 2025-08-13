@@ -244,12 +244,26 @@
       </svg>
     </button>
     <div id="settingsGroup" class="collapse" aria-hidden="true">
-      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Back Color
+  <label style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">Back Color
         <input id="bgColorPicker" type="color" value="#1e1e1e" style="margin-left:8px;">
       </label>
-      <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Grid Color
+  <label style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">Grid Color
         <input id="gridColorPicker" type="color" value="#ffffff" style="margin-left:8px;">
       </label>
+  <div style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">
+        <div style="margin-bottom:6px;">Mat</div>
+        <button id="openMaterialsPicker" class="icon-btn" title="Open material swatches" aria-label="Open material swatches" type="button">
+          <span class="sr-only">Open Material Swatches</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <!-- Palette icon -->
+            <path d="M12 3a9 9 0 1 0 0 18c2.2 0 3-1.2 3-2.2 0-1.2-.8-1.8-1.8-1.8h-1.2c-1 0-1.8-.8-1.8-1.8 0-1 .8-1.8 1.8-1.8h2c2.2 0 4-1.8 4-4 0-2.7-2.8-4.6-6-4.6Z" fill="none" stroke="#222" stroke-width="1.6"/>
+            <circle cx="8" cy="10" r="1.2" fill="#222"/>
+            <circle cx="10.5" cy="7.5" r="1.2" fill="#222"/>
+            <circle cx="14" cy="7.8" r="1.2" fill="#222"/>
+            <circle cx="16" cy="10.5" r="1.2" fill="#222"/>
+          </svg>
+        </button>
+      </div>
       <div class="settings-compact">
         <div class="field">
           <label for="gridSizeInput">Size (ft)</label>
@@ -347,6 +361,24 @@
   <div id="visibilityPopup" style="display:none;">
     <div class="visibility-header"><strong data-i18n="visibility.title">Visibility</strong></div>
     <div id="objectList"></div>
+  </div>
+  <!-- Materials popup (right side) -->
+  <div id="materialsPopup" style="display:none;">
+    <div class="materials-header"><strong>Mat</strong></div>
+    <div class="materials-grid">
+      <button id="matOriginal" class="mat-swatch" title="Original materials" aria-label="Original materials" aria-pressed="false" type="button">
+        <div class="swatch-box" style="background:#ddd; border:1px solid #222;"></div>
+        <div class="swatch-label">Original</div>
+      </button>
+      <button id="matCardboard" class="mat-swatch" title="Cardboard" aria-label="Cardboard" aria-pressed="false" type="button">
+        <div class="swatch-box" style="background:#C9A46A; border:1px solid #222;"></div>
+        <div class="swatch-label">Cardboard</div>
+      </button>
+      <button id="matMdf" class="mat-swatch" title="MDF" aria-label="MDF" aria-pressed="false" type="button">
+        <div class="swatch-box" style="background:#B8AA8F; border:1px solid #222;"></div>
+        <div class="swatch-label">MDF</div>
+      </button>
+    </div>
   </div>
   <!-- Floating button to Columbarium with smooth fade -->
   <a id="toColumbarium" class="floating-nav nav-top-right" href="./columbarium.html" title="Open Columbarium" aria-label="Open Columbarium">
@@ -567,7 +599,7 @@
         </svg>
       </button>
   <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center;">
-    v1.0.0
+    v1.1.0
   </div>
       <!-- Room Scan HUD -->
       <div id="scanHud" style="display:none;">
@@ -706,6 +738,46 @@
             // Delegate to app.js handler
             document.dispatchEvent(new CustomEvent('sketcher:startRoomScan'));
           });
+        }
+    // Materials popup open/close and placement (dock next to the toolbox button)
+        const openMaterialsPicker = document.getElementById('openMaterialsPicker');
+        const materialsPopup = document.getElementById('materialsPopup');
+        if (openMaterialsPicker && materialsPopup) {
+          const placeMatPopup = () => {
+      const btnRect = openMaterialsPicker.getBoundingClientRect();
+      const popup = materialsPopup;
+      const width = popup.offsetWidth || 200;
+      const height = popup.offsetHeight || 140;
+      // Place to the right of the button, vertically centered on the button
+      const proposedLeft = Math.round(btnRect.right + 10);
+      const proposedTop = Math.round(btnRect.top + (btnRect.height / 2) - (height / 2));
+      const left = Math.min(proposedLeft, window.innerWidth - width - 12);
+      const top = Math.max(12, Math.min(proposedTop, window.innerHeight - height - 12));
+      popup.style.left = left + 'px';
+      popup.style.top = top + 'px';
+          };
+          const openMat = () => {
+            materialsPopup.style.display = 'block';
+            requestAnimationFrame(() => {
+              placeMatPopup();
+              materialsPopup.classList.add('open');
+            });
+          };
+          const closeMat = () => {
+            materialsPopup.classList.remove('open');
+            setTimeout(()=>{ materialsPopup.style.display = 'none'; }, 180);
+          };
+          openMaterialsPicker.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = materialsPopup.classList.contains('open');
+            if (isOpen) closeMat(); else openMat();
+          });
+          document.addEventListener('click', (e) => {
+            if (!materialsPopup.contains(e.target) && e.target !== openMaterialsPicker) {
+              if (materialsPopup.classList.contains('open')) closeMat();
+            }
+          });
+          window.addEventListener('resize', () => { if (materialsPopup.classList.contains('open')) placeMatPopup(); });
         }
     });
     init();

@@ -33,7 +33,7 @@
     }
   </script>
 </head>
-<body>
+<body class="columbarium">
   <div id="pageFade" aria-hidden="true"></div>
   <!-- Toolbox-like controls for Columbarium (consistent with editor) -->
   <div id="cToolbox">
@@ -42,6 +42,13 @@
       <span class="sr-only">Import</span>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
       </button>
+      <div id="cImportGroup" class="collapse" aria-hidden="true" style="width:100%;">
+        <button id="importBtn" class="icon-btn" title="Import Scene JSON" aria-label="Import Scene JSON">
+          <span class="sr-only">Import Scene JSON</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+        </button>
+        <input id="importInput" type="file" accept="application/json,.json,.gltf,.glb,.obj" style="display:none" />
+      </div>
       <button id="cCenterView" class="icon-btn" title="Center View" aria-label="Center View">
       <span class="sr-only">Center View</span>
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#222"/></svg>
@@ -59,14 +66,7 @@
         </g>
       </svg>
     </button>
-    </div>
-    <div id="cImportGroup" class="collapse" aria-hidden="true" style="width:100%;">
-      <button id="importBtn" class="icon-btn" title="Import Scene JSON" aria-label="Import Scene JSON">
-        <span class="sr-only">Import Scene JSON</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
-      </button>
-  <input id="importInput" type="file" accept="application/json,.json,.gltf,.glb,.obj" style="display:none" />
-    </div>
+  </div>
     <div id="cZonesGroup" class="collapse" aria-hidden="true">
   <div class="row center">
         <button id="zoneCreate" class="icon-btn toggle-btn" title="Create Zone" aria-label="Create Zone" aria-pressed="false">
