@@ -870,17 +870,18 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const proc = getProceduralSharedMaterial(style);
 		applyUniformMaterial(proc);
 		setMaterialButtons(style);
+		// On narrow/mobile, skip photoreal upgrade to keep it light
+		const isMobileNarrow = Math.min(window.innerWidth, window.innerHeight) <= 640;
+		if (isMobileNarrow) return;
 		// Kick off async load (debounced to one in-flight per style)
 		const need = (style === 'cardboard' && (!__cardboardMat || __cardboardMat.userData?.procedural))
 		         || (style === 'mdf' && (!__mdfMat || __mdfMat.userData?.procedural));
 		if (!need) return;
 		__materialLoadPromise = (async () => {
 			const mat = await buildPhotoMaterial(style);
-			// Tag whether material is procedural for future decisions
 			if (mat && !mat.map) { try { mat.userData = { ...(mat.userData||{}), procedural: true }; } catch {} }
 			if (style === 'cardboard') __cardboardMat = mat;
 			if (style === 'mdf') __mdfMat = mat;
-			// Only apply if the style hasn't changed mid-load
 			if (currentMaterialStyle === style && mat) applyUniformMaterial(mat);
 		})();
 	}
@@ -891,6 +892,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (matOriginalBtn) matOriginalBtn.addEventListener('click', ()=> applyMaterialStyle('original'));
 		if (matCardboardBtn) matCardboardBtn.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
 		if (matMdfBtn) matMdfBtn.addEventListener('click', ()=> applyMaterialStyle('mdf'));
+		// Mobile simple buttons
+		const matMobileCard = document.getElementById('matMobileCardboard');
+		const matMobileMdf = document.getElementById('matMobileMdf');
+		if (matMobileCard) matMobileCard.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
+		if (matMobileMdf) matMobileMdf.addEventListener('click', ()=> applyMaterialStyle('mdf'));
 		applyMaterialStyle(saved);
 		setMaterialButtons(saved);
 	})();
