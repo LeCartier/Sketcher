@@ -1,4 +1,5 @@
 # AnArch – Lightweight 3D Modeling Playground
+[https://lecartier.github.io/Sketcher/](https://lecartier.github.io/Sketcher/)
 
 A single‑page Three.js scene for drawing boxes (in feet), importing models, editing with transform gizmos, grouping, visibility toggles, and exporting to OBJ. Includes optional WebXR AR viewing.
 
@@ -41,3 +42,4 @@ Then open http://localhost:8000/ (adjust port as needed).
 
 ### Add a new language
 Edit `js/i18n.js` and add a new top‑level key (e.g., `fr`) in `dictionaries`. Then add an `<option>` in the `#langSelect` in `index.html` and include the new code in `initLocale([...])` if desired.
+
