@@ -322,7 +322,16 @@ body.anarch-active canvas, body.anarch-active #gridStage {
 
 /* Prevent panels from blocking clicks outside their bounds */
 #toolbox, #ui-container { pointer-events: auto; }
-body > canvas { position: fixed; inset: 0; }
+/* Full-bleed canvas sizing; prefer dynamic viewport units when supported */
+body > canvas {
+	position: fixed;
+	inset: 0;
+	width: 100vw;
+	height: 100vh;
+}
+@supports (height: 100dvh) {
+	body > canvas { width: 100dvw; height: 100dvh; }
+}
 #objectList div { display: flex; align-items: center; margin-bottom: 4px; }
 #objectList input[type="checkbox"] { margin-right: 6px; }
 #objectList span { flex: 1; cursor: pointer; }

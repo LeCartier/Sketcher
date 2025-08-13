@@ -177,9 +177,13 @@ function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
 
 function resize(){
   const dpr = DPR();
+  // Use bounding rect which reflects CSS dvh/dvw units. On iOS Safari, prefer VisualViewport when available to avoid stale rect during UI chrome transitions
+  const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  const cssW = vv ? vv.width : rect.width;
+  const cssH = vv ? vv.height : rect.height;
+  canvas.width = Math.max(1, Math.floor(cssW * dpr));
+  canvas.height = Math.max(1, Math.floor(cssH * dpr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
   draw();
 }
@@ -891,6 +895,7 @@ window.addEventListener('columbarium:preview', async (e) => {
 
 // ---------- Wiring ----------
 window.addEventListener('resize', resize);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 window.addEventListener('scroll', () => { if (overlay3D && overlay3D.lastRect) updateOverlay3DRect(overlay3D.lastRect); }, { passive: true });
 window.addEventListener('columbarium:refresh', async ()=>{ await loadTiles(); draw(); });
 window.addEventListener('columbarium:center', () => { centerOnTiles(); draw(); });

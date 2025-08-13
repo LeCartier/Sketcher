@@ -57,7 +57,11 @@ export async function init() {
 	let orthoCamera = null;
 	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-	renderer.setSize(window.innerWidth, window.innerHeight);
+	// Prefer VisualViewport for accurate iOS dynamic viewport sizing
+	const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
+	const sizeW = vv ? Math.round(vv.width) : window.innerWidth;
+	const sizeH = vv ? Math.round(vv.height) : window.innerHeight;
+	renderer.setSize(sizeW, sizeH);
 	renderer.shadowMap.enabled = true;
 	document.body.appendChild(renderer.domElement);
 	// Ensure great touch/stylus behavior on tablets and iPad (no page scroll/zoom gestures on canvas)
@@ -1452,7 +1456,21 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	});
 
 	// Helpers
-	function getPointer(e){const rect=renderer.domElement.getBoundingClientRect();pointer.x=((e.clientX-rect.left)/rect.width)*2-1;pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;}
+	function getPointer(e){
+		const el = renderer.domElement;
+		const w = el.clientWidth || el.width; // CSS pixels
+		const h = el.clientHeight || el.height;
+		let px, py;
+		if (e && e.target === el && typeof e.offsetX === 'number' && typeof e.offsetY === 'number'){
+			// Prefer offsetX/Y when the event targets the canvas; more robust across VisualViewport quirks
+			px = e.offsetX; py = e.offsetY;
+		} else {
+			const rect = el.getBoundingClientRect();
+			px = (e.clientX - rect.left); py = (e.clientY - rect.top);
+		}
+		pointer.x = (px / w) * 2 - 1;
+		pointer.y = -(py / h) * 2 + 1;
+	}
 	function intersectGround(){const pt=new THREE.Vector3();raycaster.ray.intersectPlane(groundPlane,pt);return pt;}
 	function intersectAtY(y){const plane=new THREE.Plane(new THREE.Vector3(0,1,0),-y);const pt=new THREE.Vector3();return raycaster.ray.intersectPlane(plane,pt)?pt:null;}
 
@@ -1502,12 +1520,85 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch' || e.pointerType==='pen') activeTouchPointers.delete(e.pointerId); });
 	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch' || e.pointerType==='pen') activeTouchPointers.delete(e.pointerId); });
 	const SURFACE_EPS = 0.01;
+	// Two-click placement tools state (floor/wall)
+	const FLOOR_THICKNESS_FT = (4/12);
+	const WALL_THICKNESS_FT = 0.333;
+	const WALL_HEIGHT_FT = 10.0;
+	let placingTool = null; // 'floor' | 'wall' | null
+	let placingStage = 0;   // 0 = waiting for first click, 1 = waiting for second click
+	let placingStart = new THREE.Vector3();
+	let placingPreview = null; // THREE.Mesh
+	function cancelPlacing(){
+		if (placingPreview){ try { scene.remove(placingPreview); placingPreview.geometry && placingPreview.geometry.dispose && placingPreview.geometry.dispose(); placingPreview.material && placingPreview.material.dispose && placingPreview.material.dispose(); } catch {}
+			placingPreview = null;
+		}
+		placingTool = null; placingStage = 0; placingStart.set(0,0,0);
+		controls.enabled = true;
+		const wallBtn = document.getElementById('addWall'); if (wallBtn) wallBtn.setAttribute('aria-pressed','false');
+		const floorBtn = document.getElementById('addFloor'); if (floorBtn) floorBtn.setAttribute('aria-pressed','false');
+	}
+	function startPlacing(kind){
+		if (placingTool === kind){ cancelPlacing(); return; }
+		cancelPlacing();
+		placingTool = kind; placingStage = 0; controls.enabled = false;
+		const btn = document.getElementById(kind==='wall' ? 'addWall' : 'addFloor'); if (btn) btn.setAttribute('aria-pressed','true');
+	}
+	function updatePlacingPreview(current){
+		if (!placingTool || placingStage !== 1) return;
+		// Build/replace preview mesh based on placingTool and start/end on ground plane
+		if (placingPreview){ try { scene.remove(placingPreview); placingPreview.geometry && placingPreview.geometry.dispose && placingPreview.geometry.dispose(); placingPreview.material && placingPreview.material.dispose && placingPreview.material.dispose(); } catch {} placingPreview = null; }
+		if (placingTool === 'floor'){
+			const minX = Math.min(placingStart.x, current.x); const maxX = Math.max(placingStart.x, current.x);
+			const minZ = Math.min(placingStart.z, current.z); const maxZ = Math.max(placingStart.z, current.z);
+			const w = Math.max(0.1, maxX - minX); const d = Math.max(0.1, maxZ - minZ);
+			const cx = (minX + maxX) / 2; const cz = (minZ + maxZ) / 2;
+			const geo = new THREE.BoxGeometry(w, FLOOR_THICKNESS_FT, d);
+			const mesh = new THREE.Mesh(geo, material.clone());
+			mesh.position.set(cx, FLOOR_THICKNESS_FT/2, cz);
+			placingPreview = mesh; scene.add(mesh);
+		} else if (placingTool === 'wall'){
+			const dx = current.x - placingStart.x; const dz = current.z - placingStart.z;
+			const len = Math.max(0.1, Math.hypot(dx, dz));
+			const geo = new THREE.BoxGeometry(len, WALL_HEIGHT_FT, WALL_THICKNESS_FT);
+			// Translate geometry so its "start" sits at local origin, then place mesh at placingStart.
+			geo.translate(len/2, 0, 0);
+			const mesh = new THREE.Mesh(geo, material.clone());
+			mesh.position.set(placingStart.x, WALL_HEIGHT_FT/2, placingStart.z);
+			mesh.rotation.y = -Math.atan2(dz, dx);
+			placingPreview = mesh; scene.add(mesh);
+		}
+	}
+	function finalizePlacing(endPt){
+		if (!placingTool) return;
+		// Avoid creating degenerate walls/floors if the drag distance is too small
+		if (placingTool === 'wall'){
+			const d = Math.hypot(endPt.x - placingStart.x, endPt.z - placingStart.z);
+			if (d < 0.01) { cancelPlacing(); return; }
+		}
+		// Create final mesh and add to scene (clone from preview for correctness)
+		if (placingPreview){
+			const placed = placingPreview; placingPreview = null;
+			placed.name = (placingTool === 'floor') ? `Floor ${objects.filter(o=>o.name&&o.name.startsWith('Floor')).length+1}` : `Wall ${objects.filter(o=>o.name&&o.name.startsWith('Wall')).length+1}`;
+			addObjectToScene(placed, { select: true });
+		} else {
+			// Fallback: build once if preview was missing
+			updatePlacingPreview(endPt);
+			if (placingPreview){ const placed = placingPreview; placingPreview = null; placed.name = (placingTool==='floor')? 'Floor' : 'Wall'; addObjectToScene(placed, { select: true }); }
+		}
+		cancelPlacing(); saveSessionDraftNow();
+	}
 			renderer.domElement.addEventListener('pointerdown',e=>{
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
 		if (e.pointerType==='touch' || e.pointerType==='pen') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
 			// For mouse, only left button; for touch/pen there is no buttons semantic like mouse
 			if (e.pointerType === 'mouse' && e.button !== 0) return;
+			// Consume events for two-click placement if active
+			if (placingTool){
+				const pt = intersectGround(); if (!pt) return;
+				if (placingStage === 0){ placingStart.copy(pt); placingStage = 1; updatePlacingPreview(pt); return; }
+				else { finalizePlacing(pt); return; }
+			}
 			// Check handle hit first when single selection
 			if (selectedObjects.length===1 && handleMeshes && handleMeshes.length){
 				const hits=raycaster.intersectObjects(handleMeshes,true);
@@ -1618,8 +1709,10 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 	}
 
-	// Draw-create preview
+	// Draw-create preview and two-click placement live update
 		renderer.domElement.addEventListener('pointermove',e=>{
+		// Update live preview for two-click placement
+		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt); }
 		// Handle dragging
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
@@ -1732,9 +1825,12 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); saveSessionDraftNow(); });
 	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
 
+	// ESC should also cancel two-click placing tools (floor/wall)
+	window.addEventListener('keydown', e => { if (e.key === 'Escape' && placingTool){ cancelPlacing(); } });
+
 	// Primitives + utilities
-	document.getElementById('addFloor').addEventListener('click',()=>{ const thickness=0.333;const floor=new THREE.Mesh(new THREE.BoxGeometry(10,thickness,10),material.clone()); floor.position.set(0,thickness/2,0);floor.name='Floor';addObjectToScene(floor,{ select:true }); });
-	document.getElementById('addWall').addEventListener('click',()=>{ const thickness=0.333;const wall=new THREE.Mesh(new THREE.BoxGeometry(10,8,thickness),material.clone()); wall.position.set(0,4,-thickness/2);wall.name='Wall';addObjectToScene(wall,{ select:true }); });
+	if (addFloorBtn) addFloorBtn.addEventListener('click',()=>{ startPlacing('floor'); });
+	if (addWallBtn) addWallBtn.addEventListener('click',()=>{ startPlacing('wall'); });
 	const addColumnBtn = document.getElementById('addColumn');
 	const addBeamBtn = document.getElementById('addBeam');
 	const addRampBtn = document.getElementById('addRamp');
@@ -1780,7 +1876,32 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	transformControlsRotate.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
 
 	// Animation
-	window.addEventListener('resize',()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
+	function resizeRenderer() {
+		const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
+		const w = vv ? Math.round(vv.width) : window.innerWidth;
+		const h = vv ? Math.round(vv.height) : window.innerHeight;
+		// Update camera aspect safely (handles both perspective and ortho via controls.object)
+		const activeCam = camera;
+		if (activeCam && activeCam.isPerspectiveCamera) {
+			activeCam.aspect = Math.max(0.0001, w / h);
+			activeCam.updateProjectionMatrix();
+		}
+		if (orthoCamera && camera === orthoCamera) {
+			// Recompute ortho frustum to keep content scale consistent across resizes
+			const aspect = Math.max(0.0001, w / h);
+			const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o));
+			const size = box.getSize(new THREE.Vector3());
+			const orthoSize = Math.max(size.x, size.y, size.z) * 0.7 || 10;
+			orthoCamera.left = -orthoSize * aspect;
+			orthoCamera.right = orthoSize * aspect;
+			orthoCamera.top = orthoSize;
+			orthoCamera.bottom = -orthoSize;
+			orthoCamera.updateProjectionMatrix();
+		}
+		renderer.setSize(w, h);
+	}
+	window.addEventListener('resize', resizeRenderer);
+	if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeRenderer);
 	renderer.setAnimationLoop((t, frame) => {
 		try {
 				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes

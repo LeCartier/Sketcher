@@ -12,8 +12,9 @@
   .btn { background:#1f6feb; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:13px; }
   .btn.secondary { background:#333; color:#ddd; }
   .btn:disabled { opacity:0.6; cursor:not-allowed; }
-  /* Pannable grid canvas */
+  /* Pannable grid canvas: fill viewport, prefer dynamic viewport units */
   #gridStage { position: fixed; top:0; left:0; width:100vw; height:100vh; z-index: 0; display: block; cursor: grab; }
+  @supports (height: 100dvh) { #gridStage { width: 100dvw; height: 100dvh; } }
   #gridStage.grabbing { cursor: grabbing; }
   /* UI overlay for controls can stack above */
   .row { display:flex; gap:6px; }
