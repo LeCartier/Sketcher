@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#1e1e1e" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1e1e1e" />
   <title>Sketcher</title>
   <link rel="stylesheet" href="./css/styles.css" />
 </head>
@@ -272,17 +274,6 @@
         <div class="field">
           <label for="gridDivsInput">Divisions</label>
           <input id="gridDivsInput" type="number" min="1" step="1" value="20">
-        </div>
-        <!-- Mobile-friendly materials (simple colors) -->
-        <div class="mobile-materials" aria-label="Materials (mobile)">
-          <button id="matMobileCardboard" class="icon-btn" title="Cardboard" aria-label="Cardboard" aria-pressed="false" type="button">
-            <span class="sr-only">Cardboard</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3" fill="#C9A46A" stroke="#222" stroke-width="1.5"/></svg>
-          </button>
-          <button id="matMobileMdf" class="icon-btn" title="MDF" aria-label="MDF" aria-pressed="false" type="button">
-            <span class="sr-only">MDF</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3" fill="#B8AA8F" stroke="#222" stroke-width="1.5"/></svg>
-          </button>
         </div>
         <button id="gridInfiniteBtn" class="icon-btn" title="Infinite grid + edge fade" aria-label="Infinite grid + edge fade" aria-pressed="false" type="button">
           <span class="sr-only">Infinite grid</span>

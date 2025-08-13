@@ -69,6 +69,11 @@ canvas { display: block; touch-action: none; }
 
 /* Page fade transitions: fade through black using an overlay */
 html, body { height: 100%; }
+/* iOS Dynamic Island full-bleed: use html background to paint safe areas */
+html { background: #1e1e1e; }
+body { background: #1e1e1e; }
+/* Columbarium variant background */
+body.columbarium { background: #111; }
 #pageFade {
 	position: fixed;
 	inset: 0;
@@ -237,6 +242,27 @@ body.anarch-active .ao-base { animation: aoGlitch 1200ms steps(2) 2; }
 	#anarchOverlay .ao-ext,
 	#anarchOverlay .ao-y { font-size: clamp(32px, 6.6vw, 100px); letter-spacing: 0.01em; }
 	#anarchOverlay .ao-ext, #anarchOverlay .ao-y { left: calc(100% + 0.01em); }
+}
+
+/* Short-height (landscape) phones/tablets: dock toolboxes and cap panel heights */
+@media (max-height: 420px) {
+	/* Dock toolboxes to top-left and remove vertical centering to avoid cutoff */
+	#toolbox, #cToolbox {
+		position: fixed;
+		top: max(12px, env(safe-area-inset-top, 0px) + 12px);
+		left: max(12px, env(safe-area-inset-left, 0px) + 12px);
+		transform: none;
+	}
+	/* Limit slide-out height and enable scrolling if content exceeds viewport */
+	.collapse.open {
+		max-height: 220px;
+		overflow: auto;
+	}
+	/* Ensure floating popups fit and can scroll on short screens */
+	#materialsPopup, #legendPopup, #visibilityPopup {
+		max-height: calc(100vh - 24px);
+		overflow: auto;
+	}
 }
 @keyframes aoNoiseFlicker {
 	0% { opacity: 0.06; }
@@ -461,12 +487,6 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 	background: #fff;
 	text-align: center;
 	margin: 0 auto;
-}
-/* Mobile materials buttons inline, centered */
-#settingsGroup .mobile-materials { display: none; gap: 6px; justify-content: center; }
-#settingsGroup .mobile-materials .icon-btn { width: 32px; height: 32px; min-width: 32px; min-height: 32px; border-radius: 8px; }
-@media (max-width: 640px) {
-	#settingsGroup .mobile-materials { display: flex; }
 }
 /* Center the Columbarium Import child horizontally */
 #cImportGroup { display: flex; justify-content: center; }

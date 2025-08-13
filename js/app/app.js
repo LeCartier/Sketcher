@@ -892,11 +892,6 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (matOriginalBtn) matOriginalBtn.addEventListener('click', ()=> applyMaterialStyle('original'));
 		if (matCardboardBtn) matCardboardBtn.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
 		if (matMdfBtn) matMdfBtn.addEventListener('click', ()=> applyMaterialStyle('mdf'));
-		// Mobile simple buttons
-		const matMobileCard = document.getElementById('matMobileCardboard');
-		const matMobileMdf = document.getElementById('matMobileMdf');
-		if (matMobileCard) matMobileCard.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
-		if (matMobileMdf) matMobileMdf.addEventListener('click', ()=> applyMaterialStyle('mdf'));
 		applyMaterialStyle(saved);
 		setMaterialButtons(saved);
 	})();
