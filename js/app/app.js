@@ -213,14 +213,41 @@ export async function init() {
 	}
 
 	// Grid & lights
-	const GRID_SIZE = 20;
-	const GRID_DIVS = 20;
+	let GRID_SIZE = 20;
+	let GRID_DIVS = 20;
 	let grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, 0xffffff, 0xffffff);
 	grid.receiveShadow = true; scene.add(grid);
 	try {
 	  if (Array.isArray(grid.material)) grid.material.forEach(m => { if (m) m.depthWrite = false; });
 	  else if (grid.material) grid.material.depthWrite = false;
 	} catch {}
+
+	// Screen-space fade for grid lines (to black at edges)
+	function enhanceGridMaterial(mat){
+		const mats = Array.isArray(mat) ? mat : [mat];
+		mats.forEach(m => {
+			if (!m || !m.isLineBasicMaterial) return;
+			m.transparent = false; // keep as solid lines, we tint to black
+			m.onBeforeCompile = (shader) => {
+				shader.uniforms.uFadeStart = { value: 0.72 };
+				shader.uniforms.uFadeEnd = { value: 1.0 };
+				shader.vertexShader = shader.vertexShader
+					.replace('void main() {', 'varying vec2 vNDC;\nvoid main() {')
+					.replace(/\}\s*$/, '  vNDC = gl_Position.xy / gl_Position.w;\n}');
+				shader.fragmentShader = shader.fragmentShader
+					.replace('void main() {', 'varying vec2 vNDC;\nuniform float uFadeStart;\nuniform float uFadeEnd;\nvoid main() {')
+					.replace('#include <output_fragment>', `
+					float r = length(vNDC);
+					float fade = smoothstep(uFadeStart, uFadeEnd, r);
+					// Darken toward black near edges (does not alter alpha)
+					outgoingLight = mix(outgoingLight, vec3(0.0), fade);
+					#include <output_fragment>
+					`);
+			};
+			m.needsUpdate = true;
+		});
+	}
+	try { enhanceGridMaterial(grid.material); } catch {}
 	scene.add(new THREE.AmbientLight(0xffffff,0.5));
 	const dirLight=new THREE.DirectionalLight(0xffffff,0.8); dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
 
@@ -236,9 +263,33 @@ export async function init() {
 	const transformControls=new TransformControls(camera,renderer.domElement);
 	transformControls.setMode('translate'); transformControls.setTranslationSnap(0.1);
 	transformControls.addEventListener('dragging-changed',e=>controls.enabled=!e.value); scene.add(transformControls);
+	// Shrink gizmo size
+	if (typeof transformControls.setSize === 'function') transformControls.setSize(0.5);
 	const transformControlsRotate=new TransformControls(camera,renderer.domElement);
 	transformControlsRotate.setMode('rotate'); transformControlsRotate.setRotationSnap(THREE.MathUtils.degToRad(15));
 	transformControlsRotate.addEventListener('dragging-changed',e=>controls.enabled=!e.value); scene.add(transformControlsRotate);
+	// Shrink rotate gizmo size
+	if (typeof transformControlsRotate.setSize === 'function') transformControlsRotate.setSize(0.5);
+
+	// Reduce perceived line weight on gizmos (lines are often fixed-width on WebGL; use opacity as fallback)
+	function softenGizmoLines(ctrl){
+		try{
+			ctrl.traverse(obj=>{
+				const mats = obj && obj.material ? (Array.isArray(obj.material)? obj.material : [obj.material]) : null;
+				if (!mats) return;
+				mats.forEach(m=>{
+					if (m && m.isLineBasicMaterial){
+						m.transparent = true;
+						m.opacity = Math.min(m.opacity ?? 1, 0.5);
+						if ('linewidth' in m) { try { m.linewidth = 0.5; } catch(_){} }
+						m.needsUpdate = true;
+					}
+				});
+			});
+		}catch{}
+	}
+	softenGizmoLines(transformControls);
+	softenGizmoLines(transformControlsRotate);
 	function disableRotateGizmo(){ transformControlsRotate.enabled = false; transformControlsRotate.visible = false; }
 	function enableRotateGizmo(){ transformControlsRotate.enabled = true; transformControlsRotate.visible = true; }
 	function disableTranslateGizmo(){ transformControls.enabled = false; transformControls.visible = false; }
@@ -262,10 +313,74 @@ export async function init() {
 	let loadedModel=null;
 	let selectionOutlines = [];
 	let selectedObjects = [];
+	// Touch double-tap tracking
+	let lastTapAt = 0;
+	let lastTapObj = null;
+	// Mouse double-click fallback tracking
+	let lastClickAt = 0;
+	let lastClickObj = null;
+	// Single selection display mode: 'gizmo' (default) or 'handles'
+	let singleSelectionMode = 'gizmo';
 
 	// Outline helpers
 	function clearSelectionOutlines(){ selectionOutlines = outlines.clearSelectionOutlines(scene, selectionOutlines); }
 	function rebuildSelectionOutlines(){ selectionOutlines = outlines.clearSelectionOutlines(scene, selectionOutlines); selectionOutlines = outlines.rebuildSelectionOutlines(THREE, scene, selectedObjects); }
+
+		// Grabber handles for single selection
+		let handlesGroup = null;
+		let handleMeshes = [];
+		let handleDrag = null; // { mesh, info, target, start:{box,center,objWorldPos,objScale,originOffset}, dragPlane }
+		function clearHandles(){ if (handlesGroup){ scene.remove(handlesGroup); handlesGroup = null; } handleMeshes = []; handleDrag = null; controls.enabled = true; }
+		function buildHandlesForObject(obj){
+				clearHandles(); if (!obj) return; handleDrag = null; controls.enabled = true;
+			const box = new THREE.Box3().setFromObject(obj);
+			if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
+			handlesGroup = new THREE.Group(); handlesGroup.name = '__HandlesGroup'; scene.add(handlesGroup);
+			const min = box.min.clone(); const max = box.max.clone(); const ctr = box.getCenter(new THREE.Vector3());
+			const xs=[min.x,max.x], ys=[min.y,max.y], zs=[min.z,max.z];
+			const mk = (pos, kind, mask, anchor) => {
+				const geo = new THREE.SphereGeometry(0.105, 16, 12);
+				const color = (kind==='center')?0x0066ff : (kind==='face'?0x00aa55 : (kind==='edge'?0xff8800:0xdd2255));
+				const mat = new THREE.MeshBasicMaterial({ color, depthTest: true });
+				const m = new THREE.Mesh(geo, mat); m.position.copy(pos);
+				m.userData.__handle = { kind, mask, anchor: anchor.clone() };
+				m.renderOrder = 10; handlesGroup.add(m); handleMeshes.push(m);
+			};
+			// corners (8)
+			for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
+				const p = new THREE.Vector3(xs[xi], ys[yi], zs[zi]);
+				const a = new THREE.Vector3(xs[1-xi], ys[1-yi], zs[1-zi]);
+				mk(p, 'corner', [1,1,1], a);
+			}
+			// edges X (y,z vary)
+			for (let yi=0; yi<2; yi++) for (let zi=0; zi<2; zi++){
+				const p = new THREE.Vector3(ctr.x, ys[yi], zs[zi]);
+				const a = new THREE.Vector3(ctr.x, ys[1-yi], zs[1-zi]);
+				mk(p, 'edge', [0,1,1], a);
+			}
+			// edges Y (x,z vary)
+			for (let xi=0; xi<2; xi++) for (let zi=0; zi<2; zi++){
+				const p = new THREE.Vector3(xs[xi], ctr.y, zs[zi]);
+				const a = new THREE.Vector3(xs[1-xi], ctr.y, zs[1-zi]);
+				mk(p, 'edge', [1,0,1], a);
+			}
+			// edges Z (x,y vary)
+			for (let xi=0; xi<2; xi++) for (let yi=0; yi<2; yi++){
+				const p = new THREE.Vector3(xs[xi], ys[yi], ctr.z);
+				const a = new THREE.Vector3(xs[1-xi], ys[1-yi], ctr.z);
+				mk(p, 'edge', [1,1,0], a);
+			}
+			// faces (6)
+			mk(new THREE.Vector3(min.x, ctr.y, ctr.z), 'face', [1,0,0], new THREE.Vector3(max.x, ctr.y, ctr.z));
+			mk(new THREE.Vector3(max.x, ctr.y, ctr.z), 'face', [1,0,0], new THREE.Vector3(min.x, ctr.y, ctr.z));
+			mk(new THREE.Vector3(ctr.x, min.y, ctr.z), 'face', [0,1,0], new THREE.Vector3(ctr.x, max.y, ctr.z));
+			mk(new THREE.Vector3(ctr.x, max.y, ctr.z), 'face', [0,1,0], new THREE.Vector3(ctr.x, min.y, ctr.z));
+			mk(new THREE.Vector3(ctr.x, ctr.y, min.z), 'face', [0,0,1], new THREE.Vector3(ctr.x, ctr.y, max.z));
+			mk(new THREE.Vector3(ctr.x, ctr.y, max.z), 'face', [0,0,1], new THREE.Vector3(ctr.x, ctr.y, min.z));
+			// center
+			mk(ctr, 'center', [0,0,0], ctr.clone());
+		}
+		function updateHandles(){ if (selectedObjects.length===1) buildHandlesForObject(selectedObjects[0]); else clearHandles(); }
 
 	const getWorldMatrix = transforms.getWorldMatrix; const setWorldMatrix = transforms.setWorldMatrix;
 	function updateMultiSelectPivot(){
@@ -276,10 +391,21 @@ export async function init() {
 		setWorldMatrix(multiSelectPivot, new THREE.Matrix4().compose(center, new THREE.Quaternion(), new THREE.Vector3(1,1,1)));
 	}
 	function attachTransformForSelection(){
-		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); return; }
-		if(selectedObjects.length === 1){ const target = selectedObjects[0]; transformControls.attach(target); transformControlsRotate.attach(target); enableTranslateGizmo(); enableRotateGizmo(); }
-		else if(selectedObjects.length >= 2){ updateMultiSelectPivot(); transformControls.attach(multiSelectPivot); transformControlsRotate.attach(multiSelectPivot); enableTranslateGizmo(); enableRotateGizmo(); }
-		else { transformControls.detach(); transformControlsRotate.detach(); }
+		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); return; }
+		if(selectedObjects.length === 1){
+			if (singleSelectionMode === 'handles'){
+				transformControls.detach(); transformControlsRotate.detach();
+				updateHandles();
+			} else {
+				clearHandles();
+				transformControls.attach(selectedObjects[0]);
+				transformControlsRotate.attach(selectedObjects[0]);
+				enableTranslateGizmo();
+				enableRotateGizmo();
+			}
+		}
+		else if(selectedObjects.length >= 2){ updateMultiSelectPivot(); transformControls.attach(multiSelectPivot); transformControlsRotate.attach(multiSelectPivot); enableTranslateGizmo(); enableRotateGizmo(); clearHandles(); }
+		else { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); }
 	}
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
 	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); }
@@ -316,6 +442,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const viewWestBtn = document.getElementById('viewWest');
 	const bgColorPicker = document.getElementById('bgColorPicker');
 	const gridColorPicker = document.getElementById('gridColorPicker');
+	const gridSizeInput = document.getElementById('gridSizeInput');
+	const gridDivsInput = document.getElementById('gridDivsInput');
+	const gridInfiniteBtn = document.getElementById('gridInfiniteBtn');
 	const uploadBtn=document.getElementById('uploadModel');
 	const fileInput=document.getElementById('modelInput');
 	const placingPopup=document.getElementById('placingPopup');
@@ -381,9 +510,18 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		  if (Array.isArray(grid.material)) grid.material.forEach(m => { if (m) m.depthWrite = false; });
 		  else if (grid.material) grid.material.depthWrite = false;
 		} catch {}
+		try { enhanceGridMaterial(grid.material); } catch {}
 		grid.visible = wasVisible;
 		scene.add(grid);
 	}
+
+	function rebuildGrid() {
+		const hex = (gridColorPicker && gridColorPicker.value) || '#ffffff';
+		setGridColor(hex);
+	}
+
+	// Edge fade overlay for infinite grid
+	function ensurePageVignette(on){ /* no-op: grid edge fade handled in shader now */ }
 	// Apply saved or default colors on startup
 	try {
 		const savedBg = localStorage.getItem('sketcher.bgColor');
@@ -393,6 +531,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const savedGrid = localStorage.getItem('sketcher.gridColor');
 		if (gridColorPicker && savedGrid) gridColorPicker.value = savedGrid;
 		if (savedGrid) setGridColor(savedGrid); else if (gridColorPicker) setGridColor(gridColorPicker.value || '#ffffff');
+		// Grid size/divs/infinite persistence
+		const savedSize = parseInt(localStorage.getItem('sketcher.gridSize')||'');
+		const savedDivs = parseInt(localStorage.getItem('sketcher.gridDivs')||'');
+		const savedInf = localStorage.getItem('sketcher.gridInfinite');
+		if (Number.isFinite(savedSize) && savedSize>0) { GRID_SIZE = savedSize; if (gridSizeInput) gridSizeInput.value = String(savedSize); }
+		if (Number.isFinite(savedDivs) && savedDivs>0) { GRID_DIVS = savedDivs; if (gridDivsInput) gridDivsInput.value = String(savedDivs); }
+		if (typeof savedInf === 'string' && gridInfiniteBtn) gridInfiniteBtn.setAttribute('aria-pressed', savedInf === '1' ? 'true' : 'false');
+		// Apply any size/div changes by rebuilding now
+		rebuildGrid();
+		/* overlay vignette no longer used; shader fade is always active */
 	} catch {}
 	// Live update handlers
 	if (bgColorPicker){
@@ -402,6 +550,54 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (gridColorPicker){
 		gridColorPicker.addEventListener('input',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
 		gridColorPicker.addEventListener('change',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
+	}
+	if (gridSizeInput){
+		const onSize = ()=>{
+			let v = parseInt(gridSizeInput.value||'20');
+			if (!Number.isFinite(v) || v<=0) v = 20;
+			GRID_SIZE = v;
+			rebuildGrid();
+			try { localStorage.setItem('sketcher.gridSize', String(v)); } catch {}
+		};
+		gridSizeInput.addEventListener('change', onSize);
+		gridSizeInput.addEventListener('blur', onSize);
+	}
+	if (gridDivsInput){
+		const onDivs = ()=>{
+			let v = parseInt(gridDivsInput.value||'20');
+			if (!Number.isFinite(v) || v<=0) v = 20;
+			GRID_DIVS = v;
+			rebuildGrid();
+			try { localStorage.setItem('sketcher.gridDivs', String(v)); } catch {}
+		};
+		gridDivsInput.addEventListener('change', onDivs);
+		gridDivsInput.addEventListener('blur', onDivs);
+	}
+	let prevGridSize = GRID_SIZE, prevGridDivs = GRID_DIVS;
+	if (gridInfiniteBtn){
+		gridInfiniteBtn.addEventListener('click', ()=>{
+			const on = gridInfiniteBtn.getAttribute('aria-pressed') !== 'true';
+			gridInfiniteBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+			// Disable manual size/divs while infinite is active
+			if (gridSizeInput) gridSizeInput.disabled = on;
+			if (gridDivsInput) gridDivsInput.disabled = on;
+			if (on){
+				// Save current then switch to a larger grid for better coverage
+				prevGridSize = GRID_SIZE; prevGridDivs = GRID_DIVS;
+				GRID_SIZE = Math.max(100, prevGridSize);
+				GRID_DIVS = Math.min(200, Math.max(100, prevGridDivs));
+				rebuildGrid();
+			} else {
+				// Restore previous values
+				GRID_SIZE = prevGridSize; GRID_DIVS = prevGridDivs;
+				rebuildGrid();
+			}
+			try { localStorage.setItem('sketcher.gridInfinite', on ? '1' : '0'); } catch {}
+		});
+		// Reflect disabled state on load
+		const initOn = gridInfiniteBtn.getAttribute('aria-pressed') === 'true';
+		if (gridSizeInput) gridSizeInput.disabled = initOn;
+		if (gridDivsInput) gridDivsInput.disabled = initOn;
 	}
 
 	// Mode change + toolbox
@@ -586,6 +782,45 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			tweenCamera(camera, perspCamera, 600, () => { camera = perspCamera; controls.object = camera; controls.update(); });
 		}
 	});
+	// Double-click to show grabbers for single selection
+	renderer.domElement.addEventListener('dblclick', e => {
+		if (mode !== 'edit') return;
+			getPointer(e); raycaster.setFromCamera(pointer, camera);
+			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
+			const hits = raycaster.intersectObjects(selectableObjects, true);
+			// If there is already a single selection, prioritize toggling it to handles
+			if (selectedObjects.length === 1) {
+				singleSelectionMode = 'handles';
+				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+				return;
+			}
+			// Otherwise, use the hit object (if any)
+			if (hits.length){
+				let obj = hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+				selectedObjects = [obj];
+				singleSelectionMode = 'handles';
+				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+			}
+	});
+	// Capture-phase dblclick fallback in case controls intercept the bubble phase
+	window.addEventListener('dblclick', e => {
+		if (mode !== 'edit') return;
+		if (!(e.target && (e.target === renderer.domElement || renderer.domElement.contains(e.target)))) return;
+		if (selectedObjects.length === 1) {
+			singleSelectionMode = 'handles';
+			attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+			return;
+		}
+		getPointer(e); raycaster.setFromCamera(pointer, camera);
+		const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
+		const hits = raycaster.intersectObjects(selectableObjects, true);
+		if (hits.length){
+			let obj = hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+			selectedObjects = [obj];
+			singleSelectionMode = 'handles';
+			attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+		}
+	}, true);
 	}
 	if (viewAxonBtn) viewAxonBtn.addEventListener('click', () => setCameraView('axon'));
 	if (viewPlanBtn) viewPlanBtn.addEventListener('click', () => setCameraView('plan'));
@@ -758,10 +993,23 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	});
 	// Also allow Escape to cancel placement
 	window.addEventListener('keydown', (e)=>{
-		if (e.key === 'Escape' && loadedModel) {
-			loadedModel = null;
-			if (fileInput) fileInput.value = '';
-			if (placingPopup) placingPopup.style.display = 'none';
+		if (e.key === 'Escape') {
+			// Cancel placement if active
+			if (loadedModel) {
+				loadedModel = null;
+				if (fileInput) fileInput.value = '';
+				if (placingPopup) placingPopup.style.display = 'none';
+				return;
+			}
+			// Deselect current selection if not draw-creating
+			if (mode === 'edit' && !activeDrawTool) {
+				selectedObjects = [];
+				transformControls.detach();
+				transformControlsRotate.detach();
+				clearHandles();
+				clearSelectionOutlines();
+				updateVisibilityUI();
+			}
 		}
 	});
 
@@ -804,7 +1052,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 
 	// Draw-create tools
-	let activeDrawTool=null; let isDragging=false; let startPt=new THREE.Vector3(); let previewMesh=null; let dragStartScreenY=0;
+	let activeDrawTool=null; let isDragging=false; let startPt=new THREE.Vector3(); let previewMesh=null; let previewOutline=null; let dragStartScreenY=0;
 	const dcBoxBtn=document.getElementById('dcBox'); const dcSphereBtn=document.getElementById('dcSphere'); const dcCylinderBtn=document.getElementById('dcCylinder'); const dcConeBtn=document.getElementById('dcCone');
 	function armDrawTool(kind){ activeDrawTool=kind; if(toggleDrawCreateBtn && drawCreateGroup){ if(toggleDrawCreateBtn.getAttribute('aria-pressed')!=='true'){ toggleDrawCreateBtn.click(); } } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed', String(btn && btn.id==='dc'+kind.charAt(0).toUpperCase()+kind.slice(1))); }); }
 	if(dcBoxBtn) dcBoxBtn.addEventListener('click',()=>armDrawTool('box'));
@@ -820,6 +1068,25 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
 		if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 		getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
+			// Check handle hit first when single selection
+			if (selectedObjects.length===1 && handleMeshes && handleMeshes.length){
+				const hits=raycaster.intersectObjects(handleMeshes,true);
+				if (hits && hits.length){
+					const h = hits[0].object;
+					// begin drag on handle
+					const target = selectedObjects[0];
+					const startBox = new THREE.Box3().setFromObject(target);
+					const startCenter = startBox.getCenter(new THREE.Vector3());
+					const objWorldPos = new THREE.Vector3(); target.getWorldPosition(objWorldPos);
+					const objScale = target.scale.clone();
+					const originOffset = objWorldPos.clone().sub(startCenter);
+					const camDir = new THREE.Vector3(); camera.getWorldDirection(camDir);
+					const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, h.getWorldPosition(new THREE.Vector3()));
+					handleDrag = { mesh: h, info: h.userData.__handle, target, start: { box: startBox.clone(), center: startCenter.clone(), objWorldPos: objWorldPos.clone(), objScale: objScale.clone(), originOffset: originOffset.clone() }, dragPlane: plane };
+					controls.enabled = false;
+					return; // consume
+				}
+			}
 			const importPanelOpen = importGroup && importGroup.classList.contains('open');
 			if((mode==='import' || importPanelOpen) && loadedModel){
 				const hits=raycaster.intersectObjects(selectableTargets(),true);
@@ -840,15 +1107,42 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			if(e.pointerType==='touch'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
 			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
 			const hits=raycaster.intersectObjects(selectableObjects,true);
-			if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; } if(e.shiftKey||e.ctrlKey||e.metaKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); }
-			else { transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); selectedObjects=[]; updateVisibilityUI(); }
+			if(hits.length){
+				let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+				if(e.shiftKey||e.ctrlKey||e.metaKey){
+					if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj);
+				} else {
+					selectedObjects=[obj];
+					// On single-click, prefer gizmos
+					singleSelectionMode = 'gizmo';
+					// Desktop double-click fallback: quick second click on same object -> grabbers
+					if (e.pointerType !== 'touch'){
+						const now = performance.now();
+						if (lastClickObj === obj && (now - lastClickAt) < 350){
+							singleSelectionMode = 'handles';
+							attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+							lastClickAt = 0; lastClickObj = null;
+							return;
+						} else {
+							lastClickAt = now; lastClickObj = obj;
+						}
+					}
+				}
+				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
+			}
+			else {
+				// Click off -> deselect
+				selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastClickAt = 0; lastClickObj = null;
+			}
 		} else { transformControls.detach(); transformControlsRotate.detach(); }
 	});
 	renderer.domElement.addEventListener('pointerup', e => {
 		if(e.pointerType==='touch'){
 			const start = e.target.__tapStart; activeTouchPointers.delete(e.pointerId);
-			if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); selectedObjects=[]; updateVisibilityUI(); } } e.target.__tapStart = undefined; }
+			if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
 		}
+		// end handle drag if active
+		if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); }
 	});
 
 	// Grouping logic for toolbox button
@@ -864,28 +1158,78 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	// Draw-create preview
 	renderer.domElement.addEventListener('pointermove',e=>{
+		// Handle dragging
+		if (handleDrag){
+			getPointer(e); raycaster.setFromCamera(pointer,camera);
+			const pt = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(handleDrag.dragPlane, pt)) return;
+			const { target, info, start } = handleDrag; const mask = info.mask;
+			const box0 = start.box; const min0 = box0.min.clone(); const max0 = box0.max.clone();
+			let min = min0.clone(); let max = max0.clone();
+			if (info.kind === 'center'){
+				const delta = pt.clone().sub(handleDrag.mesh.position.clone());
+				const newWorldPos = start.objWorldPos.clone().add(delta);
+				const parent = target.parent || scene; const newLocal = parent.worldToLocal(newWorldPos.clone());
+					target.position.copy(newLocal);
+					rebuildSelectionOutlines();
+				return;
+			}
+			const anchor = info.anchor.clone();
+			const minSize = 0.1;
+			if (mask[0]){ if (Math.abs(anchor.x - min0.x) < Math.abs(anchor.x - max0.x)) { max.x = Math.max(anchor.x + minSize, pt.x); min.x = anchor.x; } else { min.x = Math.min(anchor.x - minSize, pt.x); max.x = anchor.x; } }
+			if (mask[1]){ if (Math.abs(anchor.y - min0.y) < Math.abs(anchor.y - max0.y)) { max.y = Math.max(anchor.y + minSize, pt.y); min.y = anchor.y; } else { min.y = Math.min(anchor.y - minSize, pt.y); max.y = anchor.y; } }
+			if (mask[2]){ if (Math.abs(anchor.z - min0.z) < Math.abs(anchor.z - max0.z)) { max.z = Math.max(anchor.z + minSize, pt.z); min.z = anchor.z; } else { min.z = Math.min(anchor.z - minSize, pt.z); max.z = anchor.z; } }
+			const size0 = max0.clone().sub(min0); const size1 = max.clone().sub(min);
+			const s = new THREE.Vector3(
+				mask[0] ? Math.max(0.01, size1.x / Math.max(0.01, size0.x)) : 1,
+				mask[1] ? Math.max(0.01, size1.y / Math.max(0.01, size0.y)) : 1,
+				mask[2] ? Math.max(0.01, size1.z / Math.max(0.01, size0.z)) : 1
+			);
+			const ctr1 = min.clone().add(max).multiplyScalar(0.5);
+			target.scale.set(start.objScale.x * s.x, start.objScale.y * s.y, start.objScale.z * s.z);
+			const newWorldPos = ctr1.clone().add(start.originOffset);
+			const parent = target.parent || scene; const newLocal = parent.worldToLocal(newWorldPos.clone());
+				target.position.copy(newLocal);
+				rebuildSelectionOutlines();
+			return;
+		}
 		if(!isDragging||!activeDrawTool) return; getPointer(e); raycaster.setFromCamera(pointer,camera);
 		const pt=intersectGround(); if(!pt) return;
 		// Footprint on base plane
 		const dx=pt.x-startPt.x, dz=pt.z-startPt.z; const sx=Math.max(0.1,Math.abs(dx)), sz=Math.max(0.1,Math.abs(dz));
+		const minX = Math.min(startPt.x, pt.x); const maxX = Math.max(startPt.x, pt.x);
+		const minZ = Math.min(startPt.z, pt.z); const maxZ = Math.max(startPt.z, pt.z);
 		const r=Math.max(sx,sz)/2;
 		// Height from vertical drag in screen space (up increases height)
 		const dyPx = (dragStartScreenY - e.clientY);
 		const camDist = camera.position.distanceTo(controls.target || new THREE.Vector3());
 		const pxToWorld = Math.max(0.002, camDist / 600); // sensitivity scaling
 		const h = Math.max(0.1, Math.abs(dyPx) * pxToWorld);
-		const cx=startPt.x+dx/2, cz=startPt.z+dz/2;
+		const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
 		const cyBox = startPt.y + h/2; // center Y for extruded shapes resting on base
 		const cySphere = startPt.y + r; // sphere rests on base
 		if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; }
+		if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; }
 		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
 		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), material.clone()); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
 		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
 		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		// Base rectangle outline (helps intuition: corner -> opposite corner)
+		try {
+			const pos = new Float32Array([
+				minX, startPt.y + SURFACE_EPS, minZ,
+				maxX, startPt.y + SURFACE_EPS, minZ,
+				maxX, startPt.y + SURFACE_EPS, maxZ,
+				minX, startPt.y + SURFACE_EPS, maxZ,
+				minX, startPt.y + SURFACE_EPS, minZ,
+			]);
+			const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+			previewOutline = new THREE.Line(new THREE.LineBasicMaterial({ color: 0x222222 }), g);
+			scene.add(previewOutline);
+		} catch {}
 		if(previewMesh){ scene.add(previewMesh); }
 	});
-	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); });
-	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
+	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); });
+	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
 
 	// Primitives + utilities
 	document.getElementById('addFloor').addEventListener('click',()=>{ const thickness=0.333;const floor=new THREE.Mesh(new THREE.BoxGeometry(10,thickness,10),material.clone()); floor.position.set(0,thickness/2,0);floor.name='Floor';addObjectToScene(floor,{ select:true }); });
@@ -936,6 +1280,15 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	window.addEventListener('resize',()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
 	renderer.setAnimationLoop((t, frame) => {
 		try {
+			// If infinite grid mode, keep grid centered beneath camera target to simulate endlessness
+			if (grid && gridInfiniteBtn && gridInfiniteBtn.getAttribute('aria-pressed') === 'true') {
+				const target = controls && controls.target ? controls.target : new THREE.Vector3();
+				// Snap grid to a multiple of its cell size to avoid visible swimming
+				const cell = GRID_SIZE / Math.max(1, GRID_DIVS);
+				const gx = Math.round(target.x / cell) * cell;
+				const gz = Math.round(target.z / cell) * cell;
+				grid.position.set(gx, 0, gz);
+			}
 			if (scanActive) {
 				// Accumulate floor hit-test points and update preview
 				const session = renderer.xr.getSession && renderer.xr.getSession();

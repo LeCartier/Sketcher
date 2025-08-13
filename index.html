@@ -250,6 +250,22 @@
       <label style="display:block; margin-bottom:8px; font-size:13px; color:#222;">Grid Color
         <input id="gridColorPicker" type="color" value="#ffffff" style="margin-left:8px;">
       </label>
+      <div class="settings-compact">
+        <div class="field">
+          <label for="gridSizeInput">Size (ft)</label>
+          <input id="gridSizeInput" type="number" min="1" step="1" value="20">
+        </div>
+        <div class="field">
+          <label for="gridDivsInput">Divisions</label>
+          <input id="gridDivsInput" type="number" min="1" step="1" value="20">
+        </div>
+        <button id="gridInfiniteBtn" class="icon-btn" title="Infinite grid + edge fade" aria-label="Infinite grid + edge fade" aria-pressed="false" type="button">
+          <span class="sr-only">Infinite grid</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 9c2 0 3 3 5 3s3-3 5-3 3 1.79 3 3-1 3-3 3-3-3-5-3-3 3-5 3-3-1.79-3-3 1-3 3-3z" fill="none" stroke="#222" stroke-width="2"/>
+          </svg>
+        </button>
+      </div>
     </div>
     <!-- Views parent button and group -->
     <button id="toggleViews" class="icon-btn toggle-btn" title="Views" aria-label="Views" aria-pressed="false">
