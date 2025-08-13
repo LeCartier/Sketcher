@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -22,6 +22,8 @@ export async function init() {
 			import('./views.js'),
 			import('./grid-utils.js'),
 			import('./ar-export.js'),
+			import('./snapping-visuals.js'),
+			import('./session-draft.js'),
 	]);
 
 	// Version badge
@@ -58,6 +60,16 @@ export async function init() {
 	renderer.setSize(window.innerWidth, window.innerHeight);
 	renderer.shadowMap.enabled = true;
 	document.body.appendChild(renderer.domElement);
+	// Ensure great touch/stylus behavior on tablets and iPad (no page scroll/zoom gestures on canvas)
+	try {
+		renderer.domElement.style.touchAction = 'none';
+		renderer.domElement.style.msTouchAction = 'none';
+		renderer.domElement.style.webkitUserSelect = 'none';
+		renderer.domElement.style.userSelect = 'none';
+		renderer.domElement.style.webkitTapHighlightColor = 'rgba(0,0,0,0)';
+		// Avoid long-press context menus interrupting drawing/selection
+		renderer.domElement.addEventListener('contextmenu', e => { e.preventDefault(); });
+	} catch {}
 	renderer.xr.enabled = true;
 	let arActive = false;
 	// Room Scan (beta) state
@@ -80,61 +92,8 @@ export async function init() {
 	let xrViewerSpace = null;
 	let xrLocalSpace = null;
 
-	// Snap highlight
-	let snapHighlight = null;
-	function ensureSnapHighlight(){
-		if (snapHighlight) return snapHighlight;
-		const mat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.7, depthTest: true });
-		const g = new THREE.PlaneGeometry(1,1);
-		snapHighlight = new THREE.Mesh(g, mat);
-		snapHighlight.name = '__SnapHighlight';
-		snapHighlight.visible = false;
-		scene.add(snapHighlight);
-		return snapHighlight;
-	}
-
-	function hideSnapHighlight(){ if (snapHighlight) snapHighlight.visible = false; }
-
-	function showSnapHighlightAt(movingBox, snapInfo){
-		const hl = ensureSnapHighlight();
-		if (!snapInfo || !snapInfo.axis || !snapInfo.otherBox) { hl.visible = false; return; }
-		const bA = movingBox; const bB = snapInfo.otherBox;
-		const axis = snapInfo.axis;
-		// Build a thin plane aligned with the snapping faces. Size spans the overlap of the orthogonal axes.
-		let cx=0, cy=0, cz=0, sx=0.05, sy=0.05, sz=0.05, rot = new THREE.Euler(0,0,0);
-		if (axis === 'x'){
-			cx = snapInfo.movingFace==='max' ? bA.max.x : bA.min.x;
-			cy = (Math.max(bA.min.y, bB.min.y) + Math.min(bA.max.y, bB.max.y)) * 0.5;
-			cz = (Math.max(bA.min.z, bB.min.z) + Math.min(bA.max.z, bB.max.z)) * 0.5;
-			sy = Math.max(0.01, Math.min(bA.max.y, bB.max.y) - Math.max(bA.min.y, bB.min.y));
-			sz = Math.max(0.01, Math.min(bA.max.z, bB.max.z) - Math.max(bA.min.z, bB.min.z));
-			rot.set(0, Math.PI/2, 0);
-		}
-		else if (axis === 'y'){
-			cx = (Math.max(bA.min.x, bB.min.x) + Math.min(bA.max.x, bB.max.x)) * 0.5;
-			cy = snapInfo.movingFace==='max' ? bA.max.y : bA.min.y;
-			cz = (Math.max(bA.min.z, bB.min.z) + Math.min(bA.max.z, bB.max.z)) * 0.5;
-			sx = Math.max(0.01, Math.min(bA.max.x, bB.max.x) - Math.max(bA.min.x, bB.min.x));
-			sz = Math.max(0.01, Math.min(bA.max.z, bB.max.z) - Math.max(bA.min.z, bB.min.z));
-			rot.set(Math.PI/2, 0, 0);
-		}
-		else { // z
-			cx = (Math.max(bA.min.x, bB.min.x) + Math.min(bA.max.x, bB.max.x)) * 0.5;
-			cy = (Math.max(bA.min.y, bB.min.y) + Math.min(bA.max.y, bB.max.y)) * 0.5;
-			cz = snapInfo.movingFace==='max' ? bA.max.z : bA.min.z;
-			sx = Math.max(0.01, Math.min(bA.max.x, bB.max.x) - Math.max(bA.min.x, bB.min.x));
-			sy = Math.max(0.01, Math.min(bA.max.y, bB.max.y) - Math.max(bA.min.y, bB.min.y));
-			rot.set(0, 0, 0);
-		}
-		// Update plane geometry and transform
-		const g = hl.geometry;
-		g.dispose();
-		hl.geometry = new THREE.PlaneGeometry(Math.max(0.01, sx), Math.max(0.01, sy || sz));
-		// For X/Z we rotate to align with face; plane draws in X by width, Y by height
-		hl.position.set(cx, cy, cz);
-		hl.rotation.set(rot.x, rot.y, rot.z);
-		hl.visible = true;
-	}
+	// Snap highlight via module
+	const snapVisuals = createSnapVisuals({ THREE, scene });
 
 	// Manual Room Scan fallback (non-AR)
 	let manualScanActive = false;
@@ -269,10 +228,9 @@ export async function init() {
 	controls.enableDamping=true; controls.dampingFactor=0.085;
 	controls.enablePan=true; controls.enableZoom=true; controls.enableRotate=true;
 	controls.rotateSpeed = 0.9; controls.zoomSpeed = 0.95; controls.panSpeed = 0.9;
-	controls.mouseButtons={LEFT:THREE.MOUSE.NONE,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.PAN};
+	// Desktop: left = rotate, middle = pan, right = pan
+	controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 	controls.touches = { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
-	window.addEventListener('keydown',e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.PAN;});
-	window.addEventListener('keyup',  e=>{if(e.key==='Shift')controls.mouseButtons.MIDDLE=THREE.MOUSE.ROTATE;});
 	const transformControls=new TransformControls(camera,renderer.domElement);
 	transformControls.setMode('translate'); transformControls.setTranslationSnap(0.1);
 	transformControls.addEventListener('dragging-changed',e=>controls.enabled=!e.value); scene.add(transformControls);
@@ -321,6 +279,8 @@ export async function init() {
 	const raycaster=new THREE.Raycaster(), pointer=new THREE.Vector2();
 	const groundPlane=new THREE.Plane(new THREE.Vector3(0,1,0),0);
 	let mode='edit';
+	// Plan View Lock state
+	let planViewLocked = false;
 	const objects=[];
 	const material=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
 	let loadedModel=null;
@@ -545,7 +505,7 @@ export async function init() {
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
 	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); }
 	transformControls.addEventListener('dragging-changed', e => { if(e.value && transformControls.object===multiSelectPivot) captureMultiStart(); });
-	transformControls.addEventListener('dragging-changed', e => { if (!e.value) { hideSnapHighlight(); saveSessionDraftSoon(); } });
+	transformControls.addEventListener('dragging-changed', e => { if (!e.value) { snapVisuals.hide(); saveSessionDraftSoon(); } });
 	transformControls.addEventListener('objectChange', () => {
 		if(transformControls.object===multiSelectPivot) { applyMultiDelta(); return; }
 		// Soft snap for single-object translate moves
@@ -561,9 +521,9 @@ export async function init() {
 				target.position.copy(newLocal);
 				target.updateMatrixWorld(true);
 				rebuildSelectionOutlines();
-				showSnapHighlightAt(movingBox, snap);
+				snapVisuals.showAt(movingBox, snap);
 			}
-			else { hideSnapHighlight(); }
+			else { snapVisuals.hide(); }
 			// Debounced autosave as objects move
 			saveSessionDraftSoon();
 		}
@@ -621,6 +581,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const mapUseFlatBtn = document.getElementById('mapUseFlat');
 	const mapUseTopoBtn = document.getElementById('mapUseTopo');
 	const mapImportBtn = document.getElementById('mapImport');
+	// Plan View Lock parent button
+	const planLockBtn = document.getElementById('planLock');
 	// Scenes UI
 	const saveSceneBtn = document.getElementById('saveScene');
 	const openScenesBtn = document.getElementById('openScenes');
@@ -631,20 +593,108 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let currentSceneName = '';
 
 	// --- Session draft autosave (persist state across reloads/navigation) ---
-	function serializeScene() {
-		return persistence.serializeSceneFromObjects(THREE, objects);
+	function __isHelperObject(obj){
+		if (!obj) return true;
+		if (obj === grid) return true;
+		if (obj === transformControls || obj === transformControlsRotate) return true;
+		if (obj.name && (obj.name.startsWith('__') || obj.name.startsWith('Room Scan') || obj.name === 'Scan Point Cloud')) return true;
+		if (obj.isLight || obj.isCamera) return true;
+		if (obj.isGridHelper) return true;
+		return false;
 	}
-	let __saveDraftTimer = null;
-	function saveSessionDraftNow(){
+	function getPersistableObjects(){
+		const list = [...objects];
+		const have = new Set(list);
+		for (const child of scene.children){
+			if (have.has(child)) continue;
+			if (__isHelperObject(child)) continue;
+			// Only include Mesh/Group-like user content
+			if (child && (child.type === 'Mesh' || child.type === 'Group' || child.type === 'Points')){
+				list.push(child);
+			}
+		}
+		return list;
+	}
+	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
+
+	// --- Undo History (Ctrl/Cmd+Z) ---
+	const __history = [];
+	let __historyIndex = -1;
+	const __historyLimit = 50;
+	let __isRestoringHistory = false;
+	function __captureSnapshot(reason = ''){
 		try {
 			const json = serializeScene();
-			sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json }));
+			const str = JSON.stringify(json);
+			// Dedupe: if same as current, skip
+			if (__historyIndex >= 0 && __history[__historyIndex] && __history[__historyIndex].str === str) return;
+			// If we undid and then make a new change, drop redo tail
+			if (__historyIndex < __history.length - 1) __history.splice(__historyIndex + 1);
+			__history.push({ json, str, t: Date.now(), reason });
+			if (__history.length > __historyLimit) __history.shift();
+			__historyIndex = __history.length - 1;
 		} catch {}
 	}
-	function saveSessionDraftSoon(delay=250){
-		if (__saveDraftTimer) clearTimeout(__saveDraftTimer);
-		__saveDraftTimer = setTimeout(saveSessionDraftNow, delay);
+	async function __restoreFromSnapshot(idx){
+		if (idx < 0 || idx >= __history.length) return;
+		const rec = __history[idx]; if (!rec) return;
+		__isRestoringHistory = true;
+		try {
+			// Clear and rebuild scene from JSON
+			clearSceneObjects();
+			const loader = new THREE.ObjectLoader();
+			const root = loader.parse(rec.json);
+			[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+			updateCameraClipping();
+			// Update session draft to mirror this state without creating a new history entry
+			try { sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json: rec.json })); } catch {}
+		} catch(e) {
+			console.error('Undo restore failed:', e);
+		} finally {
+			__isRestoringHistory = false;
+		}
 	}
+	function __undo(){
+		if (__historyIndex <= 0) return;
+		__historyIndex -= 1;
+		__restoreFromSnapshot(__historyIndex);
+	}
+	// Global key handler for Ctrl/Cmd+Z (no Shift); ignore when typing in inputs/textarea/contentEditable
+	window.addEventListener('keydown', e => {
+		const isZ = (e.key === 'z' || e.key === 'Z');
+		if (isZ && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+			const tgt = e.target;
+			const tag = tgt && tgt.tagName ? tgt.tagName.toLowerCase() : '';
+			const isEditable = (tag === 'input' || tag === 'textarea' || (tgt && tgt.isContentEditable));
+			if (isEditable) return; // let browser handle text undo
+			e.preventDefault();
+			__undo();
+		}
+	});
+
+	const sessionDraft = createSessionDraft({
+		serializeScene,
+		sessionKey: 'sketcher:sessionDraft',
+		onAfterSave: ({ json }) => {
+			// Also record undo snapshot when not restoring
+			if (!__isRestoringHistory) {
+				try {
+					const str = JSON.stringify(json);
+					if (__historyIndex >= 0 && __history[__historyIndex] && __history[__historyIndex].str === str) return;
+					if (__historyIndex < __history.length - 1) __history.splice(__historyIndex + 1);
+					__history.push({ json, str, t: Date.now(), reason: 'autosave' });
+					if (__history.length > __historyLimit) __history.shift();
+					__historyIndex = __history.length - 1;
+				} catch {}
+			}
+		}
+	});
+	// Ensure latest draft is persisted on refresh/navigation
+	window.addEventListener('beforeunload', () => { try { sessionDraft.saveNow(); } catch {} });
+	window.addEventListener('pagehide', () => { try { sessionDraft.saveNow(); } catch {} });
+	document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { sessionDraft.saveNow(); } catch {} } });
+	function saveSessionDraftNow(){ sessionDraft.saveNow(); }
+	function saveSessionDraftSoon(delay=250){ sessionDraft.saveSoon(delay); }
 
 	// Visibility UI
 	function updateVisibilityUI(){
@@ -842,6 +892,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
 	// Camera view logic for standard views
 	function setCameraView(type) {
+		// If Plan View Lock is active, force 'plan' regardless of requested type
+		if (planViewLocked) type = 'plan';
 		if (type === 'perspective') {
 			cameraType = 'perspective';
 			const box = new THREE.Box3();
@@ -883,7 +935,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				case 'plan':
 					dist = Math.max(size.x, size.y, size.z) * 1.2 || 10;
 					pos = new THREE.Vector3(center.x, center.y + dist, center.z);
-					up = new THREE.Vector3(0,1,0); // match axon navigation axis
+					// North-up plan: use world +Z as screen up
+					up = new THREE.Vector3(0,0,1);
 					look = center;
 					break;
 				case 'north':
@@ -936,11 +989,14 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	};
 	// Listen for orbit and revert to perspective
 	controls.addEventListener('start', () => {
+		// When locked to plan view, do not auto-switch to perspective on orbit start
+		if (planViewLocked) return;
 		if (cameraType === 'orthographic') {
 			cameraType = 'perspective';
 			let perspCamera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
 			perspCamera.position.copy(camera.position);
-			perspCamera.up.copy(camera.up);
+			// Always return to normal Y-up in perspective
+			perspCamera.up.set(0,1,0);
 			perspCamera.quaternion.copy(camera.quaternion);
 			perspCamera.updateMatrixWorld();
 			perspCamera.updateProjectionMatrix();
@@ -996,6 +1052,46 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	if (viewSouthBtn) viewSouthBtn.addEventListener('click', () => setCameraView('south'));
 	if (viewEastBtn) viewEastBtn.addEventListener('click', () => setCameraView('east'));
 	if (viewWestBtn) viewWestBtn.addEventListener('click', () => setCameraView('west'));
+
+	// Plan View Lock behavior
+	function applyPlanLockState() {
+		if (planViewLocked) {
+			// Force plan view and restrict controls to pan/zoom only
+			setCameraView('plan');
+			controls.enableRotate = false;
+			// Also disable accidental perspective revert
+		} else {
+			controls.enableRotate = true;
+		}
+		// Reflect button UI state
+		if (planLockBtn) planLockBtn.setAttribute('aria-pressed', planViewLocked ? 'true' : 'false');
+		// Persist setting
+		try { localStorage.setItem('sketcher.planViewLocked', planViewLocked ? '1' : '0'); } catch {}
+	}
+	if (planLockBtn) {
+		// Initialize from storage
+		try { planViewLocked = localStorage.getItem('sketcher.planViewLocked') === '1'; } catch {}
+		planLockBtn.addEventListener('click', () => {
+			planViewLocked = !planViewLocked;
+			applyPlanLockState();
+			// If unlocking, restore normal perspective axes and rotation
+			if (!planViewLocked) {
+				try {
+					cameraType = 'perspective';
+					let persp = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
+					persp.position.copy(camera.position);
+					persp.up.set(0,1,0);
+					persp.quaternion.copy(camera.quaternion);
+					persp.updateMatrixWorld(); persp.updateProjectionMatrix();
+					controls.object = persp;
+					controls.update();
+					tweenCamera(camera, persp, 450, () => { camera = persp; controls.object = camera; controls.update(); });
+				} catch {}
+			}
+		});
+		// Apply on startup
+		applyPlanLockState();
+	}
 
 	// AR visibility
 		if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
@@ -1204,7 +1300,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 
 	function updateCameraClipping(){ if (!objects.length) return; const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o)); if (box.isEmpty()) return; const size = new THREE.Vector3(); box.getSize(size); const radius = Math.max(size.x, size.y, size.z) * 0.75; const far = Math.min(100000, Math.max(1000, radius * 12)); camera.near = Math.max(0.01, far / 50000); camera.far = far; camera.updateProjectionMatrix(); if (controls){ controls.maxDistance = far * 0.95; } }
 	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
-	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } saveSessionDraftSoon(); }
+	function addObjectToScene(obj, { select = false } = {}){ scene.add(obj); objects.push(obj); updateVisibilityUI(); updateCameraClipping(); if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } saveSessionDraftNow(); }
 
 	// Trackpad support: allow pan/rotate/zoom for laptop users
 	function isTrackpadEvent(e) {
@@ -1227,15 +1323,18 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	if(dcSphereBtn) dcSphereBtn.addEventListener('click',()=>armDrawTool('sphere'));
 	if(dcCylinderBtn) dcCylinderBtn.addEventListener('click',()=>armDrawTool('cylinder'));
 	if(dcConeBtn) dcConeBtn.addEventListener('click',()=>armDrawTool('cone'));
-	renderer.domElement.addEventListener('touchmove', e => { e.preventDefault(); }, { passive: false });
+	// Prevent browser gestures while interacting with the canvas only
+	renderer.domElement.addEventListener('touchmove', e => { try { e.preventDefault(); } catch {} }, { passive: false });
 	const activeTouchPointers = new Set();
-	renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
-	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch') activeTouchPointers.delete(e.pointerId); });
+	renderer.domElement.addEventListener('pointerup', e => { if(e.pointerType==='touch' || e.pointerType==='pen') activeTouchPointers.delete(e.pointerId); });
+	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch' || e.pointerType==='pen') activeTouchPointers.delete(e.pointerId); });
 	const SURFACE_EPS = 0.01;
 			renderer.domElement.addEventListener('pointerdown',e=>{
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
-		if (e.pointerType==='touch') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
-		getPointer(e); raycaster.setFromCamera(pointer,camera); if(e.button!==0)return;
+		if (e.pointerType==='touch' || e.pointerType==='pen') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
+			getPointer(e); raycaster.setFromCamera(pointer,camera);
+			// For mouse, only left button; for touch/pen there is no buttons semantic like mouse
+			if (e.pointerType === 'mouse' && e.button !== 0) return;
 			// Check handle hit first when single selection
 			if (selectedObjects.length===1 && handleMeshes && handleMeshes.length){
 				const hits=raycaster.intersectObjects(handleMeshes,true);
@@ -1286,15 +1385,15 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				if(!dropPoint) return;
 				const clone=loadedModel.clone();
 				clone.position.copy(dropPoint);
-				addObjectToScene(clone); saveSessionDraftSoon();
+				addObjectToScene(clone); saveSessionDraftNow();
 				// single placement complete
 				loadedModel = null;
 				if (fileInput) fileInput.value = '';
 				if (placingPopup) placingPopup.style.display = 'none';
 			}
 		else if(mode==='edit'){
-			if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); dragStartScreenY = e.clientY; controls.enabled=false; return; }
-			if(e.pointerType==='touch'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
+            if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); dragStartScreenY = e.clientY; controls.enabled=false; return; }
+			if(e.pointerType==='touch' || e.pointerType==='pen'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
 			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
 			const hits=raycaster.intersectObjects(selectableObjects,true);
 			if(hits.length){
@@ -1326,13 +1425,13 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			}
 		} else { transformControls.detach(); transformControlsRotate.detach(); }
 	});
-	renderer.domElement.addEventListener('pointerup', e => {
-		if(e.pointerType==='touch'){
+			renderer.domElement.addEventListener('pointerup', e => {
+			if(e.pointerType==='touch' || e.pointerType==='pen'){
 			const start = e.target.__tapStart; activeTouchPointers.delete(e.pointerId);
-			if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
+				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
 		}
 		// end handle drag if active
-		if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); hideSnapHighlight(); saveSessionDraftSoon(); }
+	if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); snapVisuals.hide(); saveSessionDraftSoon(); }
 	});
 
 	// Grouping logic for toolbox button
@@ -1343,7 +1442,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		const group=new THREE.Group(); group.position.copy(center);
 		selectedObjects.forEach(obj=>{ obj.updateMatrixWorld(); const worldPos = new THREE.Vector3(); worldPos.setFromMatrixPosition(obj.matrixWorld); obj.position.copy(worldPos.sub(center)); group.add(obj); });
 		group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
-		scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftSoon();
+	scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 	}
 
 	// Draw-create preview
@@ -1377,7 +1476,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					// Revert and apply snap in world
 					target.position.copy(oldPos);
 					newWorldPos.add(snap.delta);
-					if (snap.axis) showSnapHighlightAt(movingBox, snap); else hideSnapHighlight();
+					if (snap.axis) snapVisuals.showAt(movingBox, snap); else snapVisuals.hide();
 					snapGuard = false;
 				}
 				const parent = target.parent || scene; const newLocal = parent.worldToLocal(newWorldPos.clone());
@@ -1430,7 +1529,9 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		const dyPx = (dragStartScreenY - e.clientY);
 		const camDist = camera.position.distanceTo(controls.target || new THREE.Vector3());
 		const pxToWorld = Math.max(0.002, camDist / 600); // sensitivity scaling
-		const h = Math.max(0.1, Math.abs(dyPx) * pxToWorld);
+		let h = Math.max(0.1, Math.abs(dyPx) * pxToWorld);
+		// When Plan View Lock is active, default new objects to 3ft tall minimum
+		if (planViewLocked) h = Math.max(h, 3);
 		const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
 		const cyBox = startPt.y + h/2; // center Y for extruded shapes resting on base
 		const cySphere = startPt.y + r; // sphere rests on base
@@ -1455,7 +1556,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		} catch {}
 		if(previewMesh){ scene.add(previewMesh); }
 	});
-	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); saveSessionDraftSoon(); });
+	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); saveSessionDraftNow(); });
 	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
 
 	// Primitives + utilities
@@ -1499,7 +1600,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		}
 	}
 	// Delete
-	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftSoon(); } });
+	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow(); } });
 
 	// Keep outlines syncing
 	transformControls.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
@@ -1680,7 +1781,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					const loader = new THREE.ObjectLoader();
 					const root = loader.parse(rec.json);
 					// Add children as top-level objects
-					(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
 					updateCameraClipping();
 					// Track current scene for overwrite on Save
 					currentSceneId = id;
@@ -1748,7 +1849,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 					clearSceneObjects();
 					const loader = new THREE.ObjectLoader();
 					const root = loader.parse(rec.json);
-					(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
 					updateCameraClipping();
 					currentSceneId = rec.id; currentSceneName = rec.name || 'Untitled';
 					// Opening a specific scene replaces any session draft
@@ -1764,7 +1865,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 							clearSceneObjects();
 							const loader = new THREE.ObjectLoader();
 							const root = loader.parse(json);
-							(root.children||[]).forEach(child => { addObjectToScene(child, { select:false }); });
+							[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
 							updateCameraClipping();
 							// Do not set currentSceneId for session drafts
 						}
