@@ -2,36 +2,11 @@
 // Exports an init function executed by index.html
 
 export async function init() {
-	// Helper for smooth camera transition
+	// Delegate tweenCamera to views.js while keeping the same call shape
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
-		const start = {
-			position: fromCam.position.clone(),
-			up: fromCam.up.clone(),
-			target: controls.target.clone(),
-		};
-		const end = {
-			position: toCam.position.clone(),
-			up: toCam.up.clone(),
-			target: controls.target.clone(),
-		};
-		let startTime = performance.now();
-		function animate() {
-			let t = Math.min(1, (performance.now() - startTime) / duration);
-			fromCam.position.lerpVectors(start.position, end.position, t);
-			fromCam.up.lerpVectors(start.up, end.up, t);
-			controls.target.lerpVectors(start.target, end.target, t);
-			fromCam.lookAt(controls.target);
-			fromCam.updateProjectionMatrix();
-			controls.update();
-			if (t < 1) {
-				requestAnimationFrame(animate);
-			} else if (onComplete) {
-				onComplete();
-			}
-		}
-		animate();
+		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -42,6 +17,11 @@ export async function init() {
 			import('./outlines.js'),
 			import('./transforms.js'),
 			import('./local-store.js'),
+			import('./persistence.js'),
+			import('./snapping.js'),
+			import('./views.js'),
+			import('./grid-utils.js'),
+			import('./ar-export.js'),
 	]);
 
 	// Version badge
@@ -279,30 +259,7 @@ export async function init() {
 	} catch {}
 
 	// Screen-space fade for grid lines (to black at edges)
-	function enhanceGridMaterial(mat){
-		const mats = Array.isArray(mat) ? mat : [mat];
-		mats.forEach(m => {
-			if (!m || !m.isLineBasicMaterial) return;
-			m.transparent = false; // keep as solid lines, we tint to black
-			m.onBeforeCompile = (shader) => {
-				shader.uniforms.uFadeStart = { value: 0.72 };
-				shader.uniforms.uFadeEnd = { value: 1.0 };
-				shader.vertexShader = shader.vertexShader
-					.replace('void main() {', 'varying vec2 vNDC;\nvoid main() {')
-					.replace(/\}\s*$/, '  vNDC = gl_Position.xy / gl_Position.w;\n}');
-				shader.fragmentShader = shader.fragmentShader
-					.replace('void main() {', 'varying vec2 vNDC;\nuniform float uFadeStart;\nuniform float uFadeEnd;\nvoid main() {')
-					.replace('#include <output_fragment>', `
-					float r = length(vNDC);
-					float fade = smoothstep(uFadeStart, uFadeEnd, r);
-					// Darken toward black near edges (does not alter alpha)
-					outgoingLight = mix(outgoingLight, vec3(0.0), fade);
-					#include <output_fragment>
-					`);
-			};
-			m.needsUpdate = true;
-		});
-	}
+	function enhanceGridMaterial(mat){ try { gridUtils.enhanceGridMaterial(THREE, mat); } catch {} }
 	try { enhanceGridMaterial(grid.material); } catch {}
 	scene.add(new THREE.AmbientLight(0xffffff,0.5));
 	const dirLight=new THREE.DirectionalLight(0xffffff,0.8); dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
@@ -401,38 +358,7 @@ export async function init() {
 
 	function computeSnapDelta(movingBox, excludeSet){
 		if (!SNAP_ENABLED) return { delta: new THREE.Vector3(0,0,0), axis: null, other: null, otherBox: null, movingFace: null, otherFace: null };
-		let best = { axis: null, delta: 0, score: Infinity, other: null, otherBox: null, movingFace: null, otherFace: null };
-		for (const other of objects){
-			if (!other || excludeSet.has(other)) continue;
-			const b = getWorldBoxOf(other); if (!isFinite(b.min.x) || !isFinite(b.max.x)) continue;
-			// X faces
-			const dx1 = b.min.x - movingBox.max.x; // moving right -> other left (movingFace=max, otherFace=min)
-			const dx2 = b.max.x - movingBox.min.x; // moving left -> other right (movingFace=min, otherFace=max)
-			// Y faces
-			const dy1 = b.min.y - movingBox.max.y; // moving up -> other bottom (movingFace=max, otherFace=min)
-			const dy2 = b.max.y - movingBox.min.y; // moving down -> other top (movingFace=min, otherFace=max)
-			// Z faces
-			const dz1 = b.min.z - movingBox.max.z; // moving forward -> other back (movingFace=max, otherFace=min)
-			const dz2 = b.max.z - movingBox.min.z; // moving back -> other front (movingFace=min, otherFace=max)
-			const candidates = [
-				{ axis:'x', delta: dx1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
-				{ axis:'x', delta: dx2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
-				{ axis:'y', delta: dy1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
-				{ axis:'y', delta: dy2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
-				{ axis:'z', delta: dz1, other, otherBox: b.clone(), movingFace:'max', otherFace:'min' },
-				{ axis:'z', delta: dz2, other, otherBox: b.clone(), movingFace:'min', otherFace:'max' },
-			];
-			for (const c of candidates){
-				const d = c.delta;
-				if (d <= SNAP_ENTER && d >= -SNAP_OVERLAP){
-					const score = Math.abs(d);
-					if (score < best.score){ best = { axis: c.axis, delta: d, score, other: c.other, otherBox: c.otherBox, movingFace: c.movingFace, otherFace: c.otherFace }; }
-				}
-			}
-		}
-		if (!best.axis) return { delta: new THREE.Vector3(0,0,0), axis: null, other: null, otherBox: null, movingFace: null, otherFace: null };
-		const deltaVec = best.axis === 'x' ? new THREE.Vector3(best.delta,0,0) : (best.axis === 'y' ? new THREE.Vector3(0,best.delta,0) : new THREE.Vector3(0,0,best.delta));
-		return { delta: deltaVec, axis: best.axis, other: best.other, otherBox: best.otherBox, movingFace: best.movingFace, otherFace: best.otherFace };
+		return snapping.computeSnapDelta(THREE, movingBox, objects, excludeSet, SNAP_ENTER, SNAP_OVERLAP);
 	}
 
 	// Outline helpers
@@ -706,9 +632,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// --- Session draft autosave (persist state across reloads/navigation) ---
 	function serializeScene() {
-		// Build a root group of current objects and use Object3D.toJSON
-		const root = buildExportRootFromObjects(objects);
-		return root.toJSON();
+		return persistence.serializeSceneFromObjects(THREE, objects);
 	}
 	let __saveDraftTimer = null;
 	function saveSessionDraftNow(){
@@ -737,13 +661,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 
 	// Settings: background and grid colors (with persistence)
-	function disposeGrid(g){
-		try { g.geometry && g.geometry.dispose && g.geometry.dispose(); } catch {}
-		try {
-			if (Array.isArray(g.material)) g.material.forEach(m=>m && m.dispose && m.dispose());
-			else g.material && g.material.dispose && g.material.dispose();
-		} catch {}
-	}
+	function disposeGrid(g){ try { gridUtils.disposeGrid(THREE, g); } catch {} }
 	function setGridColor(hex){
 		if (!grid) return;
 		const wasVisible = grid.visible;
@@ -1086,8 +1004,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	modeSelect.dispatchEvent(new Event('change'));
 
 	// Export logic for toolbox popup
-	function buildExportRootFromObjects(objs){ const root = new THREE.Group(); objs.forEach(o => root.add(o.clone(true))); return root; }
-	function prepareModelForAR(root){ root.traverse((obj)=>{ if(obj.isMesh){ const oldMat=obj.material; let color=0xcccccc; if(oldMat){ if(Array.isArray(oldMat)){ obj.material = oldMat.map(m => new THREE.MeshStandardMaterial({ color: (m.color && m.color.getHex) ? m.color.getHex() : color, metalness: 0, roughness: 0.8 })); } else { if (oldMat.color && oldMat.color.getHex) color = oldMat.color.getHex(); obj.material = new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.8 }); } } else { obj.material = new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.8 }); } } }); root.updateMatrixWorld(true); const box=new THREE.Box3().setFromObject(root); const center=new THREE.Vector3(); box.getCenter(center); const translate=new THREE.Vector3(center.x, box.min.y, center.z); root.position.sub(translate); const FEET_TO_METERS=0.3048; root.scale.setScalar(FEET_TO_METERS); root.updateMatrixWorld(true); }
+	function buildExportRootFromObjects(objs){ return persistence.buildExportRootFromObjects(THREE, objs); }
+	function prepareModelForAR(root){ try { arExport.prepareModelForAR(THREE, root); } catch {} }
 	async function openQuickLookUSDZ(){ const source=(selectedObjects && selectedObjects.length)?selectedObjects:objects; if(!source||!source.length){ alert('Nothing to show in AR. Create or import an object first.'); return; } const root=buildExportRootFromObjects(source); prepareModelForAR(root); try { const { USDZExporter } = await import('https://unpkg.com/three@0.155.0/examples/jsm/exporters/USDZExporter.js'); const exporter=new USDZExporter(); const arraybuffer=await exporter.parse(root); const blob=new Blob([arraybuffer],{type:'model/vnd.usdz+zip'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.setAttribute('rel','ar'); a.setAttribute('href',url); document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },30000); } catch(e){ alert('Unable to generate USDZ for AR: ' + (e?.message || e)); console.error(e); } }
 
 	arButton.addEventListener('click', async () => {
@@ -1742,11 +1660,6 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
 
 	// Local scenes: serialize, save, list, load, delete
-	function serializeScene() {
-		// Build a root group of current objects and use Object3D.toJSON
-		const root = buildExportRootFromObjects(objects);
-		return root.toJSON();
-	}
 	function clearSceneObjects() {
 		[...objects].forEach(o => { scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); });
 		selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI();
