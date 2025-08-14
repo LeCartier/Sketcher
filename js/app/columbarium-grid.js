@@ -14,7 +14,7 @@ const MIN_SCALE = 0.4, MAX_SCALE = 2.5;
 // Grid metrics
 const CELL = 200;              // base cell size in px at scale=1
 const TILE_INSET = 12;         // tile inset from cell boundaries
-const MAJOR_EVERY = 4;         // darker line every n cells
+const MAJOR_EVERY = 5;         // darker line every n cells
 
 // Overlay state
 let expandedId = null;         // id of expanded tile (overlay)
@@ -244,15 +244,19 @@ function drawGrid(){
   for (let gx = startX; gx <= endX; gx += CELL) {
     const sx = worldToScreen(gx, 0).x;
     const idx = Math.round(gx / CELL);
-    ctx.strokeStyle = (idx % MAJOR_EVERY === 0) ? major : minor;
-    ctx.beginPath(); ctx.moveTo(sx + 0.5, 0); ctx.lineTo(sx + 0.5, vh); ctx.stroke();
+  const isMajor = (idx % MAJOR_EVERY === 0);
+  ctx.strokeStyle = isMajor ? major : minor;
+  ctx.lineWidth = isMajor ? 1.5 : 1.0;
+  ctx.beginPath(); ctx.moveTo(sx + 0.5, 0); ctx.lineTo(sx + 0.5, vh); ctx.stroke();
   }
   // horizontal lines
   for (let gy = startY; gy <= endY; gy += CELL) {
     const sy = worldToScreen(0, gy).y;
     const idy = Math.round(gy / CELL);
-    ctx.strokeStyle = (idy % MAJOR_EVERY === 0) ? major : minor;
-    ctx.beginPath(); ctx.moveTo(0, sy + 0.5); ctx.lineTo(vw, sy + 0.5); ctx.stroke();
+  const isMajorH = (idy % MAJOR_EVERY === 0);
+  ctx.strokeStyle = isMajorH ? major : minor;
+  ctx.lineWidth = isMajorH ? 1.5 : 1.0;
+  ctx.beginPath(); ctx.moveTo(0, sy + 0.5); ctx.lineTo(vw, sy + 0.5); ctx.stroke();
   }
   ctx.restore();
 }

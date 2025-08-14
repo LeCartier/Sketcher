@@ -48,20 +48,31 @@ export async function saveCommunityScene({ name, json, thumb }) {
   const payload = { name, json: JSON.parse(jsonText), thumb_url };
   const { data, error } = await supabase.from('community_scenes').insert(payload).select('id').single();
   if (error) throw error;
-  // Backend cap: keep only latest 10 (best-effort)
+  // Backend cap: keep only latest 10 (best-effort) and remove orphaned thumbs
   try {
     const { data: rows } = await supabase
       .from('community_scenes')
-      .select('id,created_at,updated_at')
-      .order('updated_at', { ascending: false })
+      .select('id,created_at,thumb_url')
       .order('created_at', { ascending: false })
       .limit(100);
     const list = Array.isArray(rows) ? rows : [];
     if (list.length > 10) {
-      const toDelete = list.slice(10).map(r => r.id);
-      if (toDelete.length) {
-        await supabase.from('community_scenes').delete().in('id', toDelete);
-      }
+      const excess = list.slice(10);
+      const toDelete = excess.map(r => r.id);
+      // Attempt to remove corresponding thumbnails from storage (best-effort)
+      try {
+        const paths = excess
+          .map(r => r.thumb_url || '')
+          .map(url => {
+            const m = typeof url === 'string' ? url.match(/\/storage\/v1\/object\/public\/thumbs\/(.+)$/) : null;
+            return m && m[1] ? decodeURIComponent(m[1]) : null;
+          })
+          .filter(Boolean);
+        if (paths.length) {
+          await supabase.storage.from('thumbs').remove(paths);
+        }
+      } catch (err) { console.warn('Thumb cleanup failed', err); }
+      if (toDelete.length) { await supabase.from('community_scenes').delete().in('id', toDelete); }
     }
   } catch {}
   return { id: data.id, name, thumb_url };
@@ -98,12 +109,12 @@ export async function getCommunityScene(id) {
 
 export async function listLatestCommunity(limit = 10) {
   const supabase = await getClient();
+  // Prefer created_at only to avoid errors if updated_at is absent
   const { data, error } = await supabase
     .from('community_scenes')
-    .select('id,name,thumb_url,created_at,updated_at')
-    .order('updated_at', { ascending: false })
+    .select('id,name,thumb_url,created_at')
     .order('created_at', { ascending: false })
     .limit(Math.max(1, limit));
   if (error) throw error;
-  return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at, updated_at: r.updated_at }));
+  return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at }));
 }

@@ -848,6 +848,7 @@
           const name = prompt('Name your community scene:', 'My Scene') || 'Untitled';
           const saved = await communityApi.saveCommunityScene({ name, json, thumb });
           // Redirect to community with trade intent and the new id
+          try { sessionStorage.setItem('sketcher:tradeToken', saved.id); } catch {}
           document.body.classList.add('page-leave');
           setTimeout(()=>{ window.location.href = `./community.html?just=${encodeURIComponent(saved.id)}&trade=1`; }, 170);
         } catch (e) {
