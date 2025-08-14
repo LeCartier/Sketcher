@@ -114,6 +114,9 @@ function drawTiles(){
     ctx.save(); roundRect(ctx, dx, dy, w, h, r); ctx.clip();
     const img = thumbCache.get(t.id);
     if (img && img.complete) {
+    // Higher-quality scaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
       const ratio = Math.max(w / img.width, h / img.height);
       const iw = img.width * ratio, ih = img.height * ratio;
       const ix = dx + (w - iw) / 2, iy = dy + (h - ih) / 2;
@@ -162,6 +165,7 @@ function drawTiles(){
     // Static fallback (community.js handles live 3D preview overlay)
     ctx.save(); roundRect(ctx, sX, sY, sW, sH, r); ctx.clip(); const img = thumbCache.get(expandedTile.id);
     if (img && img.complete) {
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
       const ratio = Math.max(sW / img.width, sH / img.height); const w = img.width * ratio, h = img.height * ratio; const dx = sX + (sW - w)/2, dy = sY + (sH - h)/2; ctx.drawImage(img, dx, dy, w, h);
     } else { ctx.fillStyle = '#222'; ctx.fillRect(sX, sY, sW, sH); }
     const gradH2 = Math.min(96, Math.max(56, sH * 0.25)); const g2 = ctx.createLinearGradient(0, sY + sH - gradH2, 0, sY + sH); g2.addColorStop(0, 'rgba(0,0,0,0.0)'); g2.addColorStop(1, 'rgba(0,0,0,0.55)'); ctx.fillStyle = g2; ctx.fillRect(sX, sY + sH - gradH2, sW, gradH2);
@@ -200,6 +204,21 @@ canvas.addEventListener('wheel', (e) => {
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   const rect = canvas.getBoundingClientRect(); const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  // Track touch pointers for pinch gesture
+  if (e.pointerType === 'touch') {
+    touchPoints.set(e.pointerId, { x: sx, y: sy });
+    if (touchPoints.size === 2) {
+      const pts = [...touchPoints.values()];
+      const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+      pinchStartDist = Math.hypot(dx, dy) || 1;
+      pinchStartScale = scale;
+      pinchStartCenter = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      const sw = screenToWorld(pinchStartCenter.x, pinchStartCenter.y);
+      pinchStartWorld = { x: sw.x, y: sw.y };
+      isPinching = true; isPanning = false; canvas.classList.remove('grabbing');
+      return; // don't start expand while initiating pinch
+    }
+  }
   const isMiddle = (e.button === 1);
   if (isMiddle) {
     // Always pan with middle-click, even over a tile
@@ -216,14 +235,41 @@ canvas.addEventListener('pointerdown', (e) => {
 
 canvas.addEventListener('pointermove', (e) => {
   const rect = canvas.getBoundingClientRect(); const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  // Update touch locations
+  if (e.pointerType === 'touch' && touchPoints.has(e.pointerId)) { touchPoints.set(e.pointerId, { x: sx, y: sy }); }
+  // Handle pinch zoom/pan
+  if (isPinching && touchPoints.size >= 2) {
+    const pts = [...touchPoints.values()].slice(0,2);
+    const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+    const dist = Math.max(1, Math.hypot(dx, dy));
+    const factor = dist / Math.max(1, pinchStartDist);
+    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchStartScale * factor));
+    if (newScale !== scale) {
+      scale = newScale;
+      const c = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      offsetX = c.x - pinchStartWorld.x * scale;
+      offsetY = c.y - pinchStartWorld.y * scale;
+    } else {
+      const c = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      const prev = pinchStartCenter;
+      offsetX += (c.x - prev.x); offsetY += (c.y - prev.y);
+      pinchStartCenter = c; pinchStartWorld = screenToWorld(c.x, c.y);
+    }
+    draw();
+    return;
+  }
   if (isPanning && panPointerId === e.pointerId) { offsetX = sx - startPanX; offsetY = sy - startPanY; draw(); return; }
 });
 
 canvas.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'touch') {
+    touchPoints.delete(e.pointerId);
+    if (touchPoints.size < 2 && isPinching) isPinching = false;
+  }
   if (isPanning && panPointerId === e.pointerId) { isPanning = false; panPointerId = null; canvas.classList.remove('grabbing'); }
   canvas.releasePointerCapture(e.pointerId);
 });
-canvas.addEventListener('pointercancel', () => { isPanning = false; panPointerId = null; canvas.classList.remove('grabbing'); });
+canvas.addEventListener('pointercancel', (e) => { if (e && e.pointerType === 'touch') touchPoints.delete(e.pointerId); isPanning = false; panPointerId = null; canvas.classList.remove('grabbing'); isPinching = false; });
 
 canvas.addEventListener('click', (e) => {
   if (!expandedId) return; const rect = canvas.getBoundingClientRect(); const sx = e.clientX - rect.left, sy = e.clientY - rect.top; const t = tiles.find(tt => tt.id === expandedId); if (!t || !t.overlayRect) return;

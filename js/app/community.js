@@ -14,7 +14,8 @@ export async function generateSceneThumbnail(json){
     const loader = new THREE.ObjectLoader();
     const root = loader.parse(json);
     const canvas = document.createElement('canvas');
-    const size = 256; canvas.width = size; canvas.height = size;
+  // Render larger for higher quality thumbnails
+  const size = 512; canvas.width = size; canvas.height = size;
     const renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
     renderer.setSize(size, size, false);
     renderer.setClearColor('#1e1e1e');
@@ -30,8 +31,9 @@ export async function generateSceneThumbnail(json){
     const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 5000);
     camera.position.set(center.x + radius*1.2, center.y + radius*0.9, center.z + radius*1.2);
     camera.lookAt(center);
-    renderer.render(scene, camera);
-    return canvas.toDataURL('image/jpeg', 0.7);
+  renderer.render(scene, camera);
+  // Use higher JPEG quality
+  return canvas.toDataURL('image/jpeg', 0.85);
   } catch { return null; }
 }
 
