@@ -361,3 +361,32 @@ resize(); loadTiles().then(()=>{ centerOnTiles(); draw(); });
     }
   } catch {}
 })();
+
+// Optional TouchEvent fallback for some mobile browsers if PointerEvents are unreliable
+try {
+  let legacyTouches = [];
+  const getXY = (t) => {
+    const r = canvas.getBoundingClientRect();
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  };
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length >= 2) { e.preventDefault(); legacyTouches = [ getXY(e.touches[0]), getXY(e.touches[1]) ]; }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    if (legacyTouches.length === 2 && e.touches.length >= 2) {
+      e.preventDefault();
+      const p0 = getXY(e.touches[0]); const p1 = getXY(e.touches[1]);
+      const d0 = Math.hypot(legacyTouches[1].x - legacyTouches[0].x, legacyTouches[1].y - legacyTouches[0].y) || 1;
+      const d1 = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
+      const factor = d1 / d0;
+      const center = { x: (p0.x + p1.x)/2, y: (p0.y + p1.y)/2 };
+      const world = screenToWorld(center.x, center.y);
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
+      if (newScale !== scale) {
+        scale = newScale; offsetX = center.x - world.x * scale; offsetY = center.y - world.y * scale;
+      }
+      legacyTouches = [ p0, p1 ]; draw();
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchend', () => { legacyTouches = []; }, { passive: true });
+} catch {}
