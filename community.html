@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f0f" />
+  <title>Sketcher – Community</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <script type="importmap">
+    { "imports": { "three": "./js/vendor/three.module.js" } }
+  </script>
+  <style>
+    body { background:#0f0f0f; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .community-wrap { position: fixed; inset: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; padding: 84px 20px 20px; align-content: start; overflow: auto; }
+    .card { position: relative; background: rgba(20,20,20,0.98); border:1px solid #2a2a2a; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); overflow: hidden; }
+    .card .thumb { width: 100%; aspect-ratio: 1 / 1; background:#222; display:block; object-fit: cover; }
+    .card .meta { position:absolute; left:0; right:0; bottom:0; padding:10px; background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 100%); color:#fff; display:flex; gap:8px; align-items:center; }
+    .card .title { font: 600 13px system-ui, sans-serif; margin-right: auto; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+    .card button { background:#333; color:#ddd; border:1px solid rgba(255,255,255,0.16); padding:6px 10px; border-radius:8px; cursor:pointer; }
+    .topbar { position: fixed; left: 20px; right: 20px; top: 20px; display:flex; gap:10px; align-items:center; z-index: 120; }
+    .topbar .pill { background: rgba(24,24,24,0.9); border:1px solid #2a2a2a; color:#fff; padding:8px 12px; border-radius:12px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); display:flex; gap:10px; align-items:center; }
+    .choices { display:flex; gap:12px; }
+    .choice { width: 160px; height: 160px; border-radius: 12px; overflow:hidden; border:1px solid #2a2a2a; position: relative; }
+    .choice img { width:100%; height:100%; object-fit: cover; display:block; }
+    .choice .pick { position:absolute; left:6px; bottom:6px; right:6px; display:flex; justify-content: center; }
+    .choice .pick button { width: 100%; background:#333; color:#ddd; border:1px solid rgba(255,255,255,0.16); padding:6px 10px; border-radius:8px; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="pageFade" aria-hidden="true"></div>
+  <div class="topbar">
+    <div class="pill" style="gap:12px;">
+      <div style="font:600 13px system-ui, sans-serif;">Trade choices</div>
+      <div id="choices" class="choices"></div>
+    </div>
+  </div>
+  <div class="community-wrap" id="communityList" aria-live="polite"></div>
+
+  <a id="toColumbariumBack" class="floating-nav nav-top-right" href="./columbarium.html" title="Back to Columbarium" aria-label="Back to Columbarium">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8">
+        <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+      </g>
+  <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".85"/>
+    </svg>
+  </a>
+  <!-- Direct nav to Editor (placed next to Columbarium button) -->
+  <a id="toEditor" class="floating-nav nav-top-right-2" href="./index.html" title="Back to Editor" aria-label="Back to Editor">
+    <!-- Perspective grid icon (matches editor button used elsewhere) -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 8 L15 8 L20 18 L4 18 Z" stroke-width="1.4" opacity=".95"/>
+        <path d="M8 10 H16" stroke-width="1.2" opacity=".9"/>
+        <path d="M7 12 H17" stroke-width="1.1" opacity=".85"/>
+        <path d="M6 14 H18" stroke-width="1.05" opacity=".8"/>
+        <path d="M5 16 H19" stroke-width="1" opacity=".75"/>
+        <path d="M4 18 L9 8" stroke-width="1" opacity=".8"/>
+        <path d="M8 18 L11 8" stroke-width="1" opacity=".8"/>
+        <path d="M12 18 L12 8" stroke-width="1" opacity=".8"/>
+        <path d="M16 18 L13 8" stroke-width="1" opacity=".8"/>
+        <path d="M20 18 L15 8" stroke-width="1" opacity=".8"/>
+      </g>
+    </svg>
+  </a>
+
+  <script type="module">
+    // Fade-in/out and nav
+    document.addEventListener('DOMContentLoaded', () => {
+      requestAnimationFrame(()=>document.body.classList.add('page-ready'));
+      const link = document.getElementById('toColumbariumBack');
+      if (link) link.addEventListener('click', (e) => { e.preventDefault(); const href = link.getAttribute('href'); document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = href; }, 170); });
+      const toEditor = document.getElementById('toEditor');
+      if (toEditor) toEditor.addEventListener('click', (e) => { e.preventDefault(); const href = toEditor.getAttribute('href'); document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = href; }, 170); });
+    });
+
+    const listEl = document.getElementById('communityList');
+    const choicesEl = document.getElementById('choices');
+    const [{ listCommunityScenes, getCommunityScene, saveScene, generateSceneThumbnail, pickRandomCommunity }] = await Promise.all([
+      import('./js/app/community.js')
+    ]);
+
+    async function renderChoices() {
+      choicesEl.textContent = '';
+      const picks = await pickRandomCommunity(3);
+      if (!picks.length) { const d=document.createElement('div'); d.textContent='No community scenes yet'; d.style.opacity='0.8'; d.style.font='12px system-ui, sans-serif'; choicesEl.appendChild(d); return; }
+      for (const p of picks) {
+        const div = document.createElement('div'); div.className = 'choice';
+        const img = document.createElement('img'); img.alt = p.name || 'Scene'; img.src = p.thumb || '';
+        // fallback thumb: solid pattern
+        if (!p.thumb) img.style.background = '#222 linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.04) 50%, rgba(255,255,255,0.04) 75%, transparent 75%, transparent)';
+        const wrap = document.createElement('div'); wrap.className = 'pick';
+        const btn = document.createElement('button'); btn.textContent = 'Add';
+        btn.addEventListener('click', async () => {
+          const rec = await getCommunityScene(p.id); if (!rec) return;
+          // Save to personal collection
+          await saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb });
+          // Refresh choices after pick
+          await renderChoices();
+          alert('Added to your collection. Open Columbarium to see it.');
+        });
+        wrap.appendChild(btn); div.appendChild(img); div.appendChild(wrap); choicesEl.appendChild(div);
+      }
+    }
+
+    async function renderList() {
+      listEl.textContent = '';
+      const items = await listCommunityScenes();
+      if (!items.length) { const empty=document.createElement('div'); empty.style.color='#bbb'; empty.style.font='13px system-ui, sans-serif'; empty.textContent='No community scenes yet. Upload from the editor.'; listEl.appendChild(empty); return; }
+      for (const it of items) {
+        const card = document.createElement('div'); card.className = 'card';
+        const img = document.createElement('img'); img.className = 'thumb'; img.alt = it.name || 'Scene'; img.src = it.thumb || '';
+        if (!it.thumb) img.style.background = '#222';
+        const meta = document.createElement('div'); meta.className = 'meta';
+        const title = document.createElement('div'); title.className = 'title'; title.textContent = it.name || 'Untitled';
+        const btn = document.createElement('button'); btn.textContent = 'Preview';
+        btn.addEventListener('click', () => {
+          // Reuse the overlay preview in community.js
+          window.dispatchEvent(new CustomEvent('community:preview', { detail: { id: it.id } }));
+        });
+        meta.appendChild(title); meta.appendChild(btn);
+        card.appendChild(img); card.appendChild(meta); listEl.appendChild(card);
+      }
+    }
+
+    await Promise.all([renderChoices(), renderList()]);
+  </script>
+</body>
+</html>

@@ -624,6 +624,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
 
+	// Expose a safe global accessor for current scene JSON (used by share-to-community flow)
+	try { window.sketcherSerializeScene = serializeScene; } catch {}
+
 	// --- Picking helpers ---
 	function __isHelperChain(node){
 		let n = node;

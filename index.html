@@ -174,6 +174,15 @@
           <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
+      <button id="shareToCommunity" class="icon-btn" title="Share to Community" aria-label="Share to Community">
+        <span class="sr-only">Share to Community</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <g fill="none" stroke="#222" stroke-width="1.8">
+            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+          </g>
+          <path d="M12 6.6l1 2.1 2.3.3-1.7 1.6 0.4 2.3-2-1.1-2 1.1 0.4-2.3-1.7-1.6 2.3-.3z" fill="#222"/>
+        </svg>
+      </button>
   </div>
 
     <!-- Scene Manager parent button and group -->
@@ -386,8 +395,18 @@
   <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".85"/>
     </svg>
   </a>
+    <!-- Floating Community button (next to Columbarium) -->
+    <a id="toCommunity" class="floating-nav nav-top-right-2" href="./community.html" title="Community" aria-label="Community">
+      <!-- Tic-tac-toe grid (same as personal) with magenta filled square -->
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".9">
+          <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+        </g>
+        <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".95"/>
+      </svg>
+    </a>
     <!-- Floating AR button (top-right, beside Columbarium) -->
-    <button id="toAR" class="floating-nav nav-top-right-2" title="Enter AR" aria-label="Enter AR" type="button">
+  <button id="toAR" class="floating-nav nav-top-right-3" title="Enter AR" aria-label="Enter AR" type="button">
       <!-- Glasses icon: two lenses with a bridge and subtle temples -->
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
@@ -403,7 +422,7 @@
       </svg>
     </button>
     <!-- Floating Legend button (top-right, beside AR) -->
-    <button id="toLegend" class="floating-nav nav-top-right-3" title="Legend" aria-label="Legend" type="button">
+  <button id="toLegend" class="floating-nav nav-top-right-4" title="Legend" aria-label="Legend" type="button">
       <!-- Info-circle icon -->
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
@@ -574,7 +593,7 @@
       </div>
     </div>
       <!-- Floating Room Scan button (top-right, beside Legend) -->
-      <button id="toRoomScan" class="floating-nav nav-top-right-4" title="Scan Room (beta)" aria-label="Scan Room" type="button">
+  <button id="toRoomScan" class="floating-nav nav-top-right-5" title="Scan Room (beta)" aria-label="Scan Room" type="button">
         <!-- Point cloud icon: scattered dots forming a loose cloud -->
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <g fill="#fff" stroke="none">
@@ -648,6 +667,16 @@
             }
           } catch {}
         })();
+  // Community nav fade
+        const toCommunity = document.getElementById('toCommunity');
+        if (toCommunity) {
+          toCommunity.addEventListener('click', (e) => {
+            e.preventDefault();
+            const href = toCommunity.getAttribute('href');
+            document.body.classList.add('page-leave');
+            setTimeout(()=>{ window.location.href = href; }, 170);
+          });
+        }
   // AR floating button triggers existing AR flow
         const toAR = document.getElementById('toAR');
         if (toAR) {
@@ -779,6 +808,65 @@
         }
     });
     init();
+  </script>
+  <script type="module">
+    // Share to Community flow: serialize current scene, save to community, then offer 3 picks to add back
+    import * as localStore from './js/app/local-store.js';
+    const btn = document.getElementById('shareToCommunity');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        try {
+          const serialize = window.sketcherSerializeScene;
+          if (typeof serialize !== 'function') { alert('Unable to read the current scene to share.'); return; }
+          const json = serialize();
+          const thumb = await (await import('./js/app/columbarium.js')).generateSceneThumbnail(json).catch(()=>null);
+          const name = prompt('Name your community scene:', 'My Scene') || 'Untitled';
+          await localStore.saveCommunityScene({ name, json, thumb });
+          // Offer 3 random picks
+          const picks = await localStore.pickRandomCommunity(3);
+          if (!picks.length) { alert('Shared! There are no community picks yet.'); return; }
+          // Open a simple picker overlay
+          const wrap = document.createElement('div');
+          Object.assign(wrap.style, { position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center' });
+          const panel = document.createElement('div'); Object.assign(panel.style,{ background:'#111', color:'#fff', border:'1px solid #333', borderRadius:'12px', boxShadow:'0 10px 28px rgba(0,0,0,0.45)', padding:'14px', width:'min(94vw,720px)' });
+          const title = document.createElement('div'); title.textContent = 'Pick one to add to your collection'; title.style.font = '600 14px system-ui, sans-serif'; title.style.marginBottom = '10px';
+          const row = document.createElement('div'); Object.assign(row.style,{ display:'flex', gap:'12px', justifyContent:'center', flexWrap:'wrap' });
+          for (const p of picks) {
+            const card = document.createElement('div'); Object.assign(card.style,{ width:'220px', height:'240px', borderRadius:'10px', overflow:'hidden', border:'1px solid #2a2a2a', position:'relative', background:'#151515', display:'flex', flexDirection:'column' });
+            const img = document.createElement('img'); img.alt = p.name || 'Scene'; img.src = p.thumb || ''; Object.assign(img.style,{ width:'100%', height:'160px', objectFit:'cover', display:'block', background:'#222' });
+            const name = document.createElement('div'); name.textContent = p.name || 'Untitled'; Object.assign(name.style,{ color:'#eee', font:'600 12px system-ui, sans-serif', padding:'6px 8px 0' });
+            const controls = document.createElement('div'); Object.assign(controls.style,{ display:'flex', gap:'8px', padding:'8px', marginTop:'auto' });
+            const preview = document.createElement('button'); preview.textContent='Preview'; Object.assign(preview.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
+            preview.addEventListener('click', async ()=>{ const rec = await localStore.getCommunityScene(p.id); if (rec) { openCommunityPreview(rec); } });
+            const addBtn = document.createElement('button'); addBtn.textContent='Add'; Object.assign(addBtn.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
+            addBtn.addEventListener('click', async ()=>{ const rec = await localStore.getCommunityScene(p.id); if (rec) { await localStore.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb }); document.body.removeChild(wrap); alert('Added to your collection!'); } });
+            controls.appendChild(preview); controls.appendChild(addBtn);
+            card.appendChild(img); card.appendChild(name); card.appendChild(controls); row.appendChild(card);
+          }
+          const close = document.createElement('button'); close.textContent='Close'; Object.assign(close.style,{ marginTop:'10px', background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', float:'right' });
+          close.addEventListener('click', ()=>{ document.body.removeChild(wrap); });
+          panel.appendChild(title); panel.appendChild(row); panel.appendChild(close); wrap.appendChild(panel); document.body.appendChild(wrap);
+          // Inline lightweight Three preview
+          function openCommunityPreview(rec){
+            import('./js/vendor/three.module.js').then(THREE => {
+              const root = document.createElement('div'); Object.assign(root.style,{ position:'fixed', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width:'min(92vw, 960px)', height:'min(82vh, 640px)', zIndex:'10000', borderRadius:'12px', overflow:'hidden', background:'#111', border:'1px solid #333', boxShadow:'0 10px 28px rgba(0,0,0,0.45)' });
+              const canvas = document.createElement('canvas'); canvas.style.width='100%'; canvas.style.height='100%'; canvas.style.display='block'; root.appendChild(canvas);
+              const close = document.createElement('button'); close.textContent='×'; Object.assign(close.style,{ position:'absolute', top:'8px', right:'10px', width:'28px', height:'28px', borderRadius:'14px', border:'1px solid rgba(255,255,255,0.16)', background:'#333', color:'#ddd', lineHeight:'26px', textAlign:'center', cursor:'pointer', zIndex:1 }); close.addEventListener('click', ()=>{ try{ cancelAnimationFrame(raf); }catch{} try{ renderer.dispose(); }catch{} root.remove(); }); root.appendChild(close);
+              document.body.appendChild(root);
+              const renderer = new THREE.WebGLRenderer({ antialias:true, canvas });
+              const rect = root.getBoundingClientRect(); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1)); renderer.setSize(Math.max(100, rect.width), Math.max(100, rect.height), false); renderer.setClearColor('#141414');
+              const scene = new THREE.Scene(); scene.add(new THREE.AmbientLight(0xffffff, 0.9)); const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(5,10,7); scene.add(dir);
+              const camera = new THREE.PerspectiveCamera(60, Math.max(0.001, rect.width/rect.height), 0.01, 5000);
+              const loader = new THREE.ObjectLoader(); const rootObj = loader.parse(rec.json); (rootObj.children||[]).forEach(child=>scene.add(child));
+              const box = new THREE.Box3().setFromObject(scene); const center = box.getCenter(new THREE.Vector3()); const size = box.getSize(new THREE.Vector3()); const radius = Math.max(size.x,size.y,size.z)||6; camera.position.set(center.x+radius*1.2, center.y+radius*0.9, center.z+radius*1.2); camera.lookAt(center);
+              let raf=0; function loop(){ raf=requestAnimationFrame(loop); renderer.render(scene,camera); } loop();
+            });
+          }
+        } catch (e) {
+          console.error(e); alert('Failed to share to community.');
+        }
+      });
+    }
   </script>
 </body>
 </html>

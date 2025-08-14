@@ -135,6 +135,15 @@
       </g>
     </svg>
   </a>
+  <!-- Floating button to Community (top-right cluster) -->
+  <a id="toCommunity" class="floating-nav nav-top-right-2" href="./community.html" title="Community" aria-label="Community">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".9">
+        <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+      </g>
+      <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".95"/>
+    </svg>
+  </a>
   <script type="module">
     // Page fade-in/out
     document.addEventListener('DOMContentLoaded', () => {
@@ -163,6 +172,9 @@
   }
   const cCenterView = document.getElementById('cCenterView');
   if (cCenterView) cCenterView.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('columbarium:center')));
+  // Fade nav to community
+  const toCommunity = document.getElementById('toCommunity');
+  if (toCommunity) toCommunity.addEventListener('click', (e)=>{ e.preventDefault(); const href=toCommunity.getAttribute('href'); document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = href; }, 170); });
   // Zones toolbox wiring
   const cToggleZones = document.getElementById('cToggleZones');
   const cZonesGroup = document.getElementById('cZonesGroup');

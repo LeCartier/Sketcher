@@ -1,9 +1,10 @@
 // Lightweight local storage using IndexedDB
 const DB_NAME = 'sketcher-db';
-// v2: add 'zones' store for Columbarium grid zoning
-const DB_VERSION = 2;
+// v3: add 'community' store with same schema as 'scenes'
+const DB_VERSION = 3;
 const STORE = 'scenes';
 const ZONES = 'zones';
+const COMMUNITY = 'community';
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -19,6 +20,11 @@ function openDB() {
       if (!db.objectStoreNames.contains(ZONES)) {
         const z = db.createObjectStore(ZONES, { keyPath: 'id' });
         z.createIndex('by_updated', 'updatedAt');
+      }
+      // community store
+      if (!db.objectStoreNames.contains(COMMUNITY)) {
+        const c = db.createObjectStore(COMMUNITY, { keyPath: 'id' });
+        c.createIndex('by_updated', 'updatedAt');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -179,4 +185,93 @@ export async function clearZones() {
   const store = tx.objectStore(ZONES);
   await new Promise((res, rej) => { const r = store.clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
   await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+// -------------------- Community API (local-only) --------------------
+async function capStoreCount(db, storeName, max = 20) {
+  // Delete oldest records beyond max based on updatedAt ascending
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  const items = await new Promise((res, rej) => {
+    const out = []; const r = store.openCursor();
+    r.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else { res(out); } };
+    r.onerror = () => rej(r.error);
+  });
+  items.sort((a,b)=>b.updatedAt - a.updatedAt);
+  if (items.length > max) {
+    const toDelete = items.slice(max);
+    for (const rec of toDelete) {
+      await new Promise((res, rej) => { const d = store.delete(rec.id); d.onsuccess = () => res(); d.onerror = () => rej(d.error); });
+    }
+  }
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function saveCommunityScene({ id, name, json, thumb }) {
+  const db = await openDB();
+  const tx = db.transaction(COMMUNITY, 'readwrite');
+  const store = tx.objectStore(COMMUNITY);
+  const rec = {
+    id: id || (crypto?.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    name: name || 'Untitled',
+    json,
+    updatedAt: Date.now(),
+    thumb: typeof thumb === 'string' ? thumb : undefined,
+  };
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+  // Enforce cap
+  await capStoreCount(db, COMMUNITY, 20);
+  return rec.id;
+}
+
+export async function listCommunityScenes() {
+  const db = await openDB();
+  const tx = db.transaction(COMMUNITY, 'readonly');
+  const store = tx.objectStore(COMMUNITY);
+  const items = await new Promise((res, rej) => {
+    const out = []; const r = store.openCursor();
+    r.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else { res(out.sort((a,b)=>b.updatedAt-a.updatedAt)); } };
+    r.onerror = () => rej(r.error);
+  });
+  return items.map(s => ({ id: s.id, name: s.name, updatedAt: s.updatedAt, thumb: s.thumb }));
+}
+
+export async function getCommunityScene(id) {
+  const db = await openDB();
+  const tx = db.transaction(COMMUNITY, 'readonly');
+  const store = tx.objectStore(COMMUNITY);
+  return await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+}
+
+export async function deleteCommunityScene(id) {
+  const db = await openDB();
+  const tx = db.transaction(COMMUNITY, 'readwrite');
+  const store = tx.objectStore(COMMUNITY);
+  await new Promise((res, rej) => { const r = store.delete(id); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function updateCommunityThumbnail(id, { thumb }) {
+  const db = await openDB();
+  const tx = db.transaction(COMMUNITY, 'readwrite');
+  const store = tx.objectStore(COMMUNITY);
+  const rec = await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+  if (!rec) return;
+  rec.thumb = typeof thumb === 'string' ? thumb : rec.thumb;
+  rec.updatedAt = Date.now();
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function pickRandomCommunity(n = 3) {
+  const list = await listCommunityScenes();
+  if (!Array.isArray(list) || !list.length) return [];
+  // Fisher-Yates partial shuffle
+  const arr = list.slice();
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, Math.max(0, Math.min(n, arr.length)));
 }

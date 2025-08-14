@@ -107,10 +107,11 @@ async function createOverlay3D(tile, rect){
   Object.assign(close.style, { position:'absolute', top:'8px', right:'10px', width:'28px', height:'28px', borderRadius:'14px', border:'1px solid rgba(255,255,255,0.16)', background:'#333', color:'#ddd', lineHeight:'26px', textAlign:'center', cursor:'pointer' });
   close.addEventListener('click', () => { isCollapsing = true; animStart = performance.now(); const start = animStart; const run = () => { if (animStart !== start) return; draw(); if (performance.now()-start < ANIM_MS) requestAnimationFrame(run); else { expandedId = null; isCollapsing = false; draw(); } }; run(); });
   container.appendChild(close);
-    const btn = (label)=>{ const b=document.createElement('button'); b.textContent=label; Object.assign(b.style,{background:'#333',color:'#ddd',border:'1px solid rgba(255,255,255,0.16)',borderRadius:'8px',padding:'6px 10px',cursor:'pointer'}); return b; };
-    const openBtn = btn('Open');
-    const delBtn = btn('Delete');
-    ui.append(title, delBtn, openBtn);
+  const btn = (label)=>{ const b=document.createElement('button'); b.textContent=label; Object.assign(b.style,{background:'#333',color:'#ddd',border:'1px solid rgba(255,255,255,0.16)',borderRadius:'8px',padding:'6px 10px',cursor:'pointer'}); return b; };
+  const shareBtn = btn('Share');
+  const openBtn = btn('Open');
+  const delBtn = btn('Delete');
+  ui.append(title, shareBtn, delBtn, openBtn);
     container.appendChild(ui);
     // Wire actions
     openBtn.addEventListener('click', () => {
@@ -122,6 +123,15 @@ async function createOverlay3D(tile, rect){
       const ok = confirm('Delete this scene?'); if (!ok) return;
       await localStore.deleteScene(tile.id);
       destroyOverlay3D(); expandedId = null; await loadTiles(); draw();
+    });
+    shareBtn.addEventListener('click', async () => {
+      try {
+        const rec = await localStore.getScene(tile.id);
+        if (!rec || !rec.json) { alert('Could not read scene.'); return; }
+        // Save to community store (enforcing 20-cap in store logic)
+        await localStore.saveCommunityScene({ name: (rec.name||'Untitled').replace(/^gallery:/,''), json: rec.json, thumb: rec.thumb });
+        await showTradePicker();
+      } catch (e) { console.error(e); alert('Failed to share.'); }
     });
     // Animate
     let raf = 0; function loop(){ raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); }
@@ -517,6 +527,53 @@ function draw(){
   } else if (!isPanning) {
     canvas.style.cursor = 'grab';
   }
+}
+
+// ---------- Trade picker (3 random community choices) ----------
+async function showTradePicker(){
+  const picks = await localStore.pickRandomCommunity(3);
+  const wrap = document.createElement('div');
+  Object.assign(wrap.style, { position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex: 250, display:'flex', alignItems:'center', justifyContent:'center' });
+  const panel = document.createElement('div'); Object.assign(panel.style,{ background:'#111', color:'#fff', border:'1px solid #333', borderRadius:'12px', boxShadow:'0 10px 28px rgba(0,0,0,0.45)', padding:'14px', width:'min(94vw,820px)' });
+  const title = document.createElement('div'); title.textContent = picks.length ? 'Pick one to add to your collection' : 'Shared! No community scenes available yet.'; title.style.font = '600 14px system-ui, sans-serif'; title.style.marginBottom = '10px'; panel.appendChild(title);
+  const row = document.createElement('div'); Object.assign(row.style,{ display:'flex', gap:'12px', justifyContent:'center', flexWrap:'wrap' }); panel.appendChild(row);
+  for (const p of picks) {
+    const card = document.createElement('div'); Object.assign(card.style,{ width:'220px', height:'240px', borderRadius:'10px', overflow:'hidden', border:'1px solid #2a2a2a', position:'relative', background:'#151515', display:'flex', flexDirection:'column' });
+    const img = document.createElement('img'); img.alt = p.name || 'Scene'; img.src = p.thumb || ''; Object.assign(img.style,{ width:'100%', height:'160px', objectFit:'cover', background:'#222', display:'block' });
+    const controls = document.createElement('div'); Object.assign(controls.style,{ display:'flex', gap:'8px', padding:'8px', marginTop:'auto' });
+    const preview = document.createElement('button'); preview.textContent = 'Preview'; Object.assign(preview.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
+    const add = document.createElement('button'); add.textContent = 'Add'; Object.assign(add.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
+    preview.addEventListener('click', async ()=>{
+      const rec = await localStore.getCommunityScene(p.id); if (!rec) return;
+      await openCommunityPreview(rec);
+    });
+    add.addEventListener('click', async ()=>{
+      const rec = await localStore.getCommunityScene(p.id); if (rec) { await localStore.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb }); document.body.removeChild(wrap); window.dispatchEvent(new Event('columbarium:refresh')); }
+    });
+    const name = document.createElement('div'); name.textContent = p.name || 'Untitled'; Object.assign(name.style,{ color:'#eee', font:'600 12px system-ui, sans-serif', padding:'6px 8px 0' });
+    controls.appendChild(preview); controls.appendChild(add);
+    card.appendChild(img); card.appendChild(name); card.appendChild(controls); row.appendChild(card);
+  }
+  const footer = document.createElement('div'); Object.assign(footer.style,{ display:'flex', justifyContent:'flex-end', marginTop:'10px' });
+  const close = document.createElement('button'); close.textContent = 'Close'; Object.assign(close.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer' });
+  close.addEventListener('click', ()=>{ document.body.removeChild(wrap); }); footer.appendChild(close); panel.appendChild(footer);
+  wrap.appendChild(panel); document.body.appendChild(wrap);
+}
+
+async function openCommunityPreview(rec){
+  // Simple Three viewer modal
+  const THREE = await import('../vendor/three.module.js');
+  const c = document.createElement('div'); Object.assign(c.style,{ position:'fixed', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width:'min(92vw, 960px)', height:'min(82vh, 640px)', zIndex:'260', borderRadius:'12px', overflow:'hidden', background:'#111', border:'1px solid #333', boxShadow:'0 10px 28px rgba(0,0,0,0.45)' });
+  const canvas = document.createElement('canvas'); canvas.style.width='100%'; canvas.style.height='100%'; canvas.style.display='block'; c.appendChild(canvas);
+  const close = document.createElement('button'); close.textContent='×'; Object.assign(close.style,{ position:'absolute', top:'8px', right:'10px', width:'28px', height:'28px', borderRadius:'14px', border:'1px solid rgba(255,255,255,0.16)', background:'#333', color:'#ddd', lineHeight:'26px', textAlign:'center', cursor:'pointer', zIndex:1 }); close.addEventListener('click', ()=>{ try{ cancelAnimationFrame(raf); }catch{} try{ renderer.dispose(); }catch{} c.remove(); }); c.appendChild(close);
+  document.body.appendChild(c);
+  const renderer = new THREE.WebGLRenderer({ antialias:true, canvas });
+  const rect = c.getBoundingClientRect(); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1)); renderer.setSize(Math.max(100, rect.width), Math.max(100, rect.height), false); renderer.setClearColor('#141414');
+  const scene = new THREE.Scene(); scene.add(new THREE.AmbientLight(0xffffff, 0.9)); const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(5,10,7); scene.add(dir);
+  const camera = new THREE.PerspectiveCamera(60, Math.max(0.001, rect.width/rect.height), 0.01, 5000);
+  const loader = new THREE.ObjectLoader(); const root = loader.parse(rec.json); (root.children||[]).forEach(child=>scene.add(child));
+  const box = new THREE.Box3().setFromObject(scene); const center = box.getCenter(new THREE.Vector3()); const size = box.getSize(new THREE.Vector3()); const radius = Math.max(size.x,size.y,size.z)||6; camera.position.set(center.x+radius*1.2, center.y+radius*0.9, center.z+radius*1.2); camera.lookAt(center);
+  let raf=0; function loop(){ raf=requestAnimationFrame(loop); renderer.render(scene,camera); } loop();
 }
 
 // ---------- Interaction ----------
