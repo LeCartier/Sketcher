@@ -843,7 +843,8 @@
           const serialize = window.sketcherSerializeScene;
           if (typeof serialize !== 'function') { alert('Unable to read the current scene to share.'); return; }
           const json = serialize();
-          const thumb = await (await import('./js/app/columbarium.js')).generateSceneThumbnail(json).catch(()=>null);
+          // Use the DOM-free thumbnail generator to avoid module side effects on non-columbarium pages
+          const thumb = await (await import('./js/app/community.js')).generateSceneThumbnail(json).catch(()=>null);
           const name = prompt('Name your community scene:', 'My Scene') || 'Untitled';
           const saved = await communityApi.saveCommunityScene({ name, json, thumb });
           // Redirect to community with trade intent and the new id
