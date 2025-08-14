@@ -682,6 +682,15 @@
             }
           } catch {}
         })();
+
+        // Load UI wiring for Materials popup (safe additive module)
+        (async () => {
+          try { await import('./js/app/ui/materials-popup.js'); } catch {}
+        })();
+        // Load UI wiring for Views + Plan Lock (safe additive module)
+        (async () => {
+          try { await import('./js/app/ui/views.js'); } catch {}
+        })();
   // Community nav fade
         const toCommunity = document.getElementById('toCommunity');
         if (toCommunity) {

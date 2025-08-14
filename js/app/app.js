@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -24,6 +24,7 @@ export async function init() {
 			import('./ar-export.js'),
 			import('./snapping-visuals.js'),
 			import('./session-draft.js'),
+			import('./features/primitives.js'),
 	]);
 
 	// Version badge
@@ -1050,16 +1051,24 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (currentMaterialStyle === style && mat) applyUniformMaterial(mat);
 		})();
 	}
-	// Initialize selected material style from storage and wire buttons
+	// Initialize selected material style from storage and expose public API
 	(function(){
 		let saved = 'original';
 		try { const s = localStorage.getItem('sketcher.materialStyle'); if (s) saved = s; } catch {}
-		if (matOriginalBtn) matOriginalBtn.addEventListener('click', ()=> applyMaterialStyle('original'));
-		if (matCardboardBtn) matCardboardBtn.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
-		if (matMdfBtn) matMdfBtn.addEventListener('click', ()=> applyMaterialStyle('mdf'));
-		const matSketchBtn = document.getElementById('matSketch'); if (matSketchBtn) matSketchBtn.addEventListener('click', ()=> applyMaterialStyle('sketch'));
 		applyMaterialStyle(saved);
 		setMaterialButtons(saved);
+		// Public, stable API for other modules (UI wiring, etc.)
+		try {
+			window.sketcherMaterialsAPI = {
+				applyMaterialStyle,
+				getActiveSharedMaterial,
+				getProceduralSharedMaterial,
+				getCurrentStyle: () => currentMaterialStyle,
+				setMaterialButtons,
+			};
+			// Signal readiness for late-loading UI modules
+			document.dispatchEvent(new CustomEvent('sketcher:materials-ready'));
+		} catch {}
 	})();
 
 	// Edge fade overlay for infinite grid
@@ -1238,7 +1247,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			tweenCamera(camera, perspCamera, 600, () => { camera = perspCamera; controls.object = camera; controls.update(); });
 			return;
 		}
-if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCameraView('perspective'));
+
 		// Use orthographic for Plan/N/E/S/W/Axon; orbiting will switch back to perspective
 		let useOrtho = ['plan','north','south','east','west','axon'].includes(type);
 		if (useOrtho) {
@@ -1372,12 +1381,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		}
 	}, true);
 	}
-	if (viewAxonBtn) viewAxonBtn.addEventListener('click', () => setCameraView('axon'));
-	if (viewPlanBtn) viewPlanBtn.addEventListener('click', () => setCameraView('plan'));
-	if (viewNorthBtn) viewNorthBtn.addEventListener('click', () => setCameraView('north'));
-	if (viewSouthBtn) viewSouthBtn.addEventListener('click', () => setCameraView('south'));
-	if (viewEastBtn) viewEastBtn.addEventListener('click', () => setCameraView('east'));
-	if (viewWestBtn) viewWestBtn.addEventListener('click', () => setCameraView('west'));
+	// View button listeners will be wired by ui/views.js via public API
 
 	// Plan View Lock behavior
 	function applyPlanLockState() {
@@ -1394,30 +1398,40 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		// Persist setting
 		try { localStorage.setItem('sketcher.planViewLocked', planViewLocked ? '1' : '0'); } catch {}
 	}
+	// Initialize Plan Lock button state now; click wiring moves to ui/views.js
 	if (planLockBtn) {
-		// Initialize from storage
 		try { planViewLocked = localStorage.getItem('sketcher.planViewLocked') === '1'; } catch {}
-		planLockBtn.addEventListener('click', () => {
-			planViewLocked = !planViewLocked;
-			applyPlanLockState();
-			// If unlocking, restore normal perspective axes and rotation
-			if (!planViewLocked) {
-				try {
-					cameraType = 'perspective';
-					let persp = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
-					persp.position.copy(camera.position);
-					persp.up.set(0,1,0);
-					persp.quaternion.copy(camera.quaternion);
-					persp.updateMatrixWorld(); persp.updateProjectionMatrix();
-					controls.object = persp;
-					controls.update();
-					tweenCamera(camera, persp, 450, () => { camera = persp; controls.object = camera; controls.update(); });
-				} catch {}
-			}
-		});
-		// Apply on startup
 		applyPlanLockState();
 	}
+
+	// Public Views API for UI modules
+	try {
+		window.sketcherViewsAPI = {
+			setCameraView,
+			getCameraType: () => cameraType,
+			isPlanViewLocked: () => !!planViewLocked,
+			setPlanViewLocked: (on) => {
+				const next = !!on;
+				const wasLocked = !!planViewLocked;
+				planViewLocked = next;
+				applyPlanLockState();
+				// If transitioning from locked -> unlocked, restore perspective smoothly
+				if (wasLocked && !next) {
+					try {
+						cameraType = 'perspective';
+						let persp = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
+						persp.position.copy(camera.position);
+						persp.up.set(0,1,0);
+						persp.quaternion.copy(camera.quaternion);
+						persp.updateMatrixWorld(); persp.updateProjectionMatrix();
+						controls.object = persp; controls.update();
+						tweenCamera(camera, persp, 450, () => { camera = persp; controls.object = camera; controls.update(); });
+					} catch {}
+				}
+			}
+		};
+		document.dispatchEvent(new CustomEvent('sketcher:views-ready'));
+	} catch {}
 
 	// AR visibility
 		if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
@@ -2029,11 +2043,11 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	const addRampBtn = document.getElementById('addRamp');
 	const addStairsBtn = document.getElementById('addStairs');
 	const addRoofBtn = document.getElementById('addRoof');
-	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const radius=0.5, height=8; const geo=new THREE.CylinderGeometry(radius,radius,height,24); const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const col=new THREE.Mesh(geo, mat); col.position.set(0, height/2, 0); col.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(col,{ select:true }); });
-	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const len=12, depth=1, width=1; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const beam=new THREE.Mesh(new THREE.BoxGeometry(len,depth,width), mat); beam.position.set(0, 8, 0); beam.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(beam,{ select:true }); });
-	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const len=10, thick=0.5, width=4; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const ramp=new THREE.Mesh(new THREE.BoxGeometry(len, thick, width), mat); ramp.rotation.x = THREE.MathUtils.degToRad(-15); ramp.position.set(0, 1, 0); ramp.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(ramp,{ select:true }); });
-	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const steps=10, rise=0.7, tread=1, width=4; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const grp=new THREE.Group(); for(let i=0;i<steps;i++){ const h=rise, d=tread, w=width; const step=new THREE.Mesh(new THREE.BoxGeometry(d,h,w), mat); step.position.set(i*tread + d/2, (i+0.5)*rise, 0); grp.add(step); } grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
-	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const w=12, d=10; const plane=new THREE.PlaneGeometry(w,d); plane.rotateX(-Math.PI/2); const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const roof=new THREE.Mesh(plane, mat); roof.rotation.z = THREE.MathUtils.degToRad(30); roof.position.set(0, 10, 0); roof.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(roof,{ select:true }); });
+	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createColumn({ THREE, material: mat, radius: 0.5, height: 8 }); mesh.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createBeam({ THREE, material: mat, len: 12, depth: 1, width: 1 }); mesh.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createRamp({ THREE, material: mat, len: 10, thick: 0.5, width: 4 }); mesh.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const grp = primitives.createStairs({ THREE, material: mat, steps: 10, rise: 0.7, tread: 1, width: 4 }); grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
+	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createRoofPlane({ THREE, material: mat, w: 12, d: 10 }); mesh.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(mesh,{ select:true }); });
 
 	// Return to Floor logic for toolbox button
 	function handleReturnToFloor() {
