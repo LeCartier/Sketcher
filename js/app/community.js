@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import * as localStore from './local-store.js';
+import * as communityApi from './services/community-api.js';
 
 // Re-export selected APIs so community.html stays simple
 export const listCommunityScenes = localStore.listCommunityScenes;
@@ -37,7 +38,11 @@ export async function generateSceneThumbnail(json){
 // Lightweight preview overlay (like Columbarium overlay)
 let overlay = null;
 async function openPreviewById(id){
-  const rec = await localStore.getCommunityScene(id); if (!rec) return;
+  // Try backend first, fallback to local
+  let rec = null;
+  try { rec = await communityApi.getCommunityScene(id); } catch {}
+  if (!rec) { try { rec = await localStore.getCommunityScene(id); } catch {} }
+  if (!rec) return;
   await openPreviewRecord(rec);
 }
 

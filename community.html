@@ -11,7 +11,10 @@
   </script>
   <style>
     body { background:#0f0f0f; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    .community-wrap { position: fixed; inset: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; padding: 84px 20px 20px; align-content: start; overflow: auto; }
+  /* Canvas grid like personal columbarium */
+  #communityGridStage { position: fixed; top:0; left:0; width:100vw; height:100vh; z-index: 0; display: block; cursor: grab; }
+  @supports (height: 100dvh) { #communityGridStage { width: 100dvw; height: 100dvh; } }
+  #communityGridStage.grabbing { cursor: grabbing; }
     .card { position: relative; background: rgba(20,20,20,0.98); border:1px solid #2a2a2a; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); overflow: hidden; }
     .card .thumb { width: 100%; aspect-ratio: 1 / 1; background:#222; display:block; object-fit: cover; }
     .card .meta { position:absolute; left:0; right:0; bottom:0; padding:10px; background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 100%); color:#fff; display:flex; gap:8px; align-items:center; }
@@ -28,13 +31,22 @@
 </head>
 <body>
   <div id="pageFade" aria-hidden="true"></div>
+  <!-- Toolbox-style controls (match personal columbarium) -->
+  <div id="cToolbox">
+    <div id="cTopIcons">
+      <button id="cCenterView" class="icon-btn" title="Center View" aria-label="Center View" type="button">
+        <span class="sr-only">Center View</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="#222" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#222"/></svg>
+      </button>
+    </div>
+  </div>
   <div class="topbar">
     <div class="pill" style="gap:12px;">
       <div style="font:600 13px system-ui, sans-serif;">Trade choices</div>
       <div id="choices" class="choices"></div>
     </div>
   </div>
-  <div class="community-wrap" id="communityList" aria-live="polite"></div>
+  <canvas id="communityGridStage" aria-label="Community Grid"></canvas>
 
   <a id="toColumbariumBack" class="floating-nav nav-top-right" href="./columbarium.html" title="Back to Columbarium" aria-label="Back to Columbarium">
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -71,17 +83,29 @@
       if (link) link.addEventListener('click', (e) => { e.preventDefault(); const href = link.getAttribute('href'); document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = href; }, 170); });
       const toEditor = document.getElementById('toEditor');
       if (toEditor) toEditor.addEventListener('click', (e) => { e.preventDefault(); const href = toEditor.getAttribute('href'); document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = href; }, 170); });
+  const cCenter = document.getElementById('cCenterView');
+  if (cCenter) cCenter.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('community:center')));
     });
 
-    const listEl = document.getElementById('communityList');
     const choicesEl = document.getElementById('choices');
-    const [{ listCommunityScenes, getCommunityScene, saveScene, generateSceneThumbnail, pickRandomCommunity }] = await Promise.all([
+    const [{ getCommunityScene, saveScene }] = await Promise.all([
       import('./js/app/community.js')
     ]);
+    const communityApi = await import('./js/app/services/community-api.js');
+    const qs = new URLSearchParams(location.search);
+    const trade = qs.get('trade') === '1';
+    const justId = qs.get('just');
 
     async function renderChoices() {
       choicesEl.textContent = '';
-      const picks = await pickRandomCommunity(3);
+      let picks = await communityApi.pickRandomCommunity(3);
+      if (justId) picks = picks.filter(p => p.id !== justId);
+      // ensure 3 unique picks; if fewer available, keep what we have
+      const ids = picks.map(p => p.id);
+      if (trade && ids.length) {
+        // pulse selections in canvas
+        window.dispatchEvent(new CustomEvent('community:trade-picks', { detail: { ids } }));
+      }
       if (!picks.length) { const d=document.createElement('div'); d.textContent='No community scenes yet'; d.style.opacity='0.8'; d.style.font='12px system-ui, sans-serif'; choicesEl.appendChild(d); return; }
       for (const p of picks) {
         const div = document.createElement('div'); div.className = 'choice';
@@ -91,10 +115,16 @@
         const wrap = document.createElement('div'); wrap.className = 'pick';
         const btn = document.createElement('button'); btn.textContent = 'Add';
         btn.addEventListener('click', async () => {
-          const rec = await getCommunityScene(p.id); if (!rec) return;
+          const rec = await communityApi.getCommunityScene(p.id); if (!rec) return;
           // Save to personal collection
           await saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb });
-          // Refresh choices after pick
+          // If in trade mode, go straight to personal columbarium
+          if (trade) {
+            try { sessionStorage.setItem('sketcher:lastTradePick', p.id); } catch {}
+            document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = './columbarium.html'; }, 160);
+            return;
+          }
+          // Otherwise, keep browsing
           await renderChoices();
           alert('Added to your collection. Open Columbarium to see it.');
         });
@@ -102,27 +132,9 @@
       }
     }
 
-    async function renderList() {
-      listEl.textContent = '';
-      const items = await listCommunityScenes();
-      if (!items.length) { const empty=document.createElement('div'); empty.style.color='#bbb'; empty.style.font='13px system-ui, sans-serif'; empty.textContent='No community scenes yet. Upload from the editor.'; listEl.appendChild(empty); return; }
-      for (const it of items) {
-        const card = document.createElement('div'); card.className = 'card';
-        const img = document.createElement('img'); img.className = 'thumb'; img.alt = it.name || 'Scene'; img.src = it.thumb || '';
-        if (!it.thumb) img.style.background = '#222';
-        const meta = document.createElement('div'); meta.className = 'meta';
-        const title = document.createElement('div'); title.className = 'title'; title.textContent = it.name || 'Untitled';
-        const btn = document.createElement('button'); btn.textContent = 'Preview';
-        btn.addEventListener('click', () => {
-          // Reuse the overlay preview in community.js
-          window.dispatchEvent(new CustomEvent('community:preview', { detail: { id: it.id } }));
-        });
-        meta.appendChild(title); meta.appendChild(btn);
-        card.appendChild(img); card.appendChild(meta); listEl.appendChild(card);
-      }
-    }
-
-    await Promise.all([renderChoices(), renderList()]);
+  // Start the canvas-based community grid
+  import('./js/app/community-grid.js');
+  await Promise.all([renderChoices()]);
   </script>
 </body>
 </html>

@@ -834,8 +834,8 @@
     init();
   </script>
   <script type="module">
-    // Share to Community flow: serialize current scene, save to community, then offer 3 picks to add back
-    import * as localStore from './js/app/local-store.js';
+  // Share to Community flow (Supabase backend): serialize current scene, save to community, then redirect to Community for trade picks
+    import * as communityApi from './js/app/services/community-api.js';
     const btn = document.getElementById('shareToCommunity');
     if (btn) {
       btn.addEventListener('click', async () => {
@@ -845,49 +845,12 @@
           const json = serialize();
           const thumb = await (await import('./js/app/columbarium.js')).generateSceneThumbnail(json).catch(()=>null);
           const name = prompt('Name your community scene:', 'My Scene') || 'Untitled';
-          await localStore.saveCommunityScene({ name, json, thumb });
-          // Offer 3 random picks
-          const picks = await localStore.pickRandomCommunity(3);
-          if (!picks.length) { alert('Shared! There are no community picks yet.'); return; }
-          // Open a simple picker overlay
-          const wrap = document.createElement('div');
-          Object.assign(wrap.style, { position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center' });
-          const panel = document.createElement('div'); Object.assign(panel.style,{ background:'#111', color:'#fff', border:'1px solid #333', borderRadius:'12px', boxShadow:'0 10px 28px rgba(0,0,0,0.45)', padding:'14px', width:'min(94vw,720px)' });
-          const title = document.createElement('div'); title.textContent = 'Pick one to add to your collection'; title.style.font = '600 14px system-ui, sans-serif'; title.style.marginBottom = '10px';
-          const row = document.createElement('div'); Object.assign(row.style,{ display:'flex', gap:'12px', justifyContent:'center', flexWrap:'wrap' });
-          for (const p of picks) {
-            const card = document.createElement('div'); Object.assign(card.style,{ width:'220px', height:'240px', borderRadius:'10px', overflow:'hidden', border:'1px solid #2a2a2a', position:'relative', background:'#151515', display:'flex', flexDirection:'column' });
-            const img = document.createElement('img'); img.alt = p.name || 'Scene'; img.src = p.thumb || ''; Object.assign(img.style,{ width:'100%', height:'160px', objectFit:'cover', display:'block', background:'#222' });
-            const name = document.createElement('div'); name.textContent = p.name || 'Untitled'; Object.assign(name.style,{ color:'#eee', font:'600 12px system-ui, sans-serif', padding:'6px 8px 0' });
-            const controls = document.createElement('div'); Object.assign(controls.style,{ display:'flex', gap:'8px', padding:'8px', marginTop:'auto' });
-            const preview = document.createElement('button'); preview.textContent='Preview'; Object.assign(preview.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
-            preview.addEventListener('click', async ()=>{ const rec = await localStore.getCommunityScene(p.id); if (rec) { openCommunityPreview(rec); } });
-            const addBtn = document.createElement('button'); addBtn.textContent='Add'; Object.assign(addBtn.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', flex:'1 1 auto' });
-            addBtn.addEventListener('click', async ()=>{ const rec = await localStore.getCommunityScene(p.id); if (rec) { await localStore.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb }); document.body.removeChild(wrap); alert('Added to your collection!'); } });
-            controls.appendChild(preview); controls.appendChild(addBtn);
-            card.appendChild(img); card.appendChild(name); card.appendChild(controls); row.appendChild(card);
-          }
-          const close = document.createElement('button'); close.textContent='Close'; Object.assign(close.style,{ marginTop:'10px', background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', float:'right' });
-          close.addEventListener('click', ()=>{ document.body.removeChild(wrap); });
-          panel.appendChild(title); panel.appendChild(row); panel.appendChild(close); wrap.appendChild(panel); document.body.appendChild(wrap);
-          // Inline lightweight Three preview
-          function openCommunityPreview(rec){
-            import('./js/vendor/three.module.js').then(THREE => {
-              const root = document.createElement('div'); Object.assign(root.style,{ position:'fixed', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width:'min(92vw, 960px)', height:'min(82vh, 640px)', zIndex:'10000', borderRadius:'12px', overflow:'hidden', background:'#111', border:'1px solid #333', boxShadow:'0 10px 28px rgba(0,0,0,0.45)' });
-              const canvas = document.createElement('canvas'); canvas.style.width='100%'; canvas.style.height='100%'; canvas.style.display='block'; root.appendChild(canvas);
-              const close = document.createElement('button'); close.textContent='×'; Object.assign(close.style,{ position:'absolute', top:'8px', right:'10px', width:'28px', height:'28px', borderRadius:'14px', border:'1px solid rgba(255,255,255,0.16)', background:'#333', color:'#ddd', lineHeight:'26px', textAlign:'center', cursor:'pointer', zIndex:1 }); close.addEventListener('click', ()=>{ try{ cancelAnimationFrame(raf); }catch{} try{ renderer.dispose(); }catch{} root.remove(); }); root.appendChild(close);
-              document.body.appendChild(root);
-              const renderer = new THREE.WebGLRenderer({ antialias:true, canvas });
-              const rect = root.getBoundingClientRect(); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1)); renderer.setSize(Math.max(100, rect.width), Math.max(100, rect.height), false); renderer.setClearColor('#141414');
-              const scene = new THREE.Scene(); scene.add(new THREE.AmbientLight(0xffffff, 0.9)); const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(5,10,7); scene.add(dir);
-              const camera = new THREE.PerspectiveCamera(60, Math.max(0.001, rect.width/rect.height), 0.01, 5000);
-              const loader = new THREE.ObjectLoader(); const rootObj = loader.parse(rec.json); (rootObj.children||[]).forEach(child=>scene.add(child));
-              const box = new THREE.Box3().setFromObject(scene); const center = box.getCenter(new THREE.Vector3()); const size = box.getSize(new THREE.Vector3()); const radius = Math.max(size.x,size.y,size.z)||6; camera.position.set(center.x+radius*1.2, center.y+radius*0.9, center.z+radius*1.2); camera.lookAt(center);
-              let raf=0; function loop(){ raf=requestAnimationFrame(loop); renderer.render(scene,camera); } loop();
-            });
-          }
+          const saved = await communityApi.saveCommunityScene({ name, json, thumb });
+          // Redirect to community with trade intent and the new id
+          document.body.classList.add('page-leave');
+          setTimeout(()=>{ window.location.href = `./community.html?just=${encodeURIComponent(saved.id)}&trade=1`; }, 170);
         } catch (e) {
-          console.error(e); alert('Failed to share to community.');
+          console.error(e); alert('Failed to share to community (backend).');
         }
       });
     }

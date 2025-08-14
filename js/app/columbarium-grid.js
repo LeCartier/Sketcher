@@ -227,9 +227,10 @@ function clear(){
 
 function drawGrid(){
   const dpr = DPR(); const vw = canvas.width / dpr, vh = canvas.height / dpr;
-  // grid colors
-  const minor = 'rgba(255,255,255,0.06)';
-  const major = 'rgba(255,255,255,0.12)';
+  // grid colors (magenta accent when on community page)
+  const onCommunity = typeof document !== 'undefined' && document.title && /Community/i.test(document.title);
+  const minor = onCommunity ? 'rgba(255,0,255,0.10)' : 'rgba(255,255,255,0.06)';
+  const major = onCommunity ? 'rgba(255,0,255,0.22)' : 'rgba(255,255,255,0.12)';
   const step = CELL * scale;
   if (step <= 0.0001) return;
   // world bounds currently visible
