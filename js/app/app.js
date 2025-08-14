@@ -604,7 +604,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (!obj) return true;
 		if (obj === grid) return true;
 		if (obj === transformControls || obj === transformControlsRotate) return true;
-		if (obj.name && (obj.name.startsWith('__') || obj.name.startsWith('Room Scan') || obj.name === 'Scan Point Cloud')) return true;
+		if ((obj.name && (obj.name.startsWith('__') || obj.name.startsWith('Room Scan') || obj.name === 'Scan Point Cloud')) || (obj.userData && obj.userData.__helper)) return true;
 		if (obj.isLight || obj.isCamera) return true;
 		if (obj.isGridHelper) return true;
 		return false;
@@ -623,6 +623,22 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		return list;
 	}
 	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
+
+	// --- Picking helpers ---
+	function __isHelperChain(node){
+		let n = node;
+		while(n){ if (n.userData && n.userData.__helper) return true; n = n.parent; }
+		return false;
+	}
+	function __resolvePickedObjectFromHits(hits){
+		for (const h of hits){
+			let o = h.object;
+			if (__isHelperChain(o)) continue; // skip helper overlays (e.g., sketch outlines)
+			while(o.parent && o.parent.type === 'Group' && objects.includes(o.parent)) o = o.parent;
+			return o;
+		}
+		return null;
+	}
 
 	// --- Undo History (Ctrl/Cmd+Z) ---
 	const __history = [];
@@ -765,6 +781,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Texture/material caches (shared instances)
 	let __cardboardMat = null; // final shared material (photo if available, else procedural)
 	let __mdfMat = null;       // final shared material (photo if available, else procedural)
+	let __sketchMat = null;    // shared sketch material (procedural only)
+
+	// Sketch style environment overrides and temps
+	let __sketchPrevBg = null;           // string like '#rrggbb'
+	let __sketchPrevGrid = null;         // string like '#rrggbb'
+	let __sketchOverrideActive = false;  // whether overrides are active
+	// Track attached sketch outline nodes so we can remove/dispose on exit
+	const __sketchOutlineNodes = new Set();
 
 	// Procedural fallback textures (lightweight, immediate)
 	function makeNoiseCanvas(w=256,h=256,opts={}){
@@ -798,6 +822,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
 		tex.anisotropy = 8; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1.8,1.8);
 		return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide });
+	}
+	function makeSketchMaterialProcedural(){
+		// White toon material, front faces only
+		const mat = new THREE.MeshToonMaterial({ color: 0xffffff, side: THREE.FrontSide });
+		try { mat.userData = { ...(mat.userData||{}), procedural: true, base: 'sketch' }; } catch {}
+		return mat;
 	}
 	function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
 	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ ensureOriginalMaterial(m); m.material = sharedMat; }); }
@@ -842,9 +872,86 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Material style orchestration
 	let currentMaterialStyle = 'original';
 	let __materialLoadPromise = null;
+	let __sketchOutlines = null; // THREE.Group of outlines
+
+	function getRendererClearColorHex(){
+		const c = new THREE.Color();
+		try { renderer.getClearColor(c); } catch {}
+		return `#${c.getHexString()}`;
+	}
+	function applySketchOverrides(){
+		if (__sketchOverrideActive) return;
+		__sketchPrevBg = getRendererClearColorHex();
+		try {
+			__sketchPrevGrid = (gridColorPicker && gridColorPicker.value) || localStorage.getItem('sketcher.gridColor') || '#ffffff';
+		} catch { __sketchPrevGrid = '#ffffff'; }
+		// Override display without touching persisted prefs
+		try { if (bgColorPicker) bgColorPicker.disabled = true; } catch {}
+		try { if (gridColorPicker) gridColorPicker.disabled = true; } catch {}
+		renderer.setClearColor('#ffffff');
+		setGridColor('#999999');
+		__sketchOverrideActive = true;
+	}
+	function restoreSketchOverridesIfAny(){
+		if (!__sketchOverrideActive) return;
+		if (__sketchPrevBg) renderer.setClearColor(__sketchPrevBg);
+		if (__sketchPrevGrid) setGridColor(__sketchPrevGrid);
+		try { if (bgColorPicker) bgColorPicker.disabled = false; } catch {}
+		try { if (gridColorPicker) gridColorPicker.disabled = false; } catch {}
+		__sketchPrevBg = null; __sketchPrevGrid = null; __sketchOverrideActive = false;
+	}
+	function disposeSketchOutlines(){
+		if(__sketchOutlines){
+			try { scene.remove(__sketchOutlines); } catch {}
+			__sketchOutlines.traverse(o=>{ try { o.geometry && o.geometry.dispose && o.geometry.dispose(); } catch {} try { o.material && o.material.dispose && o.material.dispose(); } catch {} });
+			__sketchOutlines = null;
+		}
+		// Also remove attached nodes from meshes
+		__sketchOutlineNodes.forEach(node => {
+			try {
+				if (node.parent) node.parent.remove(node);
+				node.traverse(o=>{ try { o.geometry && o.geometry.dispose && o.geometry.dispose(); } catch {} try { o.material && o.material.dispose && o.material.dispose(); } catch {} });
+			} catch {}
+		});
+		__sketchOutlineNodes.clear();
+	}
+	function jitterEdgesGeometry(egeo, amount){
+		// returns a new BufferGeometry with jittered positions
+		const src = egeo.attributes.position;
+		const dst = new Float32Array(src.array.length);
+		for (let i=0;i<src.count;i++){
+			const ix = i*3;
+			dst[ix]   = src.array[ix]   + (Math.random()-0.5)*amount;
+			dst[ix+1] = src.array[ix+1] + (Math.random()-0.5)*amount;
+			dst[ix+2] = src.array[ix+2] + (Math.random()-0.5)*amount;
+		}
+		const g = new THREE.BufferGeometry();
+		g.setAttribute('position', new THREE.BufferAttribute(dst, 3));
+		return g;
+	}
+	function makeSketchLinesForMesh(m){
+		const srcGeo = m.geometry; if (!srcGeo) return null;
+		try { if (!srcGeo.boundingSphere) srcGeo.computeBoundingSphere(); } catch {}
+		const r = (srcGeo.boundingSphere && Number.isFinite(srcGeo.boundingSphere.radius)) ? srcGeo.boundingSphere.radius : 1;
+		const egeo = new THREE.EdgesGeometry(srcGeo, 1);
+		const grp = new THREE.Group();
+		// Single jittered stroke for a hand-drawn outline
+		const jitterBase = Math.max(0.0015, Math.min(0.01, r * 0.0025));
+		const jgeo = jitterEdgesGeometry(egeo, jitterBase);
+		const mat = new THREE.LineBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.85 });
+		const lines = new THREE.LineSegments(jgeo, mat);
+		grp.add(lines);
+		// Mark as helper/non-selectable and disable raycasting so it can't be picked or moved
+		grp.name = '__sketchOutline'; grp.userData.__helper = true; lines.userData.__helper = true;
+		grp.raycast = function(){}; lines.raycast = function(){};
+		// Attach in mesh-local space so it follows transforms automatically
+		grp.position.set(0,0,0); grp.rotation.set(0,0,0); grp.scale.set(1,1,1);
+		return grp;
+	}
 	function getActiveSharedMaterial(style){
 		if (style === 'cardboard') return __cardboardMat || null;
 		if (style === 'mdf') return __mdfMat || null;
+		if (style === 'sketch') return __sketchMat || null;
 		return null;
 	}
 	function getProceduralSharedMaterial(style){
@@ -856,30 +963,55 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (!__mdfMat) { __mdfMat = makeMDFMaterialProcedural(); try { __mdfMat.userData = { ...( __mdfMat.userData||{} ), procedural: true }; } catch {} }
 			return __mdfMat;
 		}
+		if (style === 'sketch') {
+			if (!__sketchMat) { __sketchMat = makeSketchMaterialProcedural(); try { __sketchMat.userData = { ...( __sketchMat.userData||{} ), procedural: true }; } catch {} }
+			return __sketchMat;
+		}
 		return null;
 	}
 	function setMaterialButtons(style){
 		if (matOriginalBtn) matOriginalBtn.setAttribute('aria-pressed', style==='original'?'true':'false');
 		if (matCardboardBtn) matCardboardBtn.setAttribute('aria-pressed', style==='cardboard'?'true':'false');
 		if (matMdfBtn) matMdfBtn.setAttribute('aria-pressed', style==='mdf'?'true':'false');
+		const matSketchBtn = document.getElementById('matSketch'); if (matSketchBtn) matSketchBtn.setAttribute('aria-pressed', style==='sketch'?'true':'false');
 	}
 	function applyMaterialStyle(style){
 		style = style || 'original';
 		currentMaterialStyle = style;
 		// Persist selection
 		try { localStorage.setItem('sketcher.materialStyle', style); } catch {}
+		// Handle environment overrides toggling
+		if (style !== 'sketch') restoreSketchOverridesIfAny();
 		// Immediate path
-		if (style === 'original') { restoreOriginalMaterials(); setMaterialButtons(style); return; }
+		if (style === 'original') {
+			// Apply a shared MeshNormalMaterial to the whole scene
+			applyUniformMaterial(material);
+			disposeSketchOutlines();
+			setMaterialButtons(style);
+			return;
+		}
 		// Apply procedural immediately, then upgrade to photo when ready
 		const proc = getProceduralSharedMaterial(style);
 		applyUniformMaterial(proc);
 		setMaterialButtons(style);
+		// Sketch style specifics: overrides, outlines, and per-mesh grey shades
+		if (style === 'sketch'){
+			applySketchOverrides();
+			disposeSketchOutlines();
+			// Build plane/feature-edge outlines and attach to each mesh so they follow
+			forEachMeshInScene(m => {
+				const lines = makeSketchLinesForMesh(m);
+				if (lines) { try { m.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
+			});
+		} else {
+			disposeSketchOutlines();
+		}
 		// On narrow/mobile, skip photoreal upgrade to keep it light
 		const isMobileNarrow = Math.min(window.innerWidth, window.innerHeight) <= 640;
 		if (isMobileNarrow) return;
 		// Kick off async load (debounced to one in-flight per style)
 		const need = (style === 'cardboard' && (!__cardboardMat || __cardboardMat.userData?.procedural))
-		         || (style === 'mdf' && (!__mdfMat || __mdfMat.userData?.procedural));
+				 || (style === 'mdf' && (!__mdfMat || __mdfMat.userData?.procedural)); // no photo upgrade for sketch
 		if (!need) return;
 		__materialLoadPromise = (async () => {
 			const mat = await buildPhotoMaterial(style);
@@ -896,6 +1028,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (matOriginalBtn) matOriginalBtn.addEventListener('click', ()=> applyMaterialStyle('original'));
 		if (matCardboardBtn) matCardboardBtn.addEventListener('click', ()=> applyMaterialStyle('cardboard'));
 		if (matMdfBtn) matMdfBtn.addEventListener('click', ()=> applyMaterialStyle('mdf'));
+		const matSketchBtn = document.getElementById('matSketch'); if (matSketchBtn) matSketchBtn.addEventListener('click', ()=> applyMaterialStyle('sketch'));
 		applyMaterialStyle(saved);
 		setMaterialButtons(saved);
 	})();
@@ -1182,7 +1315,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			}
 			// Otherwise, use the hit object (if any)
 			if (hits.length){
-				let obj = hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+				const obj = __resolvePickedObjectFromHits(hits);
+				if (!obj) return;
 				selectedObjects = [obj];
 				singleSelectionMode = 'handles';
 				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
@@ -1201,7 +1335,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
 		const hits = raycaster.intersectObjects(selectableObjects, true);
 		if (hits.length){
-			let obj = hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+			const obj = __resolvePickedObjectFromHits(hits);
+			if (!obj) return;
 			selectedObjects = [obj];
 			singleSelectionMode = 'handles';
 			attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
@@ -1479,12 +1614,33 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	function addObjectToScene(obj, { select = false } = {}){
 		scene.add(obj); objects.push(obj);
 		// Apply current material style to this object (shared instance)
-		if (currentMaterialStyle === 'cardboard' || currentMaterialStyle === 'mdf'){
+		if (currentMaterialStyle === 'original'){
+			const stack = [obj];
+			while (stack.length){
+				const o = stack.pop();
+				if (o.isMesh){ ensureOriginalMaterial(o); o.material = material; }
+				if (o.children && o.children.length) stack.push(...o.children);
+			}
+		} else if (currentMaterialStyle === 'cardboard' || currentMaterialStyle === 'mdf'){
 			const shared = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle);
 			const stack = [obj];
 			while (stack.length){
 				const o = stack.pop();
 				if (o.isMesh){ ensureOriginalMaterial(o); o.material = shared; }
+				if (o.children && o.children.length) stack.push(...o.children);
+			}
+		} else if (currentMaterialStyle === 'sketch'){
+			const shared = getActiveSharedMaterial('sketch') || getProceduralSharedMaterial('sketch');
+			const stack = [obj];
+			while (stack.length){
+				const o = stack.pop();
+				if (o.isMesh){
+					ensureOriginalMaterial(o);
+					o.material = shared;
+					// Attach a single outline child that follows this mesh
+					const lines = makeSketchLinesForMesh(o);
+					if (lines) { try { o.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
+				}
 				if (o.children && o.children.length) stack.push(...o.children);
 			}
 		}
@@ -1553,7 +1709,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			const w = Math.max(0.1, maxX - minX); const d = Math.max(0.1, maxZ - minZ);
 			const cx = (minX + maxX) / 2; const cz = (minZ + maxZ) / 2;
 			const geo = new THREE.BoxGeometry(w, FLOOR_THICKNESS_FT, d);
-			const mesh = new THREE.Mesh(geo, material.clone());
+			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+			const mesh = new THREE.Mesh(geo, activeMat);
 			mesh.position.set(cx, FLOOR_THICKNESS_FT/2, cz);
 			placingPreview = mesh; scene.add(mesh);
 		} else if (placingTool === 'wall'){
@@ -1562,7 +1719,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			const geo = new THREE.BoxGeometry(len, WALL_HEIGHT_FT, WALL_THICKNESS_FT);
 			// Translate geometry so its "start" sits at local origin, then place mesh at placingStart.
 			geo.translate(len/2, 0, 0);
-			const mesh = new THREE.Mesh(geo, material.clone());
+			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+			const mesh = new THREE.Mesh(geo, activeMat);
 			mesh.position.set(placingStart.x, WALL_HEIGHT_FT/2, placingStart.z);
 			mesh.rotation.y = -Math.atan2(dz, dx);
 			placingPreview = mesh; scene.add(mesh);
@@ -1661,7 +1819,8 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
 			const hits=raycaster.intersectObjects(selectableObjects,true);
 			if(hits.length){
-				let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) { obj = obj.parent; }
+				const obj = __resolvePickedObjectFromHits(hits);
+				if (!obj) return;
 				if(e.shiftKey||e.ctrlKey||e.metaKey){
 					if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj);
 				} else {
@@ -1803,10 +1962,11 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 		const cySphere = startPt.y + r; // sphere rests on base
 		if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; }
 		if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; }
-		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
-		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), material.clone()); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
-		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
-		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), material.clone()); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), activeMat); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
+		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
+		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
 		// Base rectangle outline (helps intuition: corner -> opposite corner)
 		try {
 			const pos = new Float32Array([
@@ -1836,11 +1996,11 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	const addRampBtn = document.getElementById('addRamp');
 	const addStairsBtn = document.getElementById('addStairs');
 	const addRoofBtn = document.getElementById('addRoof');
-	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const radius=0.5, height=8; const geo=new THREE.CylinderGeometry(radius,radius,height,24); const col=new THREE.Mesh(geo, material.clone()); col.position.set(0, height/2, 0); col.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(col,{ select:true }); });
-	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const len=12, depth=1, width=1; const beam=new THREE.Mesh(new THREE.BoxGeometry(len,depth,width), material.clone()); beam.position.set(0, 8, 0); beam.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(beam,{ select:true }); });
-	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const len=10, thick=0.5, width=4; const ramp=new THREE.Mesh(new THREE.BoxGeometry(len, thick, width), material.clone()); ramp.rotation.x = THREE.MathUtils.degToRad(-15); ramp.position.set(0, 1, 0); ramp.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(ramp,{ select:true }); });
-	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const steps=10, rise=0.7, tread=1, width=4; const grp=new THREE.Group(); for(let i=0;i<steps;i++){ const h=rise, d=tread, w=width; const step=new THREE.Mesh(new THREE.BoxGeometry(d,h,w), material.clone()); step.position.set(i*tread + d/2, (i+0.5)*rise, 0); grp.add(step); } grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
-	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const w=12, d=10; const plane=new THREE.PlaneGeometry(w,d); plane.rotateX(-Math.PI/2); const roof=new THREE.Mesh(plane, material.clone()); roof.rotation.z = THREE.MathUtils.degToRad(30); roof.position.set(0, 10, 0); roof.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(roof,{ select:true }); });
+	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const radius=0.5, height=8; const geo=new THREE.CylinderGeometry(radius,radius,height,24); const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const col=new THREE.Mesh(geo, mat); col.position.set(0, height/2, 0); col.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(col,{ select:true }); });
+	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const len=12, depth=1, width=1; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const beam=new THREE.Mesh(new THREE.BoxGeometry(len,depth,width), mat); beam.position.set(0, 8, 0); beam.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(beam,{ select:true }); });
+	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const len=10, thick=0.5, width=4; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const ramp=new THREE.Mesh(new THREE.BoxGeometry(len, thick, width), mat); ramp.rotation.x = THREE.MathUtils.degToRad(-15); ramp.position.set(0, 1, 0); ramp.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(ramp,{ select:true }); });
+	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const steps=10, rise=0.7, tread=1, width=4; const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const grp=new THREE.Group(); for(let i=0;i<steps;i++){ const h=rise, d=tread, w=width; const step=new THREE.Mesh(new THREE.BoxGeometry(d,h,w), mat); step.position.set(i*tread + d/2, (i+0.5)*rise, 0); grp.add(step); } grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
+	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const w=12, d=10; const plane=new THREE.PlaneGeometry(w,d); plane.rotateX(-Math.PI/2); const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const roof=new THREE.Mesh(plane, mat); roof.rotation.z = THREE.MathUtils.degToRad(30); roof.position.set(0, 10, 0); roof.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(roof,{ select:true }); });
 
 	// Return to Floor logic for toolbox button
 	function handleReturnToFloor() {

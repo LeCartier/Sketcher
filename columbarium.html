@@ -95,6 +95,10 @@
   </div>
   <canvas id="gridStage" aria-label="Columbarium Grid"></canvas>
   <div class="page-vignette" aria-hidden="true"></div>
+  <!-- Version badge (also triggers AnArch) -->
+  <div id="version-badge" role="button" tabindex="0" title="About / AnArch" aria-label="About / AnArch" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center; cursor:pointer; user-select:none;">
+    v1.1.0
+  </div>
 
   <div id="viewerBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal">
@@ -131,17 +135,6 @@
       </g>
     </svg>
   </a>
-  <!-- Floating AnArch trigger button -->
-  <button id="toAnArch" class="floating-nav nav-top-right-2" title="AnArch Glitch" aria-label="AnArch Glitch" type="button">
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <!-- Stylized A with shard lines -->
-      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 4 L5 20 M12 4 L19 20 M7.5 15 H16.5"/>
-        <path d="M3 8 L7 8" opacity=".5"/>
-        <path d="M17 10 L21 10" opacity=".5"/>
-      </g>
-    </svg>
-  </button>
   <script type="module">
     // Page fade-in/out
     document.addEventListener('DOMContentLoaded', () => {
@@ -170,12 +163,6 @@
   }
   const cCenterView = document.getElementById('cCenterView');
   if (cCenterView) cCenterView.addEventListener('click', ()=> window.dispatchEvent(new CustomEvent('columbarium:center')));
-  // AnArch trigger
-  (async () => { try {
-    const mod = await import('./js/app/anarch.js');
-    const toAnArch = document.getElementById('toAnArch');
-    if (mod && mod.triggerAnArchSequence && toAnArch) toAnArch.addEventListener('click', () => { try { mod.triggerAnArchSequence(); } catch {} });
-  } catch {} })();
   // Zones toolbox wiring
   const cToggleZones = document.getElementById('cToggleZones');
   const cZonesGroup = document.getElementById('cZonesGroup');
@@ -197,6 +184,26 @@
       }
     });
   }
+  // Version badge: set text and trigger AnArch on click/keyboard
+  (async () => {
+    try {
+      const res = await fetch('./version.json', { cache: 'no-store' });
+      if (res.ok) {
+        const v = await res.json();
+        const el = document.getElementById('version-badge');
+        if (el) el.textContent = `v${v.version} — ${v.date}`;
+      }
+    } catch {}
+    try {
+      const mod = await import('./js/app/anarch.js');
+      const badge = document.getElementById('version-badge');
+      if (mod && mod.triggerAnArchSequence && badge) {
+        const run = () => { try { mod.triggerAnArchSequence(); } catch {} };
+        badge.addEventListener('click', run);
+        badge.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); run(); } });
+      }
+    } catch {}
+  })();
   if (zoneColor) zoneColor.addEventListener('input', ()=> window.dispatchEvent(new CustomEvent('zones:color', { detail: { color: zoneColor.value } })));
   if (zoneCreate) zoneCreate.addEventListener('click', ()=> {
     const pressed = zoneCreate.getAttribute('aria-pressed') === 'true';

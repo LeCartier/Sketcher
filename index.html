@@ -184,7 +184,7 @@
         <g fill="none" stroke="#222" stroke-width="1.8">
           <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
         </g>
-        <rect x="8" y="8" width="8" height="8" fill="#222"/>
+  <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#222"/>
       </svg>
     </button>
     <div id="sceneManagerGroup" class="collapse" aria-hidden="true">
@@ -349,16 +349,6 @@
       </g>
     </svg>
   </button>
-  <!-- Floating AnArch trigger -->
-  <button id="toAnArch" class="floating-nav nav-top-right-5" title="AnArch Glitch" aria-label="AnArch Glitch" type="button">
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 4 L5 20 M12 4 L19 20 M7.5 15 H16.5"/>
-        <path d="M3 8 L7 8" opacity=".5"/>
-        <path d="M17 10 L21 10" opacity=".5"/>
-      </g>
-    </svg>
-  </button>
   <!-- Visibility popup -->
   <div id="visibilityPopup" style="display:none;">
     <div class="visibility-header"><strong data-i18n="visibility.title">Visibility</strong></div>
@@ -380,6 +370,10 @@
         <div class="swatch-box" style="background:#B8AA8F; border:1px solid #222;"></div>
         <div class="swatch-label">MDF</div>
       </button>
+        <button id="matSketch" class="mat-swatch" title="Sketch (hand-drawn)" aria-label="Sketch (hand-drawn)" aria-pressed="false" type="button">
+          <div class="swatch-box" style="background:#ffffff; border:2px dashed #222;"></div>
+          <div class="swatch-label">Sketch</div>
+        </button>
     </div>
   </div>
   <!-- Floating button to Columbarium with smooth fade -->
@@ -389,7 +383,7 @@
       <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".9">
         <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
       </g>
-      <rect x="8" y="8" width="8" height="8" fill="#fff" opacity=".8"/>
+  <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".85"/>
     </svg>
   </a>
     <!-- Floating AR button (top-right, beside Columbarium) -->
@@ -516,7 +510,7 @@
 
         <!-- Scene Manager (tic-tac-toe) -->
         <div class="legend-item">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8"><path d="M8 3v18M16 3v18M3 8h18M3 16h18"/></g><rect x="8" y="8" width="8" height="8" fill="#fff"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8"><path d="M8 3v18M16 3v18M3 8h18M3 16h18"/></g><rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff"/></svg>
         </div>
         <div class="legend-label">Scenes</div>
 
@@ -600,7 +594,7 @@
           </g>
         </svg>
       </button>
-  <div id="version-badge" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center;">
+  <div id="version-badge" role="button" tabindex="0" title="About / AnArch" aria-label="About / AnArch" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center; cursor:pointer; user-select:none;">
     v1.1.0
   </div>
       <!-- Room Scan HUD -->
@@ -642,13 +636,15 @@
       setTimeout(()=>{ window.location.href = href; }, 170);
         });
       }
-        // AnArch glitch button
+        // AnArch trigger: click version badge
         (async () => {
           try {
             const mod = await import('./js/app/anarch.js');
-            const toAnArch = document.getElementById('toAnArch');
-            if (mod && mod.triggerAnArchSequence && toAnArch) {
-              toAnArch.addEventListener('click', () => { try { mod.triggerAnArchSequence(); } catch {} });
+            const badge = document.getElementById('version-badge');
+            if (mod && mod.triggerAnArchSequence && badge) {
+              const run = () => { try { mod.triggerAnArchSequence(); } catch {} };
+              badge.addEventListener('click', run);
+              badge.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); run(); } });
             }
           } catch {}
         })();
