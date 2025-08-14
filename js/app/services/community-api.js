@@ -6,7 +6,8 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config/community.js';
 let _sb = null;
 async function getClient() {
   if (_sb) return _sb;
-  const { createClient } = await import('https://cdn.skypack.dev/@supabase/supabase-js@2');
+  // Use a robust ESM CDN for browsers (Skypack can be flaky/CORS-blocked)
+  const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
   _sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false },
     global: { headers: { 'x-application-name': 'Sketcher' } }
