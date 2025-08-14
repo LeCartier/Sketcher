@@ -558,6 +558,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const toggleViewsBtn = document.getElementById('toggleViews');
 	const viewsGroup = document.getElementById('viewsGroup');
 	const viewPlanBtn = document.getElementById('viewPlan');
+	// Mobile delete UI
+	const mobileDeleteBar = document.getElementById('mobileDeleteBar');
+	const mobileDeleteBtn = document.getElementById('mobileDeleteBtn');
 	const viewNorthBtn = document.getElementById('viewNorth');
 	const viewSouthBtn = document.getElementById('viewSouth');
 	const viewEastBtn = document.getElementById('viewEast');
@@ -734,6 +737,25 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
 			div.append(cb,span); objectList.append(div);
 		});
+		// Toggle mobile delete bar: small screens only when selection exists in edit mode
+		try {
+			const isMobile = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
+			if (mobileDeleteBar) {
+				const show = isMobile && mode==='edit' && (selectedObjects && selectedObjects.length > 0);
+				mobileDeleteBar.style.display = show ? 'flex' : 'none';
+			}
+		} catch {}
+	}
+
+	// Hook delete action for mobile button (mirrors Delete/Backspace handler)
+	if (mobileDeleteBtn) {
+		mobileDeleteBtn.addEventListener('click', () => {
+			if (mode !== 'edit') return;
+			const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+			if (!toDelete.length) return;
+			toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); });
+			selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
+		});
 	}
 
 	// Settings: background and grid colors (with persistence)
@@ -774,6 +796,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (!o) continue;
 			// Skip helpers (grid, lights, cameras, gizmos, scan previews, etc.)
 			if (__isHelperObject(o)) { continue; }
+			// Never apply style overrides to map-imported geometry; skip entire subtree
+			const isMapImport = (o.userData && (o.userData.__mapImport === true || o.userData.mapImport === true))
+				|| (o.name === 'Imported Topography' || o.name === 'Imported Flat Area');
+			if (isMapImport) { continue; }
 			if (!o.visible) { if (o.children && o.children.length) stack.push(...o.children); continue; }
 			if (o.isMesh) cb(o);
 			if (o.children && o.children.length) stack.push(...o.children);
@@ -1616,6 +1642,9 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
 	function addObjectToScene(obj, { select = false } = {}){
 		scene.add(obj); objects.push(obj);
+		// Skip applying global material styles to map imports
+		const __isMapImportObj = !!(obj && ((obj.userData && (obj.userData.__mapImport === true || obj.userData.mapImport === true)) || (obj.name === 'Imported Topography' || obj.name === 'Imported Flat Area')));
+		if (!__isMapImportObj){
 		// Apply current material style to this object (shared instance)
 		if (currentMaterialStyle === 'original'){
 			const stack = [obj];
@@ -1646,6 +1675,7 @@ if (viewPerspectiveBtn) viewPerspectiveBtn.addEventListener('click', () => setCa
 				}
 				if (o.children && o.children.length) stack.push(...o.children);
 			}
+		}
 		}
 		updateVisibilityUI(); updateCameraClipping();
 		if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); }

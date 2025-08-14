@@ -185,6 +185,7 @@ function meshFromBoundsFlat(THREE, bounds, textureCanvas, fallbackMaterial) {
 	}
 	const mesh = new THREE.Mesh(geo, mat);
 	mesh.name = 'Imported Flat Area';
+	try { mesh.userData = { ...(mesh.userData||{}), __mapImport: true }; } catch {}
 	return mesh;
 }
 
@@ -220,6 +221,7 @@ function meshFromBoundsTopo(THREE, bounds, elevGrid, fallbackMaterial, textureCa
 	}
 	const mesh = new THREE.Mesh(geo, mat);
 	mesh.name = 'Imported Topography';
+	try { mesh.userData = { ...(mesh.userData||{}), __mapImport: true }; } catch {}
 	return mesh;
 }
 
