@@ -80,6 +80,69 @@ function nearestFreeCell(existingTiles){
   return { cx: maxCx + 1, cy: 0 };
 }
 
+// Find the nearest free grid cell around a base tile's cell, searching outward in rings.
+function nearestNeighborFreeCell(baseTile, existingTiles){
+  if (!baseTile) return null;
+  const occ = cellsOccupiedBy(existingTiles);
+  const baseCx = Math.round((baseTile.x - CELL/2) / CELL);
+  const baseCy = Math.round((baseTile.y - CELL/2) / CELL);
+  // Prefer immediate cardinal neighbors first (right, left, down, up)
+  const cardinals = [
+    { cx: baseCx+1, cy: baseCy },
+    { cx: baseCx-1, cy: baseCy },
+    { cx: baseCx,   cy: baseCy+1 },
+    { cx: baseCx,   cy: baseCy-1 },
+  ];
+  for (const c of cardinals) { if (!occ.has(`${c.cx},${c.cy}`)) return c; }
+  const rings = 50;
+  for (let r = 1; r <= rings; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const dyTop = r, dyBot = -r;
+      if (!occ.has(`${baseCx+dx},${baseCy+dyTop}`)) return { cx: baseCx+dx, cy: baseCy+dyTop };
+      if (!occ.has(`${baseCx+dx},${baseCy+dyBot}`)) return { cx: baseCx+dx, cy: baseCy+dyBot };
+    }
+    for (let dy = -r+1; dy <= r-1; dy++) {
+      const dxRight = r, dxLeft = -r;
+      if (!occ.has(`${baseCx+dxRight},${baseCy+dy}`)) return { cx: baseCx+dxRight, cy: baseCy+dy };
+      if (!occ.has(`${baseCx+dxLeft},${baseCy+dy}`)) return { cx: baseCx+dxLeft, cy: baseCy+dy };
+    }
+  }
+  return null;
+}
+
+// Bump trailing version suffix " vN" if present; otherwise return the name unchanged.
+function bumpVersionName(name){
+  if (typeof name !== 'string') return 'Untitled v2';
+  const m = name.match(/^(.*)\s+v(\d+)$/i);
+  if (m) {
+    const base = m[1].trim(); const n = parseInt(m[2], 10) || 1; return `${base} v${n+1}`;
+  }
+  const base = name.trim();
+  return base.length ? `${base} v2` : 'Untitled v2';
+}
+
+async function duplicateSceneById(srcId){
+  try {
+    const rec = await localStore.getScene(srcId);
+    if (!rec || !rec.json) { alert('Could not read scene to duplicate.'); return; }
+    const origTile = tiles.find(t => t.id === srcId) || null;
+    const newName = bumpVersionName(rec.name || 'Untitled');
+    // Compute placement near original; fallback to global nearest
+    const others = tiles.slice();
+    const neighbor = nearestNeighborFreeCell(origTile, others) || nearestFreeCell(others);
+    const posX = neighbor.cx * CELL + CELL/2;
+    const posY = neighbor.cy * CELL + CELL/2;
+    const newId = await localStore.saveScene({ name: newName, json: rec.json, thumb: rec.thumb, posX, posY });
+    // Refresh tiles and keep overlay as-is
+    await loadTiles();
+    draw();
+    return newId;
+  } catch (e) {
+    console.error('Duplicate failed', e);
+    throw e;
+  }
+}
+
 // ---------- 3D overlay viewer for expanded tile ----------
 let overlay3D = null; // { id, container, canvas, renderer, scene, camera, controls, raf, lastRect }
 let overlay3DPending = false;
@@ -132,7 +195,7 @@ async function createOverlay3D(tile, rect){
     const grad = document.createElement('div');
     Object.assign(grad.style, { position:'absolute', left:0, right:0, bottom:0, height:'96px', background:'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 100%)', pointerEvents:'none' });
     container.appendChild(grad);
-    const title = document.createElement('div');
+  const title = document.createElement('div');
     title.textContent = (tile.name || 'Untitled').replace(/^gallery:/,'');
     Object.assign(title.style, { color:'#fff', textShadow:'0 2px 6px rgba(0,0,0,0.6)', font:'600 14px system-ui, sans-serif', marginRight:'auto' });
   // Close button (top-right)
@@ -144,15 +207,19 @@ async function createOverlay3D(tile, rect){
   container.appendChild(close);
   const btn = (label)=>{ const b=document.createElement('button'); b.textContent=label; Object.assign(b.style,{background:'#333',color:'#ddd',border:'1px solid rgba(255,255,255,0.16)',borderRadius:'8px',padding:'6px 10px',cursor:'pointer'}); return b; };
   const shareBtn = btn('Share');
+  const dupBtn = btn('Duplicate');
   const openBtn = btn('Open');
   const delBtn = btn('Delete');
-  ui.append(title, shareBtn, delBtn, openBtn);
+  ui.append(title, shareBtn, dupBtn, delBtn, openBtn);
     container.appendChild(ui);
     // Wire actions
     openBtn.addEventListener('click', () => {
       const url = new URL('./index.html', location.href);
       url.searchParams.set('sceneId', tile.id);
       document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = url.toString(); }, 170);
+    });
+    dupBtn.addEventListener('click', async () => {
+      try { await duplicateSceneById(tile.id); } catch (e) { console.error(e); alert('Duplicate failed'); }
     });
     delBtn.addEventListener('click', async () => {
       const ok = confirm('Delete this scene?'); if (!ok) return;
@@ -458,13 +525,15 @@ function drawTiles(){
       ctx.fillText(name2, titleX, titleY);
       ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
       // Buttons
-      const btnW = 84, btnH = 30; const by = sY + sH - btnH - 12;
-      const bxOpen = sX + sW - btnW - 12;
-      const gap = 8; const bxDelete = bxOpen - gap - btnW;
-      expandedTile.btnDelete = { x: bxDelete, y: by, w: btnW, h: btnH };
-      expandedTile.btnOpen = { x: bxOpen, y: by, w: btnW, h: btnH };
-      drawButton(expandedTile.btnDelete, 'Delete');
-      drawButton(expandedTile.btnOpen, 'Open');
+  const btnW = 92, btnH = 30; const by = sY + sH - btnH - 12;
+  const bxOpen = sX + sW - btnW - 12;
+  const gap = 8; const bxDelete = bxOpen - gap - btnW; const bxDup = bxDelete - gap - btnW;
+  expandedTile.btnDuplicate = { x: bxDup, y: by, w: btnW, h: btnH };
+  expandedTile.btnDelete = { x: bxDelete, y: by, w: btnW, h: btnH };
+  expandedTile.btnOpen = { x: bxOpen, y: by, w: btnW, h: btnH };
+  drawButton(expandedTile.btnDuplicate, 'Duplicate');
+  drawButton(expandedTile.btnDelete, 'Delete');
+  drawButton(expandedTile.btnOpen, 'Open');
       // Rename hotspot near title
       expandedTile.nameRect = { x: titleX - 6, y: titleY - 22, w: Math.min(260, sW - (btnW*2 + 48)), h: 26 };
       ctx.restore();
@@ -480,7 +549,7 @@ function drawTiles(){
       } else {
         updateOverlay3DRect(expandedTile.overlayRect);
         // When the overlay is active, in-canvas button rects are not needed
-        expandedTile.btnDelete = null; expandedTile.btnOpen = null; expandedTile.nameRect = null;
+  expandedTile.btnDuplicate = null; expandedTile.btnDelete = null; expandedTile.btnOpen = null; expandedTile.nameRect = null;
       }
     }
     ctx.restore();
@@ -490,7 +559,7 @@ function drawTiles(){
   } else {
     // No expanded tile: ensure overlay viewer is removed
     if (overlay3D) destroyOverlay3D();
-    tiles.forEach(t => { t.overlayRect = null; t.btnOpen = null; t.nameRect = null; });
+  tiles.forEach(t => { t.overlayRect = null; t.btnOpen = null; t.btnDuplicate = null; t.nameRect = null; });
   }
 
   // HUD
@@ -700,6 +769,11 @@ canvas.addEventListener('pointerdown', async (e) => {
     if (t) {
       const o = t.overlayRect;
       if (o) {
+        // Duplicate button
+        if (t.btnDuplicate && x>=t.btnDuplicate.x && x<=t.btnDuplicate.x+t.btnDuplicate.w && y>=t.btnDuplicate.y && y<=t.btnDuplicate.y+t.btnDuplicate.h) {
+          (async ()=>{ try { await duplicateSceneById(t.id); } catch(e){ console.error(e);} })();
+          return;
+        }
         // Open button
         if (t.btnOpen && x>=t.btnOpen.x && x<=t.btnOpen.x+t.btnOpen.w && y>=t.btnOpen.y && y<=t.btnOpen.y+t.btnOpen.h) {
           const url = new URL('./index.html', location.href);
