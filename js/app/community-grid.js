@@ -280,8 +280,9 @@ canvas.addEventListener('click', (e) => {
       const local = await import('./local-store.js');
   // Require a one-time trade token regardless of URL params
   if (!tradeToken) { alert('Upload a scene to trade from the community.'); return; }
-  await local.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb });
+  const newId = await local.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb });
   try { sessionStorage.setItem('sketcher:lastTradePick', t.id); } catch {}
+  try { sessionStorage.setItem('sketcher:newSceneId', newId); } catch {}
   try { sessionStorage.removeItem('sketcher:tradeToken'); } catch {}
   window.location.href = './columbarium.html';
     } })();
@@ -293,12 +294,12 @@ canvas.addEventListener('click', (e) => {
 });
 
 async function loadTiles(){
-  const items = await communityApi.listLatestCommunity(10).catch((e)=>{ console.warn('Community list failed', e); return []; });
+  const items = await communityApi.listLatestCommunity(20).catch((e)=>{ console.warn('Community list failed', e); return []; });
   if (!Array.isArray(items) || items.length === 0) {
     console.info('No community scenes returned from backend.');
   }
-  // Fixed 2 rows x 5 cols layout; align to grid cells exactly
-  const cols = 5, rows = 2; const spacing = CELL;
+  // Fixed 4 rows x 5 cols layout; align to grid cells exactly
+  const cols = 5, rows = 4; const spacing = CELL;
   tiles = items.map((it, idx) => {
     const r = Math.floor(idx / cols); const c = idx % cols;
     return { id: it.id, name: it.name, created_at: it.created_at, x: (c * spacing) + CELL/2, y: (r * spacing) + CELL/2, w: CELL, h: CELL, thumb: it.thumb || null };
@@ -341,7 +342,7 @@ window.addEventListener('community:trade-picks', (e) => {
 try { const qs = new URLSearchParams(location.search); tradeMode = (qs.get('trade') === '1'); tradeJustId = qs.get('just') || null; tradeToken = sessionStorage.getItem('sketcher:tradeToken'); } catch {}
 resize(); loadTiles().then(()=>{ centerOnTiles(); draw(); });
 
-// Trade flow: if URL has ?trade=1, highlight 3 random unique choices
+// Trade flow: if URL has ?trade=1, highlight 5 random unique choices
 (async () => {
   try {
   if (tradeMode && tradeToken) {
@@ -351,12 +352,12 @@ resize(); loadTiles().then(()=>{ centerOnTiles(); draw(); });
         await new Promise(r => setTimeout(r, 50));
       }
       const ids = tiles.map(t => t.id);
-      // Exclude the just uploaded id from picks (if present), then sample 3
+  // Exclude the just uploaded id from picks (if present), then sample 5
       const pool = ids.filter(id => id !== tradeJustId);
       // Fallback to any if not enough
-      const src = pool.length >= 3 ? pool : ids;
+  const src = pool.length >= 5 ? pool : ids;
       const shuffled = src.slice(); for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
-      pulseIds = new Set(shuffled.slice(0, 3));
+  pulseIds = new Set(shuffled.slice(0, 5));
       draw();
     }
   } catch {}

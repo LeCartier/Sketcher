@@ -1731,9 +1731,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let placingStage = 0;   // 0 = waiting for first click, 1 = waiting for second click
 	let placingStart = new THREE.Vector3();
 	let placingPreview = null; // THREE.Mesh
+    let placingOutline = null; // THREE.Line (plan-view outline during drag)
 	function cancelPlacing(){
 		if (placingPreview){ try { scene.remove(placingPreview); placingPreview.geometry && placingPreview.geometry.dispose && placingPreview.geometry.dispose(); placingPreview.material && placingPreview.material.dispose && placingPreview.material.dispose(); } catch {}
 			placingPreview = null;
+		}
+		if (placingOutline){ try { scene.remove(placingOutline); placingOutline.geometry && placingOutline.geometry.dispose && placingOutline.geometry.dispose(); placingOutline.material && placingOutline.material.dispose && placingOutline.material.dispose(); } catch {}
+			placingOutline = null;
 		}
 		placingTool = null; placingStage = 0; placingStart.set(0,0,0);
 		controls.enabled = true;
@@ -1750,6 +1754,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (!placingTool || placingStage !== 1) return;
 		// Build/replace preview mesh based on placingTool and start/end on ground plane
 		if (placingPreview){ try { scene.remove(placingPreview); placingPreview.geometry && placingPreview.geometry.dispose && placingPreview.geometry.dispose(); placingPreview.material && placingPreview.material.dispose && placingPreview.material.dispose(); } catch {} placingPreview = null; }
+		if (placingOutline){ try { scene.remove(placingOutline); placingOutline.geometry && placingOutline.geometry.dispose && placingOutline.geometry.dispose(); placingOutline.material && placingOutline.material.dispose && placingOutline.material.dispose(); } catch {} placingOutline = null; }
 		if (placingTool === 'floor'){
 			const minX = Math.min(placingStart.x, current.x); const maxX = Math.max(placingStart.x, current.x);
 			const minZ = Math.min(placingStart.z, current.z); const maxZ = Math.max(placingStart.z, current.z);
@@ -1760,17 +1765,53 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const mesh = new THREE.Mesh(geo, activeMat);
 			mesh.position.set(cx, FLOOR_THICKNESS_FT/2, cz);
 			placingPreview = mesh; scene.add(mesh);
+			// Add a thin outline in plan view during drag to improve visibility when Plan Lock is on
+			if (planViewLocked){
+				try {
+					const pos = new Float32Array([
+						-w/2, SURFACE_EPS, -d/2,
+						 w/2, SURFACE_EPS, -d/2,
+						 w/2, SURFACE_EPS,  d/2,
+						-w/2, SURFACE_EPS,  d/2,
+						-w/2, SURFACE_EPS, -d/2,
+					]);
+					const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+					const m = new THREE.LineBasicMaterial({ color: 0x222222, depthTest: false, transparent: true, opacity: 0.95 });
+					const line = new THREE.Line(g, m);
+					line.position.set(cx, SURFACE_EPS, cz); line.renderOrder = 9999;
+					placingOutline = line; scene.add(line);
+				} catch {}
+			}
 		} else if (placingTool === 'wall'){
 			const dx = current.x - placingStart.x; const dz = current.z - placingStart.z;
 			const len = Math.max(0.1, Math.hypot(dx, dz));
 			const geo = new THREE.BoxGeometry(len, WALL_HEIGHT_FT, WALL_THICKNESS_FT);
-			// Translate geometry so its "start" sits at local origin, then place mesh at placingStart.
-			geo.translate(len/2, 0, 0);
 			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
 			const mesh = new THREE.Mesh(geo, activeMat);
-			mesh.position.set(placingStart.x, WALL_HEIGHT_FT/2, placingStart.z);
+			// Position the wall mesh at its midpoint so the gizmo/pivot is centered
+			const midx = (placingStart.x + current.x) / 2; const midz = (placingStart.z + current.z) / 2;
+			mesh.position.set(midx, WALL_HEIGHT_FT/2, midz);
 			mesh.rotation.y = -Math.atan2(dz, dx);
 			placingPreview = mesh; scene.add(mesh);
+			// Add a rectangle footprint outline during drag when Plan Lock is on
+			if (planViewLocked){
+				try {
+					const t = WALL_THICKNESS_FT;
+					const pos = new Float32Array([
+						 -len/2, SURFACE_EPS, -t/2,
+						  len/2, SURFACE_EPS, -t/2,
+						  len/2, SURFACE_EPS,  t/2,
+						 -len/2, SURFACE_EPS,  t/2,
+						 -len/2, SURFACE_EPS, -t/2,
+					]);
+					const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+					const m = new THREE.LineBasicMaterial({ color: 0x222222, depthTest: false, transparent: true, opacity: 0.95 });
+					const line = new THREE.Line(g, m);
+					line.position.set(midx, SURFACE_EPS, midz);
+					line.rotation.y = mesh.rotation.y; line.renderOrder = 9999;
+					placingOutline = line; scene.add(line);
+				} catch {}
+			}
 		}
 	}
 	function finalizePlacing(endPt){
@@ -1790,6 +1831,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			updatePlacingPreview(endPt);
 			if (placingPreview){ const placed = placingPreview; placingPreview = null; placed.name = (placingTool==='floor')? 'Floor' : 'Wall'; addObjectToScene(placed, { select: true }); }
 		}
+		// Cleanup outline if present
+		if (placingOutline){ try { scene.remove(placingOutline); placingOutline.geometry && placingOutline.geometry.dispose && placingOutline.geometry.dispose(); placingOutline.material && placingOutline.material.dispose && placingOutline.material.dispose(); } catch {} placingOutline = null; }
 		cancelPlacing(); saveSessionDraftNow();
 	}
 			renderer.domElement.addEventListener('pointerdown',e=>{

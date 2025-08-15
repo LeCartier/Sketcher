@@ -144,6 +144,39 @@
       <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".95"/>
     </svg>
   </a>
+  <!-- Floating Information button (legend-style) -->
+  <button id="toLegend" class="floating-nav nav-top-right-3" title="Information" aria-label="Information" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M12 17v-6"/>
+        <circle cx="12" cy="8" r="1" fill="#fff" stroke="none"/>
+      </g>
+    </svg>
+  </button>
+  <!-- Legend/Info popup for Personal Columbarium -->
+  <div id="legendPopup" style="display:none; max-width: 520px; max-height: 70vh; overflow:auto; backdrop-filter: blur(6px);">
+    <div class="legend-welcome">
+      <h3>Personal Columbarium</h3>
+      <div class="legend-tagline">Your private collection of saved scenes</div>
+    </div>
+    <div class="legend-section">
+      <h4>Saving and Arranging</h4>
+      <ul>
+        <li>Save a scene from the Editor (Black grid under Columbarium Icon). It appears here as a tile.</li>
+        <li>Drag tiles to arrange. Positions auto‑save.</li>
+        <li>Click a tile to open a larger preview; open in Editor to continue working.</li>
+      </ul>
+    </div>
+    <div class="legend-section">
+      <h4>Trading from Community</h4>
+      <ul>
+        <li>Share to Community from the Editor (Magenta grid under the Columbarium Icon) to get a trade pick.</li>
+        <li>Pick from 5 community scenes and your choice is added here automatically.</li>
+        <li>New scenes auto‑place into the nearest free cell on this grid.</li>
+      </ul>
+    </div>
+  </div>
   <script type="module">
     // Page fade-in/out
     document.addEventListener('DOMContentLoaded', () => {
@@ -224,6 +257,38 @@
     window.dispatchEvent(new CustomEvent('zones:mode', { detail: { mode: next ? 'draw' : 'idle' } }));
   });
   if (zoneClear) zoneClear.addEventListener('click', ()=> { if (confirm('Clear all zones?')) window.dispatchEvent(new CustomEvent('zones:clear')); });
+  // Info/Legend button behavior (match editor)
+  const toLegend = document.getElementById('toLegend');
+  const legendPopup = document.getElementById('legendPopup');
+  if (toLegend && legendPopup) {
+    const placePopup = () => {
+      const btnRect = toLegend.getBoundingClientRect();
+      const popup = legendPopup;
+      const left = Math.max(12, Math.min(btnRect.right - popup.offsetWidth, window.innerWidth - popup.offsetWidth - 12));
+      const top = Math.min(btnRect.bottom + 10, window.innerHeight - popup.offsetHeight - 12);
+      popup.style.left = left + 'px';
+      popup.style.top = top + 'px';
+    };
+    const openPopup = () => {
+      legendPopup.style.display = 'block';
+      requestAnimationFrame(()=>{ placePopup(); legendPopup.classList.add('open'); });
+    };
+    const closePopup = () => {
+      legendPopup.classList.remove('open');
+      setTimeout(()=>{ legendPopup.style.display = 'none'; }, 180);
+    };
+    toLegend.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const isOpen = legendPopup.classList.contains('open');
+      if (isOpen) closePopup(); else openPopup();
+    });
+    document.addEventListener('click', (e)=>{
+      if (!legendPopup.contains(e.target) && e.target !== toLegend) {
+        if (legendPopup.classList.contains('open')) closePopup();
+      }
+    });
+    window.addEventListener('resize', ()=>{ if (legendPopup.classList.contains('open')) placePopup(); });
+  }
   </script>
 </body>
 </html>

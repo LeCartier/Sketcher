@@ -97,13 +97,21 @@
       <button id="addColumn" class="icon-btn" title="Add Column" aria-label="Add Column">
         <span class="sr-only">Add Column</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="7" y="4" width="10" height="16" rx="2" ry="2" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Fluted column: capital, shaft (flutes), and base -->
+          <rect x="6" y="4.5" width="12" height="2.5" fill="none" stroke="#222" stroke-width="1.8"/>
+          <rect x="6" y="17" width="12" height="2.5" fill="none" stroke="#222" stroke-width="1.8"/>
+          <line x1="9" y1="7.5" x2="9" y2="17" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="12" y1="7.5" x2="12" y2="17" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="15" y1="7.5" x2="15" y2="17" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
       <button id="addBeam" class="icon-btn" title="Add Beam" aria-label="Add Beam">
         <span class="sr-only">Add Beam</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="3" y="10" width="18" height="4" fill="#999" stroke="#222" stroke-width="1.5"/>
+          <!-- I-beam profile: top flange, web, bottom flange -->
+          <rect x="4" y="7.5" width="16" height="2.5" fill="none" stroke="#222" stroke-width="1.8"/>
+          <rect x="10" y="10" width="4" height="4" fill="none" stroke="#222" stroke-width="1.8"/>
+          <rect x="4" y="14.5" width="16" height="2.5" fill="none" stroke="#222" stroke-width="1.8"/>
         </svg>
       </button>
       <button id="addRamp" class="icon-btn" title="Add Ramp" aria-label="Add Ramp">
@@ -174,15 +182,7 @@
           <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
-      <button id="shareToCommunity" class="icon-btn" title="Share to Community" aria-label="Share to Community">
-        <span class="sr-only">Share to Community</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <g fill="none" stroke="#222" stroke-width="1.8">
-            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
-          </g>
-          <path d="M12 6.6l1 2.1 2.3.3-1.7 1.6 0.4 2.3-2-1.1-2 1.1 0.4-2.3-1.7-1.6 2.3-.3z" fill="#222"/>
-        </svg>
-      </button>
+      
   </div>
 
     <!-- Scene Manager parent button and group -->
@@ -208,9 +208,29 @@
       <button id="saveScene" class="icon-btn" title="Save Scene" aria-label="Save Scene">
         <span class="sr-only">Save Scene</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 4h16v16H4z" fill="none" stroke="#222" stroke-width="2"/>
-          <path d="M7 4h10v6H7z" fill="#999" stroke="#222" stroke-width="1.5"/>
-          <path d="M8 14h8" stroke="#222" stroke-width="2"/>
+          <!-- Personal columbarium: tic-tac-toe with black center + up arrow -->
+          <g fill="none" stroke="#222" stroke-width="1.8">
+            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+          </g>
+          <!-- Filled black center square -->
+          <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#222"/>
+          <!-- Up arrow next to grid (right side) -->
+          <path d="M22.3 21V9" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          <path d="M22.3 3 L19 9 L24 9 Z" fill="#222"/>
+        </svg>
+      </button>
+      <button id="shareToCommunity" class="icon-btn" title="Share to Community" aria-label="Share to Community">
+        <span class="sr-only">Share to Community</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Community columbarium: tic-tac-toe with magenta center + up arrow -->
+          <g fill="none" stroke="#222" stroke-width="1.8">
+            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+          </g>
+          <!-- Filled magenta center square -->
+          <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity="0.95"/>
+          <!-- Up arrow next to grid (right side) -->
+          <path d="M22.3 21V9" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          <path d="M22.3 3 L19 9 L24 9 Z" fill="#222"/>
         </svg>
       </button>
   <!-- My Scenes moved to Columbarium → load UI removed on main page -->
@@ -436,8 +456,8 @@
         </g>
       </svg>
     </button>
-    <!-- Floating Legend button (top-right, beside AR) -->
-  <button id="toLegend" class="floating-nav nav-top-right-4" title="Legend" aria-label="Legend" type="button">
+    <!-- Floating Legend button (move to far-left position) -->
+  <button id="toLegend" class="floating-nav nav-top-right-5" title="Legend / Help" aria-label="Legend / Help" type="button">
       <!-- Info-circle icon -->
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
@@ -447,11 +467,11 @@
         </g>
       </svg>
     </button>
-    <!-- Legend popup -->
-    <div id="legendPopup" style="display:none;">
+  <!-- Legend/Help popup (expanded, scrollable) -->
+  <div id="legendPopup" style="display:none; max-width: 520px; max-height: 70vh; overflow: auto; backdrop-filter: blur(6px);">
       <div class="legend-welcome">
-        <h3>Sketcher</h3>
-        <div class="legend-tagline">Lightweight 3D sketching + collecting</div>
+    <h3>Sketcher</h3>
+    <div class="legend-tagline">Lightweight 3D sketching + collecting</div>
         <div class="legend-quick">
           <!-- Navigation -->
           <div class="quick-item" title="Rotate / Pan / Zoom">
@@ -511,7 +531,7 @@
           </div>
         </div>
       </div>
-      <div class="legend-grid">
+  <div class="legend-grid">
         <!-- Primitives -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -530,7 +550,7 @@
             <polygon points="12,14 20,20 12,20" fill="none" stroke="#fff" stroke-width="2"/>
           </svg>
         </div>
-        <div class="legend-label">Draw</div>
+  <div class="legend-label">Draw</div>
 
         <!-- Utilities -->
         <div class="legend-item">
@@ -540,25 +560,25 @@
             <path d="M8 9V7m8 2V7" stroke="#fff" stroke-width="2"/>
           </svg>
         </div>
-        <div class="legend-label">Utilities</div>
+  <div class="legend-label">Utilities</div>
 
         <!-- Scene Manager (tic-tac-toe) -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8"><path d="M8 3v18M16 3v18M3 8h18M3 16h18"/></g><rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff"/></svg>
         </div>
-        <div class="legend-label">Scenes</div>
+  <div class="legend-label">Scenes</div>
 
         <!-- Import -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#fff" stroke-width="2"/><path d="M12 8v6" stroke="#fff" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#fff" stroke-width="2"/></svg>
           </div>
-        <div class="legend-label">Import</div>
+  <div class="legend-label">Import</div>
 
         <!-- Settings (gear) -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.4 12.94a7.5 7.5 0 0 0 0-1.88l2.02-1.57a.6.6 0 0 0 .14-.78l-1.91-3.3a.6.6 0 0 0-.73-.27l-2.38.96a7.6 7.6 0 0 0-1.62-.94l-.36-2.54A.6.6 0 0 0 14 .8h-3.82a.6.6 0 0 0-.59.49l-.36 2.54c-.57.23-1.12.53-1.62.94l-2.38-.96a.6.6 0 0 0-.73.27l-1.91 3.3a.6.6 0 0 0 .14.78L4.6 11.06a7.5 7.5 0 0 0 0 1.88l-2.02 1.57a.6.6 0 0 0-.14.78l1.91 3.3c.13.22.4.32.64.23l2.38-.96c.5.41 1.05.72 1.62.94l.36 2.54c.05.29.3.49.59.49H14c.29 0 .54-.2.59-.49l.36-2.54c.57-.23 1.12-.53 1.62-.94l2.38.96c.24.09.51-.01.64-.23l1.91-3.3a.6.6 0 0 0-.14-.78l-2.02-1.57z"/><circle cx="12" cy="12" r="3.5"/></g></svg>
         </div>
-        <div class="legend-label">Settings</div>
+  <div class="legend-label">Settings</div>
 
         <!-- Views (camera) -->
         <div class="legend-item">
@@ -568,7 +588,7 @@
             <circle cx="12" cy="12.5" r="3" fill="none" stroke="#fff" stroke-width="2"/>
           </svg>
         </div>
-        <div class="legend-label">Views</div>
+  <div class="legend-label">Views</div>
 
         <!-- AR (glasses) -->
         <div class="legend-item">
@@ -582,7 +602,7 @@
             </g>
           </svg>
         </div>
-        <div class="legend-label">AR</div>
+  <div class="legend-label">AR</div>
 
         <!-- Room Scan (point cloud) -->
         <div class="legend-item">
@@ -605,10 +625,147 @@
           </svg>
         </div>
         <div class="legend-label">Room Scan</div>
+        
+        <!-- Plan Lock & Walls/Floors quick tips -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <path d="M4 12h16" opacity=".85"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Plan Lock locks camera to top view; drag shows 2D outlines for floors and walls.</div>
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8">
+              <rect x="3" y="10" width="18" height="4"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Walls are placed by dragging start→end; the gizmo centers on the wall midpoint for easy edits.</div>
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8">
+              <rect x="5" y="14" width="14" height="6"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Floors drag corner→corner; height is constant and can be edited later.</div>
+      </div>
+
+      <div class="legend-section">
+        <h4>What you can do</h4>
+        <ul>
+          <li>Create simple shapes, floors, and walls quickly.</li>
+          <li>Select, move, rotate, and resize with gizmos or handles.</li>
+          <li>Apply materials, import models and maps, save/load scenes.</li>
+          <li>Toggle views (axon/plan/elevations), lock plan for 2D drafting.</li>
+          <li>Enter AR to view your model at scale; scan rooms (beta).</li>
+          <li>Share to Community and trade for inspiration.</li>
+        </ul>
+      </div>
+
+      <div class="legend-section">
+        <h4>Quick start</h4>
+        <ol>
+          <li>Open Draw → use Click‑Drag Create to sketch a box or cylinder.</li>
+          <li>Add a Floor or Wall from Utilities. Drag start → end.</li>
+          <li>Click an object to select; use arrows (move) or ring (rotate).</li>
+          <li>Double‑click a selection to reveal corner/edge/face handles for quick size edits.</li>
+          <li>Open Materials to try a few looks. Save your scene in Scenes.</li>
+        </ol>
+      </div>
+
+      <div class="legend-section two-col">
+        <div>
+          <h4>Navigate</h4>
+          <ul>
+            <li>Mouse: Left‑drag = rotate, Middle/Right‑drag = pan, Wheel = zoom.</li>
+            <li>Touch: One‑finger drag = rotate, Two‑finger drag = pan, Pinch = zoom.</li>
+            <li>Plan Lock: locks top view and prevents rotation.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Create</h4>
+          <ul>
+            <li>Click‑Drag Create: drag on the ground to size; release to place.</li>
+            <li>Floor: drag corner → corner. Fixed thickness; edit later if needed.</li>
+            <li>Wall: drag start → end; 10' tall by default; gizmo at midpoint.</li>
+            <li>Plan Lock: shows thin drag outlines for precise floors/walls.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="legend-section two-col">
+        <div>
+          <h4>Select & Edit</h4>
+          <ul>
+            <li>Click to select. Ctrl/Shift/⌘‑click to multi‑select.</li>
+            <li>Gizmo: translate (arrows) or rotate (ring). For multi‑select, a shared pivot appears.</li>
+            <li>Handles: double‑click to show, then drag corners/edges/faces to resize.</li>
+            <li>Return to Floor: snaps one or many selections to the ground.</li>
+            <li>Soft Snap: objects nudge and align on contact; keep dragging to push past.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Materials</h4>
+          <ul>
+            <li>Open swatches, then click to apply to the current selection.</li>
+            <li>Shared procedural looks keep scenes consistent and fast.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="legend-section two-col">
+        <div>
+          <h4>Scenes</h4>
+          <ul>
+            <li>Autosaves your last state between reloads.</li>
+            <li>Use Save/Load for named local scenes. New Scene clears the canvas.</li>
+          </ul>
+          <h4>Import</h4>
+          <ul>
+            <li>Import models (OBJ/GLTF). Use the map tool to import Flat/Topo tiles.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Views & Plan Lock</h4>
+          <ul>
+            <li>Switch among Axon, Plan, North/South/East/West.</li>
+            <li>With Plan Lock, rotation is disabled and drag outlines appear.</li>
+          </ul>
+          <h4>AR & Scan</h4>
+          <ul>
+            <li>Enter AR to place your model at real scale (device support required).</li>
+            <li>Room Scan (beta) previews a floor and low walls from a quick scan.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="legend-section two-col">
+        <div>
+          <h4>Visibility</h4>
+          <ul>
+            <li>Use the bottom‑left panel to show/hide objects and manage clutter.</li>
+          </ul>
+          <h4>Community</h4>
+          <ul>
+            <li>Share to Community to publish a snapshot and trade; you’ll pick from a few community scenes right after sharing.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Shortcuts</h4>
+          <ul>
+            <li>Delete/Backspace: delete selection.</li>
+            <li>Esc: cancel active tool or placing.</li>
+            <li>Ctrl/Shift/⌘‑click: add/remove from selection.</li>
+          </ul>
+        </div>
       </div>
     </div>
       <!-- Floating Room Scan button (top-right, beside Legend) -->
-  <button id="toRoomScan" class="floating-nav nav-top-right-5" title="Scan Room (beta)" aria-label="Scan Room" type="button">
+  <button id="toRoomScan" class="floating-nav nav-top-right-4" title="Scan Room (beta)" aria-label="Scan Room" type="button">
         <!-- Point cloud icon: scattered dots forming a loose cloud -->
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <g fill="#fff" stroke="none">

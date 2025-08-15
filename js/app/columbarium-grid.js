@@ -45,6 +45,41 @@ let dragZoneStart = null; // { x,y,w,h, hit: 'inside'|'edgeL'|'edgeR'|'edgeT'|'e
 let hoverZoneHit = null; // { id, hit }
 let zonesEditOn = false;
 
+// Pending placement: if a new scene was just added via trade, we'll position it into the nearest free cell
+let pendingPlaceId = null;
+
+function cellsOccupiedBy(tilesArr){
+  const occ = new Set();
+  for (const t of tilesArr) {
+    const cx = Math.round((t.x - CELL/2) / CELL);
+    const cy = Math.round((t.y - CELL/2) / CELL);
+    occ.add(`${cx},${cy}`);
+  }
+  return occ;
+}
+
+function nearestFreeCell(existingTiles){
+  const occ = cellsOccupiedBy(existingTiles);
+  // Start search from origin (0,0) in a spiral-like expanding ring
+  const rings = 50; // safety bound
+  if (!occ.has('0,0')) return { cx: 0, cy: 0 };
+  for (let r = 1; r <= rings; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const dyTop = r, dyBot = -r;
+      if (!occ.has(`${dx},${dyTop}`)) return { cx: dx, cy: dyTop };
+      if (!occ.has(`${dx},${dyBot}`)) return { cx: dx, cy: dyBot };
+    }
+    for (let dy = -r+1; dy <= r-1; dy++) {
+      const dxRight = r, dxLeft = -r;
+      if (!occ.has(`${dxRight},${dy}`)) return { cx: dxRight, cy: dy };
+      if (!occ.has(`${dxLeft},${dy}`)) return { cx: dxLeft, cy: dy };
+    }
+  }
+  // Fallback: place to the right of the farthest tile
+  let maxCx = 0; for (const key of occ){ const [x] = key.split(',').map(Number); if (x > maxCx) maxCx = x; }
+  return { cx: maxCx + 1, cy: 0 };
+}
+
 // ---------- 3D overlay viewer for expanded tile ----------
 let overlay3D = null; // { id, container, canvas, renderer, scene, camera, controls, raf, lastRect }
 let overlay3DPending = false;
@@ -534,9 +569,9 @@ function draw(){
   }
 }
 
-// ---------- Trade picker (3 random community choices) ----------
+// ---------- Trade picker (5 random community choices) ----------
 async function showTradePicker(){
-  const picks = await localStore.pickRandomCommunity(3);
+  const picks = await localStore.pickRandomCommunity(5);
   const wrap = document.createElement('div');
   Object.assign(wrap.style, { position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex: 250, display:'flex', alignItems:'center', justifyContent:'center' });
   const panel = document.createElement('div'); Object.assign(panel.style,{ background:'#111', color:'#fff', border:'1px solid #333', borderRadius:'12px', boxShadow:'0 10px 28px rgba(0,0,0,0.45)', padding:'14px', width:'min(94vw,820px)' });
@@ -915,6 +950,23 @@ async function loadTiles(){
     w: CELL, h: CELL,
     thumb: s.thumb || null,
   }));
+
+  // If there is a pending new scene from trade, place it in the nearest free cell now
+  if (!pendingPlaceId) {
+    try { pendingPlaceId = sessionStorage.getItem('sketcher:newSceneId'); } catch {}
+  }
+  if (pendingPlaceId) {
+    const t = tiles.find(tt => tt.id === pendingPlaceId);
+    if (t) {
+      const others = tiles.filter(o => o.id !== t.id);
+      const { cx, cy } = nearestFreeCell(others);
+      t.x = cx * CELL + CELL/2;
+      t.y = cy * CELL + CELL/2;
+      try { await localStore.updateScenePosition(t.id, { posX: t.x, posY: t.y }); } catch {}
+    }
+    try { sessionStorage.removeItem('sketcher:newSceneId'); } catch {}
+    pendingPlaceId = null;
+  }
   // Thumbnails
   // Load existing thumbs; lazily generate for missing ones
   for (const t of tiles) {
@@ -946,14 +998,6 @@ async function loadTiles(){
 async function loadZones(){
   zones = await localStore.listZones().catch(()=>[]);
 }
-
-// Optional: external preview hook
-window.addEventListener('columbarium:preview', async (e) => {
-  const { id } = e.detail || {}; if (!id) return;
-  const mod = await import('./columbarium.js');
-  if (mod && mod.openPreviewById) mod.openPreviewById(id);
-  else alert('Preview not available');
-});
 
 // ---------- Wiring ----------
 window.addEventListener('resize', resize);

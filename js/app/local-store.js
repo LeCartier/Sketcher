@@ -220,8 +220,8 @@ export async function saveCommunityScene({ id, name, json, thumb }) {
   };
   await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
   await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
-  // Enforce cap (limit community to 10 items)
-  await capStoreCount(db, COMMUNITY, 10);
+  // Enforce cap (limit community to 20 items)
+  await capStoreCount(db, COMMUNITY, 20);
   return rec.id;
 }
 
@@ -264,7 +264,7 @@ export async function updateCommunityThumbnail(id, { thumb }) {
   await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
 }
 
-export async function pickRandomCommunity(n = 3) {
+export async function pickRandomCommunity(n = 5) {
   const list = await listCommunityScenes();
   if (!Array.isArray(list) || !list.length) return [];
   // Fisher-Yates partial shuffle

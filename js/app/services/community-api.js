@@ -48,7 +48,7 @@ export async function saveCommunityScene({ name, json, thumb }) {
   const payload = { name, json: JSON.parse(jsonText), thumb_url };
   const { data, error } = await supabase.from('community_scenes').insert(payload).select('id').single();
   if (error) throw error;
-  // Backend cap: keep only latest 10 (best-effort) and remove orphaned thumbs
+  // Backend cap: keep only latest 20 (best-effort) and remove orphaned thumbs
   try {
     const { data: rows } = await supabase
       .from('community_scenes')
@@ -56,8 +56,8 @@ export async function saveCommunityScene({ name, json, thumb }) {
       .order('created_at', { ascending: false })
       .limit(100);
     const list = Array.isArray(rows) ? rows : [];
-    if (list.length > 10) {
-      const excess = list.slice(10);
+    if (list.length > 20) {
+      const excess = list.slice(20);
       const toDelete = excess.map(r => r.id);
       // Attempt to remove corresponding thumbnails from storage (best-effort)
       try {
@@ -78,7 +78,7 @@ export async function saveCommunityScene({ name, json, thumb }) {
   return { id: data.id, name, thumb_url };
 }
 
-export async function pickRandomCommunity(n = 3) {
+export async function pickRandomCommunity(n = 5) {
   const supabase = await getClient();
   // Use RPC-like random ordering via SQL function; fallback to LIMIT if needed
   const { data, error } = await supabase
