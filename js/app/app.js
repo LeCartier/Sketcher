@@ -275,6 +275,10 @@ export async function init() {
 	transformControlsRotate.addEventListener('mouseDown', () => { disableTranslateGizmo(); });
 	transformControlsRotate.addEventListener('mouseUp',   () => { enableTranslateGizmo(); });
 
+	// Also guard via dragging-changed so touch/pen (no mouseDown/Up) behaves correctly
+	transformControls.addEventListener('dragging-changed', e => { if (e.value) disableRotateGizmo(); else enableRotateGizmo(); });
+	transformControlsRotate.addEventListener('dragging-changed', e => { if (e.value) disableTranslateGizmo(); else enableTranslateGizmo(); });
+
 	// Multi-select pivot
 	const multiSelectPivot = new THREE.Object3D(); multiSelectPivot.name='__MultiSelectPivot'; scene.add(multiSelectPivot);
 	let multiStartPivotMatrix = new THREE.Matrix4();

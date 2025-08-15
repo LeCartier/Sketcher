@@ -663,6 +663,37 @@ body.community .page-vignette::before {
 	bottom: auto;
 }
 
+/* Center a floating button horizontally over the toolbox (left stack) */
+.nav-toolbox-center {
+	left: calc(max(12px, env(safe-area-inset-left, 0px) + 12px) + (var(--toolbox-width) / 2) - 26px);
+	top: 50%;
+	right: auto;
+	bottom: auto;
+	transform: translateY(-50%);
+}
+@media (max-width: 640px) {
+	/* When toolboxes dock to the top-left on small screens, keep the button centered on toolbox horizontally and place it just below */
+	.nav-toolbox-center {
+		left: calc(max(12px, env(safe-area-inset-left, 0px) + 12px) + (var(--toolbox-width) / 2) - 24px); /* 48px button on mobile */
+		top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 56px + 8px);
+		transform: none;
+	}
+}
+
+/* Bottom-anchored: center under toolbox horizontally */
+.nav-bottom-toolbox-center {
+	left: calc(max(12px, env(safe-area-inset-left, 0px) + 12px) + (var(--toolbox-width) / 2) - 26px); /* 52px button desktop */
+	right: auto;
+	top: auto;
+	bottom: 20px;
+}
+@media (max-width: 640px) {
+	.nav-bottom-toolbox-center {
+		left: calc(max(12px, env(safe-area-inset-left, 0px) + 12px) + (var(--toolbox-width) / 2) - 24px); /* 48px button mobile */
+		bottom: 20px;
+	}
+}
+
 /* Legend popup styles */
 #legendPopup {
 	position: fixed;
