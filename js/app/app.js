@@ -489,7 +489,14 @@ export async function init() {
 	function attachTransformForSelection(){
 		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); return; }
 		if(selectedObjects.length === 1){
+			// Helper: identify walls by name
+			const isWall = (obj) => { const n = (obj && obj.name || '').toLowerCase(); return n.includes('wall'); };
+			// Reset rotate axes visibility defensively on each selection attach
+			if ('showX' in transformControlsRotate) { transformControlsRotate.showX = true; }
+			if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; }
+			if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; }
 			if (singleSelectionMode === 'handles'){
+				// In handles mode we normally hide gizmos; for Plan Lock + Wall we still allow rotate gizmo, not translate
 				transformControls.detach(); transformControlsRotate.detach();
 				updateHandles();
 				// Ensure initial TR sync for the handles group
@@ -500,10 +507,33 @@ export async function init() {
 					handlesGroup.matrix.copy(new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(1,1,1)));
 					handlesGroup.matrixWorldNeedsUpdate = true;
 				}
+				// If plan-locked wall: keep only faceX handles (length) and show rotate gizmo; disable translate
+				if (planViewLocked && isWall(selectedObjects[0])){
+					if (handleMeshes && handleMeshes.length){
+						handleMeshes.forEach(m => {
+							const sel = m && m.userData && m.userData.__handle && m.userData.__handle.sel;
+							m.visible = !!(sel && sel.type === 'faceX');
+						});
+					}
+					transformControlsRotate.attach(selectedObjects[0]);
+					if (typeof transformControlsRotate.setMode === 'function') transformControlsRotate.setMode('rotate');
+					// Only allow rotation around Y in plan (if supported by TransformControls)
+					if ('showX' in transformControlsRotate) { transformControlsRotate.showX = false; }
+					if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = false; }
+					if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; }
+					enableRotateGizmo();
+					disableTranslateGizmo();
+				}
 			} else {
 				clearHandles();
 				transformControls.attach(selectedObjects[0]);
+				if (typeof transformControls.setMode === 'function') transformControls.setMode('translate');
 				transformControlsRotate.attach(selectedObjects[0]);
+				if (typeof transformControlsRotate.setMode === 'function') transformControlsRotate.setMode('rotate');
+				// Restore rotate axes visibility if previously restricted
+				if ('showX' in transformControlsRotate) { transformControlsRotate.showX = true; }
+				if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; }
+				if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; }
 				enableTranslateGizmo();
 				enableRotateGizmo();
 			}
@@ -633,7 +663,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
 
 	// Expose a safe global accessor for current scene JSON (used by share-to-community flow)
-	try { window.sketcherSerializeScene = serializeScene; } catch {}
+	try { window.sketcherSerializeScene = serializeScene; window.sketcherObjectCount = () => getPersistableObjects().length; } catch {}
 
 	// --- Picking helpers ---
 	function __isHelperChain(node){
@@ -1401,6 +1431,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (planLockBtn) planLockBtn.setAttribute('aria-pressed', planViewLocked ? 'true' : 'false');
 		// Persist setting
 		try { localStorage.setItem('sketcher.planViewLocked', planViewLocked ? '1' : '0'); } catch {}
+		// Re-attach transforms to apply wall constraints if a wall is selected
+		attachTransformForSelection();
 	}
 	// Initialize Plan Lock button state now; click wiring moves to ui/views.js
 	if (planLockBtn) {
@@ -1582,8 +1614,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	uploadBtn.addEventListener('click',()=>fileInput.click());
 	fileInput.addEventListener('change',e=>{
 		const file=e.target.files[0]; if(!file)return;
+		const lower=file.name.toLowerCase();
+		if (lower.endsWith('.rvt')){
+			alert('Revit (.rvt) files are not directly supported in-browser.\n\nPlease export your model from Revit as OBJ/FBX/GLTF (or via the Revit add-in or FormIt/3ds Max) and import that here.');
+			fileInput.value='';
+			return;
+		}
 		const url=URL.createObjectURL(file);
-		const loader=file.name.toLowerCase().endsWith('.obj')?new OBJLoader():new GLTFLoader();
+		const loader=lower.endsWith('.obj')?new OBJLoader():new GLTFLoader();
 		loader.load(url,gltf=>{
 			loadedModel=gltf.scene||gltf;
 			// Show placing popup with file name
@@ -1635,6 +1673,24 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		a.download='scene.obj';
 		a.click();
 		setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+	});
+
+	// Revit Family (guide) export: produce OBJ then show quick how-to
+	const exportRfaBtn = document.getElementById('exportRevitFamily');
+	if (exportRfaBtn) exportRfaBtn.addEventListener('click',()=>{
+		const exporter=new OBJExporter();
+		const root=new THREE.Group();
+		objects.forEach(o=>root.add(o.clone(true)));
+		const data=exporter.parse(root);
+		const blob=new Blob([data],{type:'text/plain'});
+		const a=document.createElement('a');
+		a.href=URL.createObjectURL(blob);
+		a.download='sketcher-family.obj';
+		a.click();
+		setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+		setTimeout(()=>{
+			alert('To create a Revit Family (RFA):\n\n1) In Revit, create a new Generic Model family.\n2) Load the OBJ using an intermediary (e.g., import OBJ to FormIt or 3ds Max, then export as SAT/DWG/FBX).\n3) In Revit, Import/Link the converted file into the family.\n4) Adjust origin/scale as needed, then Save as .rfa.');
+		}, 50);
 	});
 
 	// Helpers
@@ -1754,7 +1810,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		placingTool = kind; placingStage = 0; controls.enabled = false;
 		const btn = document.getElementById(kind==='wall' ? 'addWall' : 'addFloor'); if (btn) btn.setAttribute('aria-pressed','true');
 	}
-	function updatePlacingPreview(current){
+	function updatePlacingPreview(current, modifiers={}){
+		const shift = !!modifiers.shift;
 		if (!placingTool || placingStage !== 1) return;
 		// Build/replace preview mesh based on placingTool and start/end on ground plane
 		if (placingPreview){ try { scene.remove(placingPreview); placingPreview.geometry && placingPreview.geometry.dispose && placingPreview.geometry.dispose(); placingPreview.material && placingPreview.material.dispose && placingPreview.material.dispose(); } catch {} placingPreview = null; }
@@ -1787,15 +1844,21 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				} catch {}
 			}
 		} else if (placingTool === 'wall'){
-			const dx = current.x - placingStart.x; const dz = current.z - placingStart.z;
-			const len = Math.max(0.1, Math.hypot(dx, dz));
+			const dx0 = current.x - placingStart.x; const dz0 = current.z - placingStart.z;
+			let angle = Math.atan2(dz0, dx0);
+			if (shift){ angle = Math.round(angle / (Math.PI/2)) * (Math.PI/2); }
+			const ux = Math.cos(angle), uz = Math.sin(angle);
+			const s = (dx0 * ux + dz0 * uz); // signed distance along snapped axis
+			const len = Math.max(0.1, Math.abs(s));
 			const geo = new THREE.BoxGeometry(len, WALL_HEIGHT_FT, WALL_THICKNESS_FT);
 			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
 			const mesh = new THREE.Mesh(geo, activeMat);
 			// Position the wall mesh at its midpoint so the gizmo/pivot is centered
-			const midx = (placingStart.x + current.x) / 2; const midz = (placingStart.z + current.z) / 2;
+			const endX = placingStart.x + (shift ? s * ux : dx0);
+			const endZ = placingStart.z + (shift ? s * uz : dz0);
+			const midx = (placingStart.x + endX) / 2; const midz = (placingStart.z + endZ) / 2;
 			mesh.position.set(midx, WALL_HEIGHT_FT/2, midz);
-			mesh.rotation.y = -Math.atan2(dz, dx);
+			mesh.rotation.y = -angle;
 			placingPreview = mesh; scene.add(mesh);
 			// Add a rectangle footprint outline during drag when Plan Lock is on
 			if (planViewLocked){
@@ -1832,7 +1895,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			addObjectToScene(placed, { select: true });
 		} else {
 			// Fallback: build once if preview was missing
-			updatePlacingPreview(endPt);
+			updatePlacingPreview(endPt, { shift: false });
 			if (placingPreview){ const placed = placingPreview; placingPreview = null; placed.name = (placingTool==='floor')? 'Floor' : 'Wall'; addObjectToScene(placed, { select: true }); }
 		}
 		// Cleanup outline if present
@@ -1848,7 +1911,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// Consume events for two-click placement if active
 			if (placingTool){
 				const pt = intersectGround(); if (!pt) return;
-				if (placingStage === 0){ placingStart.copy(pt); placingStage = 1; updatePlacingPreview(pt); return; }
+				if (placingStage === 0){ placingStart.copy(pt); placingStage = 1; updatePlacingPreview(pt, { shift: !!e.shiftKey }); return; }
 				else { finalizePlacing(pt); return; }
 			}
 			// Check handle hit first when single selection
@@ -1965,7 +2028,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Draw-create preview and two-click placement live update
 		renderer.domElement.addEventListener('pointermove',e=>{
 		// Update live preview for two-click placement
-		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt); }
+		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt, { shift: !!e.shiftKey }); }
 		// Handle dragging
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);

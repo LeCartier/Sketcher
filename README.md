@@ -43,3 +43,7 @@ Then open http://localhost:8000/ (adjust port as needed).
 ### Add a new language
 Edit `js/i18n.js` and add a new top‑level key (e.g., `fr`) in `dictionaries`. Then add an `<option>` in the `#langSelect` in `index.html` and include the new code in `initLocale([...])` if desired.
 
+## License
+
+MIT — see `LICENSE` for details.
+
