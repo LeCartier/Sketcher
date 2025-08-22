@@ -174,6 +174,26 @@
           <path d="M7 11h10" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
+      <button id="centerOverlay" class="icon-btn" title="Return sketch to center" aria-label="Return sketch to center">
+        <span class="sr-only">Return sketch to center</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Four arrows pointing toward the center -->
+          <g fill="none" stroke="#222" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <!-- Top arrow down -->
+            <path d="M12 3v6"/>
+            <polyline points="9,7 12,10 15,7"/>
+            <!-- Bottom arrow up -->
+            <path d="M12 21v-6"/>
+            <polyline points="9,17 12,14 15,17"/>
+            <!-- Left arrow right -->
+            <path d="M3 12h6"/>
+            <polyline points="7,9 10,12 7,15"/>
+            <!-- Right arrow left -->
+            <path d="M21 12h-6"/>
+            <polyline points="17,9 14,12 17,15"/>
+          </g>
+        </svg>
+      </button>
       <button id="exportScene" class="icon-btn" title="Export Scene (OBJ)" aria-label="Export Scene (OBJ)">
         <span class="sr-only">Export Scene (OBJ)</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -428,27 +448,52 @@
         </button>
     </div>
   </div>
-  <!-- Floating button to Columbarium with smooth fade -->
-  <a id="toColumbarium" class="floating-nav nav-top-right" href="./columbarium.html" title="Open Columbarium" aria-label="Open Columbarium">
-    <!-- Tic-tac-toe icon with one filled square -->
+  <!-- Parent Columbarium button (opens Personal/Community popup) -->
+  <button id="openColMenu" class="floating-nav nav-top-right" title="Columbarium" aria-label="Columbarium" type="button">
+    <!-- Tic-tac-toe grid, no filled square -->
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".9">
         <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
       </g>
-  <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".85"/>
+    </svg>
+  </button>
+  <!-- Columbarium popup menu -->
+  <div id="columbariumPopup" style="display:none; position:fixed; right:20px; top:76px; z-index: 210;">
+    <!-- Two floating-style items that animate out from the parent button position -->
+    <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+      <a id="colPersonal" class="floating-nav" href="./columbarium.html" title="Personal" aria-label="Personal">
+  <!-- Personal icon: tic-tac-toe with filled center (dark), no arrow -->
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+          </g>
+          <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".95"/>
+        </svg>
+      </a>
+      <a id="colCommunity" class="floating-nav" href="./community.html" title="Community" aria-label="Community">
+  <!-- Community icon: tic-tac-toe with magenta center, no arrow -->
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+            <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+          </g>
+          <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".98"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+    <!-- Floating AR button (top-right, beside Columbarium) -->
+  <!-- Move 2D Sketch up before AR -->
+  <!-- Floating 2D Sketch button (now next to Columbarium) -->
+  <a id="toSketch2D" class="floating-nav nav-top-right-2" href="./sketch2d.html" title="2D Sketch" aria-label="2D Sketch">
+    <!-- 2D/3D toggle icon: flat grid -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+        <path d="M4 12h16M12 4v16" opacity=".9"/>
+      </g>
     </svg>
   </a>
-    <!-- Floating Community button (next to Columbarium) -->
-    <a id="toCommunity" class="floating-nav nav-top-right-2" href="./community.html" title="Community" aria-label="Community">
-      <!-- Tic-tac-toe grid (same as personal) with magenta filled square -->
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".9">
-          <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
-        </g>
-        <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".95"/>
-      </svg>
-    </a>
-    <!-- Floating AR button (top-right, beside Columbarium) -->
+  <!-- AR remains after 2D -->
   <button id="toAR" class="floating-nav nav-top-right-3" title="Enter AR" aria-label="Enter AR" type="button">
       <!-- Glasses icon: two lenses with a bridge and subtle temples -->
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -464,7 +509,7 @@
         </g>
       </svg>
     </button>
-    <!-- Floating Legend button (move to far-left position) -->
+  <!-- Floating Legend button (move to far-left position) -->
   <button id="toLegend" class="floating-nav nav-top-right-5" title="Legend / Help" aria-label="Legend / Help" type="button">
       <!-- Info-circle icon -->
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -550,15 +595,28 @@
         </div>
         <div class="legend-label">Primitives</div>
 
-        <!-- Draw-Create -->
+        <!-- Draw (pencil) -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="3" y="13" width="7" height="7" fill="none" stroke="#fff" stroke-width="2"/>
-            <circle cx="16" cy="8" r="3" fill="none" stroke="#fff" stroke-width="2"/>
-            <polygon points="12,14 20,20 12,20" fill="none" stroke="#fff" stroke-width="2"/>
+            <g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 19l3.2-.8 9.7-9.7a1.6 1.6 0 0 0 0-2.3l-.1-.1a1.6 1.6 0 0 0-2.3 0L5.8 15.8 5 19z"/>
+              <path d="M14.8 6.2l3 3" opacity=".9"/>
+              <path d="M4 20c3 -.2 5.2 -.8 7.6 -2.2" opacity=".8"/>
+            </g>
           </svg>
         </div>
-  <div class="legend-label">Draw</div>
+        <div class="legend-label">Draw</div>
+
+        <!-- 2D Sketch (flat grid) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <path d="M4 12h16M12 4v16" opacity=".9"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">2D Sketch</div>
 
         <!-- Utilities -->
         <div class="legend-item">
@@ -570,11 +628,60 @@
         </div>
   <div class="legend-label">Utilities</div>
 
+        <!-- Center Sketch (return to center) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v6"/>
+              <polyline points="9,7 12,10 15,7"/>
+              <path d="M12 21v-6"/>
+              <polyline points="9,17 12,14 15,17"/>
+              <path d="M3 12h6"/>
+              <polyline points="7,9 10,12 7,15"/>
+              <path d="M21 12h-6"/>
+              <polyline points="17,9 14,12 17,15"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Center Sketch</div>
+
         <!-- Scene Manager (tic-tac-toe) -->
         <div class="legend-item">
           <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.8"><path d="M8 3v18M16 3v18M3 8h18M3 16h18"/></g><rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff"/></svg>
         </div>
   <div class="legend-label">Scenes</div>
+
+        <!-- Columbarium (parent) -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+              <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+            </g>
+          </svg>
+        </div>
+        <div class="legend-label">Columbarium</div>
+
+        <!-- Columbarium → Personal -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+              <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+            </g>
+            <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#fff" opacity=".95"/>
+          </svg>
+        </div>
+        <div class="legend-label">Personal</div>
+
+        <!-- Columbarium → Community -->
+        <div class="legend-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".95">
+              <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+            </g>
+            <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#ff00ff" opacity=".98"/>
+          </svg>
+        </div>
+        <div class="legend-label">Community</div>
 
         <!-- Import -->
         <div class="legend-item">
@@ -796,6 +903,8 @@
   <div id="version-badge" role="button" tabindex="0" title="About / AnArch" aria-label="About / AnArch" style="position:fixed; right:12px; bottom:12px; background:rgba(0,0,0,0.8); color:#fff; padding:6px 8px; border-radius:6px; font-family:sans-serif; font-size:12px; z-index:220; line-height:1; white-space:nowrap; box-shadow:0 2px 10px rgba(0,0,0,0.25); min-width: 96px; text-align:center; cursor:pointer; user-select:none;">
     v1.1.0
   </div>
+  <!-- Floating 2D Sketch button (top-right, next to AR) -->
+  
       <!-- Room Scan HUD -->
       <div id="scanHud" style="display:none;">
         <div class="scan-hud-title">Room Scan</div>

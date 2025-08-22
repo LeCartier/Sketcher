@@ -12,6 +12,9 @@ A single‑page Three.js scene for drawing boxes (in feet), importing models, ed
 - AR: WebXR immersive‑ar (with polyfill attempt on iOS)
 - Localization: language selector (English, Spanish) with easy extension
 
+### 2D Sketch (new)
+Open `sketch2d.html` for a flat 2D canvas with Pen/Line/Rect/Ellipse/Text, stroke/fill color, thickness, pan/zoom, Undo/Redo, and PNG/SVG export. Shift to constrain lines/rects; Esc to cancel a shape.
+
 ## Run
 Use any static server. If you have Live Server in VS Code:
 

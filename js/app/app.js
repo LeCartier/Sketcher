@@ -489,6 +489,19 @@ export async function init() {
 	function attachTransformForSelection(){
 		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); return; }
 		if(selectedObjects.length === 1){
+			// Special-case: 2D Overlay group is movable on ground plane (X/Z only)
+			if (selectedObjects[0] && selectedObjects[0].name === '2D Overlay'){
+				clearHandles();
+				transformControls.attach(selectedObjects[0]);
+				if (typeof transformControls.setMode === 'function') transformControls.setMode('translate');
+				// If TransformControls supports axis visibility flags, hide Y
+				if ('showX' in transformControls) { transformControls.showX = true; }
+				if ('showY' in transformControls) { transformControls.showY = false; }
+				if ('showZ' in transformControls) { transformControls.showZ = true; }
+				// Ensure rotate gizmo is disabled for overlay moves
+				transformControlsRotate.detach(); disableRotateGizmo(); enableTranslateGizmo();
+				return;
+			}
 			// Helper: identify walls by name
 			const isWall = (obj) => { const n = (obj && obj.name || '').toLowerCase(); return n.includes('wall'); };
 			// Reset rotate axes visibility defensively on each selection attach
@@ -547,6 +560,13 @@ export async function init() {
 	transformControls.addEventListener('dragging-changed', e => { if (!e.value) { snapVisuals.hide(); saveSessionDraftSoon(); } });
 	transformControls.addEventListener('objectChange', () => {
 		if(transformControls.object===multiSelectPivot) { applyMultiDelta(); return; }
+		// Constrain 2D Overlay to ground plane Y during translation
+		if (transformControls.object && transformControls.object.name === '2D Overlay'){
+			const obj = transformControls.object;
+			obj.position.y = 0; // keep at ground plane
+			obj.updateMatrixWorld(true);
+			return;
+		}
 		// Soft snap for single-object translate moves
 		if (SNAP_ENABLED && selectedObjects.length===1 && transformControls.object===selectedObjects[0]){
 			const target = selectedObjects[0];
@@ -674,7 +694,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	function __resolvePickedObjectFromHits(hits){
 		for (const h of hits){
 			let o = h.object;
-			if (__isHelperChain(o)) continue; // skip helper overlays (e.g., sketch outlines)
+			// Allow picking the 2D Overlay even though it's marked as helper
+			if (__isHelperChain(o)){
+				let n = o;
+				let allowed = false;
+				while(n){ if (n.name === '2D Overlay'){ allowed = true; o = n; break; } n = n.parent; }
+				if (!allowed) continue;
+			}
 			while(o.parent && o.parent.type === 'Group' && objects.includes(o.parent)) o = o.parent;
 			return o;
 		}
@@ -724,11 +750,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		__restoreFromSnapshot(__historyIndex);
 	}
 	// Global key handler for Ctrl/Cmd+Z (no Shift); ignore when typing in inputs/textarea/contentEditable
-	window.addEventListener('keydown', e => {
+	window.addEventListener('keydown',e=>{
 		const isZ = (e.key === 'z' || e.key === 'Z');
 		if (isZ && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-			const tgt = e.target;
-			const tag = tgt && tgt.tagName ? tgt.tagName.toLowerCase() : '';
+			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+			const toDelete = toDeleteRaw.filter(o=>!__isOverlayOrChild(o));
+			if (!toDelete.length) return; // nothing deletable selected (maybe overlay)
 			const isEditable = (tag === 'input' || tag === 'textarea' || (tgt && tgt.isContentEditable));
 			if (isEditable) return; // let browser handle text undo
 			e.preventDefault();
@@ -763,7 +790,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Visibility UI
 	function updateVisibilityUI(){
 		objectList.innerHTML='';
+		// List regular user objects
 		objects.forEach(obj=>{
+			if (__isHelperObject(obj)) return; // skip helpers other than overlay
 			const div=document.createElement('div');
 			const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=obj.visible; cb.addEventListener('change',()=>{ obj.visible=cb.checked; saveSessionDraftSoon(); });
 			const span=document.createElement('span'); span.textContent=obj.name; span.style.flex='1'; span.style.cursor='pointer';
@@ -772,6 +801,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
 			div.append(cb,span); objectList.append(div);
 		});
+		// Add 2D Overlay as a managed row (visible toggle only; cannot delete)
+		try {
+			const ov = scene.getObjectByName('2D Overlay');
+			if (ov){
+				const div=document.createElement('div');
+				const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=ov.visible; cb.addEventListener('change',()=>{ ov.visible=cb.checked; saveSessionDraftSoon(); });
+				const span=document.createElement('span'); span.textContent=ov.name||'2D Overlay'; span.style.flex='1'; span.style.cursor='pointer';
+				if(selectedObjects.includes(ov)) span.style.background='#ffe066';
+				// No rename for overlay; click selects
+				span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(ov)) selectedObjects=selectedObjects.filter(o=>o!==ov); else selectedObjects.push(ov); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[ov]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
+				div.append(cb,span); objectList.append(div);
+			}
+		} catch{}
 		// Toggle mobile delete bar: small screens only when selection exists in edit mode
 		try {
 			const isMobile = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
@@ -786,12 +828,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (mobileDeleteBtn) {
 		mobileDeleteBtn.addEventListener('click', () => {
 			if (mode !== 'edit') return;
-			const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+			const toDelete = toDeleteRaw.filter(o=>!__isOverlayOrChild(o));
 			if (!toDelete.length) return;
 			toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); });
 			selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 		});
 	}
+
+	function __isOverlayOrChild(node){ let n=node; while(n){ if(n.name==='2D Overlay') return true; n=n.parent; } return false; }
 
 	// Settings: background and grid colors (with persistence)
 	function disposeGrid(g){ try { gridUtils.disposeGrid(THREE, g); } catch {} }
@@ -1377,8 +1422,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	renderer.domElement.addEventListener('dblclick', e => {
 		if (mode !== 'edit') return;
 			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
-			const hits = raycaster.intersectObjects(selectableObjects, true);
+			const hits = raycaster.intersectObjects(selectableTargets(), true);
 			// If there is already a single selection, prioritize toggling it to handles
 			if (selectedObjects.length === 1) {
 				singleSelectionMode = 'handles';
@@ -1404,8 +1448,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			return;
 		}
 		getPointer(e); raycaster.setFromCamera(pointer, camera);
-		const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
-		const hits = raycaster.intersectObjects(selectableObjects, true);
+	const hits = raycaster.intersectObjects(selectableTargets(), true);
 		if (hits.length){
 			const obj = __resolvePickedObjectFromHits(hits);
 			if (!obj) return;
@@ -1713,7 +1756,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	function intersectAtY(y){const plane=new THREE.Plane(new THREE.Vector3(0,1,0),-y);const pt=new THREE.Vector3();return raycaster.ray.intersectPlane(plane,pt)?pt:null;}
 
 	function updateCameraClipping(){ if (!objects.length) return; const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o)); if (box.isEmpty()) return; const size = new THREE.Vector3(); box.getSize(size); const radius = Math.max(size.x, size.y, size.z) * 0.75; const far = Math.min(100000, Math.max(1000, radius * 12)); camera.near = Math.max(0.01, far / 50000); camera.far = far; camera.updateProjectionMatrix(); if (controls){ controls.maxDistance = far * 0.95; } }
-	function selectableTargets(){ return objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]); }
+	function selectableTargets(){
+		const list = objects.flatMap(o => o.type === 'Group' ? [o, ...o.children] : [o]);
+		try {
+			const overlay = scene.getObjectByName('2D Overlay');
+			if (overlay) list.push(overlay, ...overlay.children);
+		} catch{}
+		return list;
+	}
 	function addObjectToScene(obj, { select = false } = {}){
 		scene.add(obj); objects.push(obj);
 		// Skip applying global material styles to map imports
@@ -1784,7 +1834,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	renderer.domElement.addEventListener('pointercancel', e => { if(e.pointerType==='touch' || e.pointerType==='pen') activeTouchPointers.delete(e.pointerId); });
 	const SURFACE_EPS = 0.01;
 	// Two-click placement tools state (floor/wall)
-	const FLOOR_THICKNESS_FT = (4/12);
+	const FLOOR_THICKNESS_FT = 0.5; // 6 inches
 	const WALL_THICKNESS_FT = 0.333;
 	const WALL_HEIGHT_FT = 10.0;
 	let placingTool = null; // 'floor' | 'wall' | null
@@ -1824,7 +1874,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const geo = new THREE.BoxGeometry(w, FLOOR_THICKNESS_FT, d);
 			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
 			const mesh = new THREE.Mesh(geo, activeMat);
-			mesh.position.set(cx, FLOOR_THICKNESS_FT/2, cz);
+			// Place so top face sits at ground plane (Y=0)
+			mesh.position.set(cx, -FLOOR_THICKNESS_FT/2, cz);
 			placingPreview = mesh; scene.add(mesh);
 			// Add a thin outline in plan view during drag to improve visibility when Plan Lock is on
 			if (planViewLocked){
@@ -1973,8 +2024,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		else if(mode==='edit'){
             if (activeDrawTool){ const hits=raycaster.intersectObjects(selectableTargets(),true); const baseY = hits.length ? hits[0].point.y : 0; const pt = intersectAtY(baseY) || intersectGround(); if(!pt) return; isDragging=true; startPt.copy(pt); dragStartScreenY = e.clientY; controls.enabled=false; return; }
 			if(e.pointerType==='touch' || e.pointerType==='pen'){ e.target.__tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; return; }
-			const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]);
-			const hits=raycaster.intersectObjects(selectableObjects,true);
+			const hits=raycaster.intersectObjects(selectableTargets(),true);
 			if(hits.length){
 				const obj = __resolvePickedObjectFromHits(hits);
 				if (!obj) return;
@@ -2008,7 +2058,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			renderer.domElement.addEventListener('pointerup', e => {
 			if(e.pointerType==='touch' || e.pointerType==='pen'){
 			const start = e.target.__tapStart; activeTouchPointers.delete(e.pointerId);
-				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const selectableObjects = objects.flatMap(obj => obj.type === 'Group' ? [obj, ...obj.children] : [obj]); const hits=raycaster.intersectObjects(selectableObjects,true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
+				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const hits=raycaster.intersectObjects(selectableTargets(),true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
 		}
 		// end handle drag if active
 	if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); snapVisuals.hide(); saveSessionDraftSoon(); }
@@ -2437,13 +2487,46 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Preserve current editor scene when navigating to Columbarium (session draft)
 	(() => {
 		try {
-			const toCol = document.getElementById('toColumbarium');
-			if (toCol) {
-				toCol.addEventListener('click', () => {
-					try {
-						const json = serializeScene();
-						sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json }));
-					} catch {}
+			const openColBtn = document.getElementById('openColMenu');
+			const colPopup = document.getElementById('columbariumPopup');
+			const colPersonal = document.getElementById('colPersonal');
+			const colCommunity = document.getElementById('colCommunity');
+			if (openColBtn && colPopup) {
+				openColBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					const isOpen = colPopup.getAttribute('data-open') === 'true';
+					if (isOpen) {
+						colPopup.setAttribute('data-open', 'false');
+						colPopup.style.display = 'none';
+					} else {
+						colPopup.style.display = 'block';
+						// next tick to allow transition
+						requestAnimationFrame(()=> colPopup.setAttribute('data-open', 'true'));
+					}
+				});
+				// close when clicking outside
+				document.addEventListener('click', (e) => {
+					if (!colPopup || colPopup.style.display === 'none') return;
+					const target = e.target;
+					if (target && (colPopup.contains(target) || openColBtn.contains(target))) return;
+					colPopup.setAttribute('data-open', 'false');
+					colPopup.style.display = 'none';
+				});
+			}
+
+			function saveDraft() {
+				try { const json = serializeScene(); sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json })); } catch {}
+			}
+			if (colPersonal) colPersonal.addEventListener('click', saveDraft);
+			if (colCommunity) colCommunity.addEventListener('click', saveDraft);
+			const to2D = document.getElementById('toSketch2D');
+			if (to2D) {
+				to2D.addEventListener('click', (e) => {
+					if (e && e.preventDefault) e.preventDefault();
+					saveDraft();
+					try { document.body.classList.add('page-leave'); } catch {}
+					const url = new URL('./sketch2d.html', location.href);
+					setTimeout(()=>{ window.location.href = url.toString(); }, 170);
 				}, { capture: false });
 			}
 		} catch {}
@@ -2484,6 +2567,136 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				} catch {}
 			}
 		} catch {}
+	})();
+
+	// Project any 2D sketch (feet) onto ground as helper overlay
+	(function load2DOverlay(){
+		try {
+			const raw = sessionStorage.getItem('sketcher:2d'); if(!raw) return;
+			const data = JSON.parse(raw); if(!data || !Array.isArray(data.objects)) return;
+			const buildOverlay = (dataObj)=>{
+				const group = new THREE.Group(); group.name = '2D Overlay'; group.userData.__helper = true;
+				// Dynamic line material that inverts against background
+				const getBgColor = ()=>{ const c = new THREE.Color(); try { renderer.getClearColor(c); } catch{} return c; };
+				const lineMat = new THREE.LineBasicMaterial({ color: 0x222222, transparent: true, depthTest: true });
+				const updateOverlayColors = ()=>{
+					const bg = getBgColor();
+					const luminance = 0.2126*bg.r + 0.7152*bg.g + 0.0722*bg.b;
+					lineMat.color.setHex((luminance < 0.45) ? 0xeeeeee : 0x222222);
+				};
+				updateOverlayColors();
+				const faceMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite:false });
+				const zLift = 0.02;
+				// Compute 2D content bounds in feet to recenter geometry about (0,0) so gizmo sits at sketch center
+				const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+				for (const o of (dataObj.objects||[])){
+					if (o.type==='line'){ bounds.minX=Math.min(bounds.minX,o.a.x,o.b.x); bounds.maxX=Math.max(bounds.maxX,o.a.x,o.b.x); bounds.minY=Math.min(bounds.minY,o.a.y,o.b.y); bounds.maxY=Math.max(bounds.maxY,o.a.y,o.b.y); }
+					else if (o.type==='rect' || o.type==='ellipse'){ bounds.minX=Math.min(bounds.minX,o.a.x,o.b.x); bounds.maxX=Math.max(bounds.maxX,o.a.x,o.b.x); bounds.minY=Math.min(bounds.minY,o.a.y,o.b.y); bounds.maxY=Math.max(bounds.maxY,o.a.y,o.b.y); }
+					else if (o.type==='path' && Array.isArray(o.pts)) { for (const p of o.pts){ bounds.minX=Math.min(bounds.minX,p.x); bounds.maxX=Math.max(bounds.maxX,p.x); bounds.minY=Math.min(bounds.minY,p.y); bounds.maxY=Math.max(bounds.maxY,p.y); } }
+				}
+				const hasBounds = isFinite(bounds.minX) && isFinite(bounds.maxX) && bounds.maxX>bounds.minX && isFinite(bounds.minY) && isFinite(bounds.maxY) && bounds.maxY>bounds.minY;
+				const cx = hasBounds ? (bounds.minX + bounds.maxX)/2 : 0;
+				const cy = hasBounds ? (bounds.minY + bounds.maxY)/2 : 0;
+				const shiftX = -cx, shiftY = -cy; // recenters to origin
+				// Build geometry shifted so the group's origin is the sketch center
+				for(const o of (dataObj.objects||[])){
+					if(o.type==='line'){
+						const g = new THREE.BufferGeometry().setFromPoints([ new THREE.Vector3(o.a.x+shiftX, 0, o.a.y+shiftY), new THREE.Vector3(o.b.x+shiftX, 0, o.b.y+shiftY) ]);
+						const line = new THREE.Line(g, lineMat); line.position.y = zLift; group.add(line);
+					} else if(o.type==='rect'){
+						const minX = Math.min(o.a.x,o.b.x)+shiftX, maxX=Math.max(o.a.x,o.b.x)+shiftX;
+						const minY = Math.min(o.a.y,o.b.y)+shiftY, maxY=Math.max(o.a.y,o.b.y)+shiftY;
+						const w = Math.max(0.001, maxX-minX); const d = Math.max(0.001, maxY-minY);
+						const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), faceMat.clone());
+						mesh.rotation.x = -Math.PI/2; mesh.position.set((minX+maxX)/2, zLift, (minY+maxY)/2);
+						group.add(mesh);
+						const edges = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w,d));
+						const edgeL = new THREE.LineSegments(edges, lineMat); edgeL.rotation.x = -Math.PI/2; edgeL.position.copy(mesh.position); group.add(edgeL);
+					} else if(o.type==='ellipse'){
+						const cx2 = (o.a.x+o.b.x)/2 + shiftX; const cy2=(o.a.y+o.b.y)/2 + shiftY; const rx=Math.abs(o.a.x-o.b.x)/2; const ry=Math.abs(o.a.y-o.b.y)/2;
+						const shape = new THREE.Shape(); const steps = 64; for(let i=0;i<=steps;i++){ const t=i/steps*2*Math.PI; const x=cx2+Math.cos(t)*rx; const y=cy2+Math.sin(t)*ry; if(i===0) shape.moveTo(x, y); else shape.lineTo(x, y); }
+						const geo = new THREE.ShapeGeometry(shape);
+						const mesh = new THREE.Mesh(geo, faceMat.clone()); mesh.rotation.x=-Math.PI/2; mesh.position.y = zLift; group.add(mesh);
+						const pts = shape.getPoints(64).map(p=> new THREE.Vector3(p.x, zLift+1e-4, p.y));
+						const g = new THREE.BufferGeometry().setFromPoints(pts);
+						const line = new THREE.LineLoop(g, lineMat); group.add(line);
+					} else if(o.type==='path' && Array.isArray(o.pts) && o.pts.length>1){
+						const pts = o.pts.map(p=> new THREE.Vector3(p.x+shiftX, zLift, p.y+shiftY));
+						const g = new THREE.BufferGeometry().setFromPoints(pts);
+						const line = o.closed ? new THREE.LineLoop(g, lineMat) : new THREE.Line(g, lineMat);
+						group.add(line);
+					}
+				}
+				// Keep group's origin at sketch center; default offset is zero
+				group.position.set(0, 0, 0);
+				group.userData.defaultOffset = new THREE.Vector3(0, 0, 0);
+				// Keep color in sync each frame
+				const orig = renderer.render.bind(renderer);
+				renderer.render = function(sc, cam){ updateOverlayColors(); orig(sc, camera); };
+				return group;
+			};
+			// Build initial overlay (single instance)
+			const prev = scene.getObjectByName('2D Overlay'); if(prev) scene.remove(prev);
+			const initial = buildOverlay(data);
+			scene.add(initial);
+			// Realtime via BroadcastChannel; fallback to polling localStorage/sessionStorage
+			const bc3D = (typeof window !== 'undefined' && 'BroadcastChannel' in window) ? new BroadcastChannel('sketcher-2d') : null;
+			if (bc3D){
+				bc3D.onmessage = (ev)=>{
+					try {
+						const d2 = ev.data; if(!d2 || !Array.isArray(d2.objects)) return;
+						const old = scene.getObjectByName('2D Overlay');
+						// If the 2D sketch was cleared, reset overlay back to center; else preserve moved offset
+						const wasCleared = (d2.objects.length === 0);
+						let nextOffset = new THREE.Vector3(0,0,0);
+						if (old) {
+                            const defaultOffset = (old.userData && old.userData.defaultOffset) ? old.userData.defaultOffset : new THREE.Vector3(0,0,0);
+                            nextOffset.copy(wasCleared ? defaultOffset : old.position);
+                            scene.remove(old);
+                        }
+						const fresh = buildOverlay(d2);
+						fresh.position.copy(nextOffset);
+						scene.add(fresh);
+					} catch{}
+				};
+			}
+			let lastStamp = data && data.meta && (data.meta.updatedAt || data.meta.createdAt) ? (data.meta.updatedAt || data.meta.createdAt) : 0;
+			setInterval(()=>{
+				try {
+					const raw2 = localStorage.getItem('sketcher:2d') || sessionStorage.getItem('sketcher:2d'); if(!raw2) return;
+					const d2 = JSON.parse(raw2); if(!d2 || !Array.isArray(d2.objects)) return;
+					const stamp = d2 && d2.meta && (d2.meta.updatedAt || d2.meta.createdAt) ? (d2.meta.updatedAt || d2.meta.createdAt) : 0;
+					if (stamp && stamp !== lastStamp){
+						lastStamp = stamp;
+						const old = scene.getObjectByName('2D Overlay');
+						const wasCleared = (d2.objects.length === 0);
+						let nextOffset = new THREE.Vector3(0,0,0);
+						if (old) {
+                                const defaultOffset = (old.userData && old.userData.defaultOffset) ? old.userData.defaultOffset : new THREE.Vector3(0,0,0);
+                                nextOffset.copy(wasCleared ? defaultOffset : old.position);
+                                scene.remove(old);
+                            }
+						const fresh = buildOverlay(d2);
+						fresh.position.copy(nextOffset); // preserve user-moved insertion, reset if cleared
+						scene.add(fresh);
+					}
+				} catch{}
+			}, 500);
+
+			// Wire Return sketch to center button
+			try {
+				const centerBtn = document.getElementById('centerOverlay');
+				if (centerBtn){
+					centerBtn.addEventListener('click', ()=>{
+						const ov = scene.getObjectByName('2D Overlay');
+						if (!ov) return;
+						if (ov.userData && ov.userData.defaultOffset) ov.position.copy(ov.userData.defaultOffset); else ov.position.set(0,0,0);
+						if (transformControls && transformControls.object === ov){ transformControls.updateMatrixWorld(); }
+						renderer.render(scene, camera);
+					});
+				}
+			} catch {}
+		} catch(e){ console.warn('2D overlay load failed', e); }
 	})();
 }
 

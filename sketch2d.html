@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Sketcher 2D</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    /* 2D toolbar tweaks */
+  /* Match 3D toolbox layout; only ensure it shows on the 2D page */
+  #toolbox { display: block !important; }
+  /* Keep 2D page basics only; detailed toolbox styles come from styles.css */
+    #statusBar { position: fixed; left: 24px; bottom: 18px; background: rgba(255,255,255,0.95); border-radius: 10px; padding: 6px 10px; font: 12px/1.2 system-ui, sans-serif; color: #333; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+    body { background: #fafafa; }
+    #grid2d { position: fixed; inset: 0; z-index: 0; }
+  /* Slightly smaller buttons inside Erase panel */
+  #erase2DGroup .icon-btn { width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
+  </style>
+</head>
+<body>
+  <div id="pageFade"></div>
+  <canvas id="grid2d"></canvas>
+  <div id="toolbox">
+    <!-- Drawing parent (freehand) -->
+    <button id="toggle2DDraw" class="icon-btn toggle-btn" title="Drawing" aria-label="Drawing" aria-pressed="false">
+      <span class="sr-only">Drawing</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Pencil body at 45deg (eraser up-right) -->
+        <path d="M6 18l9-9 3 3-9 9-4 1 1-4z" fill="#222"/>
+        <!-- Eraser cap -->
+        <path d="M16.5 5.5l2 2-2 2-2-2z" fill="#555"/>
+        <!-- Thin curved stroke from tip -->
+        <path d="M4 20c1.6-2 3.6-3 6-3 1.8 0 3.2.5 4.5 1.3" fill="none" stroke="#222" stroke-width="1" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <div id="draw2DGroup" class="collapse" aria-hidden="true">
+      <button id="tPen" class="icon-btn" aria-pressed="false" title="Freehand (P)" aria-label="Pen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 9-9-3-3-9 9-1 4z" fill="#222"/></svg>
+      </button>
+    </div>
+
+    <!-- Shapes parent (line/rect/ellipse) -->
+    <button id="toggle2DShapes" class="icon-btn toggle-btn" title="Shapes" aria-label="Shapes" aria-pressed="false">
+      <span class="sr-only">Shapes</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" fill="none" stroke="#222" stroke-width="2"/><circle cx="17" cy="7" r="3" fill="none" stroke="#222" stroke-width="2"/></svg>
+    </button>
+    <div id="shapes2DGroup" class="collapse" aria-hidden="true">
+      <button id="tLine" class="icon-btn" aria-pressed="false" title="Line (L)" aria-label="Line">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18L18 4" stroke="#222" stroke-width="2"/></svg>
+      </button>
+      <button id="tRect" class="icon-btn" aria-pressed="false" title="Rectangle (R)" aria-label="Rect">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+      <button id="tEllipse" class="icon-btn" aria-pressed="false" title="Ellipse (O)" aria-label="Ellipse">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="7" ry="5" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+    </div>
+
+    <!-- Text parent -->
+    <button id="toggle2DText" class="icon-btn toggle-btn" title="Text" aria-label="Text" aria-pressed="false">
+      <span class="sr-only">Text</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M12 6v12" stroke="#222" stroke-width="2"/></svg>
+    </button>
+    <div id="text2DGroup" class="collapse" aria-hidden="true">
+      <button id="tText" class="icon-btn" aria-pressed="false" title="Text (T)" aria-label="Text">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12M10 6v12" stroke="#222" stroke-width="2"/></svg>
+      </button>
+    </div>
+
+  <!-- Style parent -->
+    <button id="toggle2DStyle" class="icon-btn toggle-btn" title="Style" aria-label="Style" aria-pressed="false">
+      <span class="sr-only">Style</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="#222"/><circle cx="16" cy="12" r="3" fill="#555"/></svg>
+    </button>
+    <div id="style2DGroup" class="collapse" aria-hidden="true">
+      <div class="row center" style="flex-direction:column; gap:4px;">
+        <label style="display:flex; flex-direction:column; align-items:center; gap:4px; font:12px/1.2 sans-serif; color:#333;">
+          <span>Stroke</span>
+          <input id="strokeColor" type="color" value="#111111" />
+        </label>
+        <label style="display:flex; flex-direction:column; align-items:center; gap:4px; font:12px/1.2 sans-serif; color:#333;">
+          <span>Fill</span>
+          <input id="fillColor" type="color" value="#cccccc" />
+          <button id="fillNoneBtn" class="icon-btn" aria-pressed="true" title="No Fill" aria-label="No Fill">
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
+              <circle cx="12" cy="12" r="8" fill="#ccc" stroke="#222" stroke-width="2"/>
+              <path d="M6 6l12 12" stroke="#222" stroke-width="2"/>
+            </svg>
+          </button>
+        </label>
+        <label for="thickness" style="font:12px/1.2 sans-serif; color:#333;">LPX</label>
+        <input id="thickness" class="vslider" type="range" min="1" max="24" step="1" value="2" aria-label="Line thickness (px)" />
+        <span id="thicknessVal" style="font:11px/1.2 system-ui, sans-serif; color:#444;">2 px</span>
+      </div>
+    </div>
+
+    <!-- Erase parent -->
+    <button id="toggle2DErase" class="icon-btn toggle-btn" title="Erase" aria-label="Erase" aria-pressed="false">
+      <span class="sr-only">Erase</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 14l6-6 5 5-6 6H5L3 17z" fill="#222"/>
+        <path d="M14 8l3-3 3 3-3 3" stroke="#222" stroke-width="2" fill="none"/>
+      </svg>
+    </button>
+  <div id="erase2DGroup" class="collapse" aria-hidden="true">
+  <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+        <!-- 1) Object Erase -->
+        <button id="tEraseObj" class="icon-btn" aria-pressed="false" title="Erase Object (Shift+E)" aria-label="Erase Object">
+          <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
+            <path d="M4 7h16" stroke="#222" stroke-width="2" fill="none"/>
+            <rect x="6" y="7" width="12" height="13" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+            <path d="M9 11l6 6M15 11l-6 6" stroke="#222" stroke-width="2"/>
+          </svg>
+        </button>
+        <!-- 2) Pixel Erase -->
+        <button id="tErasePix" class="icon-btn" aria-pressed="false" title="Erase Pixels (E)" aria-label="Erase Pixels">
+          <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
+            <path d="M3 15l6-6 8 8-2 2H9l-6-6z" fill="#222"/>
+          </svg>
+        </button>
+        <!-- 3) Pixel Brush Size -->
+        <input id="eraserRadius" class="vslider" type="range" min="0.1" max="5" step="0.1" value="0.5" aria-label="Brush size" />
+        <span id="eraserRadiusVal" style="font:11px/1.2 system-ui, sans-serif; color:#444;">0.50 ft</span>
+      </div>
+    </div>
+
+    <!-- Tools parent -->
+    <button id="toggle2DTools" class="icon-btn toggle-btn" title="Tools" aria-label="Tools" aria-pressed="false">
+      <span class="sr-only">Tools</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6 5l5 5-3 1-2 4-1-1 2-4-1-5z" fill="#222"/>
+        <path d="M16 7v8m-2-6v8m-2-4v6" stroke="#222" stroke-width="1.8"/>
+      </svg>
+    </button>
+    <div id="tools2DGroup" class="collapse" aria-hidden="true">
+      <button id="tSelect" class="icon-btn" aria-pressed="true" title="Select (V)" aria-label="Select (V)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4l8 8-5 1 1 5-4-10z" fill="#222"/></svg>
+      </button>
+      <button id="tPan" class="icon-btn" aria-pressed="false" title="Pan (Space/Middle)" aria-label="Pan">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16" stroke="#222" stroke-width="2"/></svg>
+      </button>
+    </div>
+
+    <!-- Edit/Export parent -->
+    <button id="toggle2DEdit" class="icon-btn toggle-btn" title="Edit/Export" aria-label="Edit/Export" aria-pressed="false">
+      <span class="sr-only">Edit/Export</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M12 16V10M9 10l3-3 3 3" stroke="#222" stroke-width="2"/>
+      </svg>
+    </button>
+    <div id="edit2DGroup" class="collapse" aria-hidden="true">
+      <button id="undo" class="icon-btn" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l-4 4 4 4" stroke="#222" stroke-width="2" fill="none"/><path d="M20 15a7 7 0 0 0-7-7H7" stroke="#222" stroke-width="2" fill="none"/></svg>
+      </button>
+      <button id="redo" class="icon-btn" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7l4 4-4 4" stroke="#222" stroke-width="2" fill="none"/><path d="M4 15a7 7 0 0 1 7-7h6" stroke="#222" stroke-width="2" fill="none"/></svg>
+      </button>
+      <button id="clear" class="icon-btn" title="Clear" aria-label="Clear">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" stroke="#222" stroke-width="2" fill="none"/><rect x="6" y="7" width="12" height="13" rx="2" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+      <button id="exportPNG" class="icon-btn" title="Export PNG" aria-label="Export PNG">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6M9 14l3 3 3-3" stroke="#222" stroke-width="2"/></svg>
+      </button>
+      <button id="exportSVG" class="icon-btn" title="Export SVG" aria-label="Export SVG">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="none" stroke="#222" stroke-width="2"/><circle cx="16" cy="12" r="3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="statusBar">Ready</div>
+  <!-- Floating 3D button to return to main scene -->
+  <a id="to3D" class="floating-nav nav-top-right" href="./index.html" title="3D" aria-label="3D">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
+        <path d="M4 8l8-4 8 4-8 4-8-4z"/>
+        <path d="M4 8v8l8 4 8-4V8"/>
+      </g>
+    </svg>
+  </a>
+
+  <script type="module" src="./js/app2d/app2d.js"></script>
+</body>
+</html>

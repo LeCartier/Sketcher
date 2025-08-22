@@ -27,16 +27,23 @@ canvas { display: block; touch-action: none; }
 		transform: translateY(0);
 		background: rgba(255,255,255,0.96);
 		border: 1px solid #e0e0e0;
-		border-radius: 12px;
+		border-radius: 14px; /* match toolbox */
 		box-shadow: 0 2px 12px rgba(0,0,0,0.10);
 		width: var(--toolbox-width);
-		padding: 6px 4px;
+		padding: 8px 4px; /* match toolbox vertical padding */
 		z-index: 120;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	#mobileDeleteBar .icon-btn { width: 36px; height: 36px; border-radius: 12px; }
+	#mobileDeleteBar .icon-btn {
+		width: 48px; /* fill most of the toolbox width on mobile */
+		height: 48px;
+		min-width: 48px;
+		min-height: 48px;
+		border-radius: 12px;
+	}
+	#mobileDeleteBar .icon-btn svg { width: 24px; height: 24px; }
 	/* If toolbox is docked to top on short devices, follow it */
 }
 /* Placing popup styles */
@@ -476,6 +483,9 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 	padding: 6px 4px; /* restore padding when open */
 	background: #f9f9f9; /* restore background when open */
 	box-shadow: 0 1px 6px rgba(0,0,0,0.08); /* restore shadow when open */
+	overflow-y: auto; /* scroll vertically if needed */
+	overflow-x: hidden; /* avoid horizontal scrollbars in narrow panels */
+	box-sizing: border-box; /* include padding & border in set width */
 }
 /* In the main toolbox, nudge the open panel slightly down and right for visual separation */
 #toolbox .collapse.open {
@@ -484,6 +494,10 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 	border: 1px solid #e0e0e0;            /* match toolbox subtle border */
 	border-radius: 12px;                  /* match toolbox corners */
 	position: relative; z-index: 120;     /* ensure it sits above the parent button outline */
+	overflow-y: auto;                     /* vertical scroll only */
+	overflow-x: hidden;                   /* no horizontal scrollbar */
+	width: var(--toolbox-width);          /* match parent toolbox width */
+	box-sizing: border-box;               /* ensure exact width including border/padding */
 }
 /* Apply same visual separation to Columbarium toolbox slide-outs */
 #cToolbox .collapse.open {
@@ -492,7 +506,29 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 	border: 1px solid #e0e0e0;
 	border-radius: 12px;
 	position: relative; z-index: 120;
+	width: var(--toolbox-width);          /* match parent toolbox width */
+	box-sizing: border-box;               /* ensure exact width including border/padding */
+	overflow-y: auto;                     /* vertical scroll only */
+	overflow-x: hidden;                   /* no horizontal scrollbar */
 }
+
+/* Reusable vertical slider (used by 2D Eraser and 2D Lineweight) */
+.vslider {
+	appearance: slider-vertical;
+	-webkit-appearance: slider-vertical;
+	writing-mode: bt-lr;
+	width: 18px;
+	height: 80px;
+}
+.vslider::-webkit-slider-thumb { cursor: ns-resize; }
+.vslider::-moz-range-thumb { cursor: ns-resize; }
+/* 2D/3D toolbox collapse row layout and centering */
+#toolbox .collapse .row { display:flex; align-items:center; justify-content: center; gap: 8px; padding: 4px 0; }
+#toolbox .collapse .row.center { justify-content: center; }
+#toolbox .collapse .row.end { justify-content: flex-end; }
+#toolbox .collapse .icon-btn { margin: 0; }
+/* If buttons are direct children (no .row wrapper), center them */
+#toolbox .collapse > .icon-btn { margin-left: auto; margin-right: auto; }
 /* Resize color pickers for settings group in toolbox */
 #settingsGroup input[type="color"] {
 	width: 28px;
@@ -503,6 +539,17 @@ body.anarch-active .floating-nav { filter: blur(0.2px) brightness(.95); }
 	vertical-align: middle;
 	margin-left: 0;
 	box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+/* Ensure consistent color picker style in both 2D and 3D toolboxes */
+#toolbox input[type="color"],
+#cToolbox input[type="color"] {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: none;
+	background: none;
+	box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+	border-radius: 6px;
 }
 /* Compact settings layout to fit toolbox width */
 #settingsGroup .settings-compact { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
@@ -596,6 +643,18 @@ body.community .page-vignette::before {
 .floating-nav:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.35); background: rgba(28,28,28,0.95); }
 .floating-nav svg { width: 24px; height: 24px; display:block; }
 
+/* Columbarium popup animated children */
+#columbariumPopup .floating-nav {
+	position: static; right: auto; bottom: auto; top: auto; left: auto;
+	width: 52px; height: 52px; border-radius: 50%;
+	transform-origin: top right;
+	transform: translateY(-8px) scale(0.85); opacity: 0;
+	transition: transform .22s cubic-bezier(.2,.8,.25,1), opacity .22s ease;
+}
+#columbariumPopup[data-open="true"] .floating-nav { transform: translateY(0) scale(1); opacity: 1; }
+#columbariumPopup .floating-nav:nth-child(1) { transition-delay: 20ms; }
+#columbariumPopup .floating-nav:nth-child(2) { transition-delay: 60ms; }
+
 /* Mobile alignment for floating buttons */
 @media (max-width: 640px) {
 	.floating-nav { width: 48px; height: 48px; }
@@ -605,6 +664,7 @@ body.community .page-vignette::before {
 	.nav-top-right-3 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 112px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
 	.nav-top-right-4 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 168px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
 	.nav-top-right-5 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 224px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
+	.nav-top-right-6 { top: calc(max(12px, env(safe-area-inset-top, 0px) + 12px) + 280px); right: max(12px, env(safe-area-inset-right, 0px) + 12px); left: auto; bottom: auto; }
 }
 
 /* Top-left placement variant */
@@ -658,6 +718,14 @@ body.community .page-vignette::before {
 /* Fifth top-right button (shifted further left) */
 .nav-top-right-5 {
 	right: 276px; /* 52px button * 4 + gaps */
+	top: 20px;
+	left: auto;
+	bottom: auto;
+}
+
+/* Sixth top-right button (shifted further left) */
+.nav-top-right-6 {
+	right: 340px; /* 52px button * 5 + gaps */
 	top: 20px;
 	left: auto;
 	bottom: auto;
@@ -839,10 +907,12 @@ body.community .page-vignette::before {
 }
 #cToolbox .collapse { width: 100%; }
 #cToolbox > .collapse { margin: 0; }
-#cToolbox .collapse .row { display:flex; align-items:center; gap: 8px; padding: 4px 0; }
+#cToolbox .collapse .row { display:flex; align-items:center; justify-content: center; gap: 8px; padding: 4px 0; }
 #cToolbox .collapse .row.center { justify-content: center; }
 #cToolbox .collapse .row.end { justify-content: flex-end; }
 #cToolbox .collapse .icon-btn { margin: 0; }
+/* If buttons are direct children (no .row wrapper), center them */
+#cToolbox .collapse > .icon-btn { margin-left: auto; margin-right: auto; }
 /* Top icon stack (Import, Center, Zones) */
 #cTopIcons { display:flex; flex-direction:column; align-items:center; gap: 4px; width:100%; }
 
