@@ -2058,7 +2058,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			renderer.domElement.addEventListener('pointerup', e => {
 			if(e.pointerType==='touch' || e.pointerType==='pen'){
 			const start = e.target.__tapStart; activeTouchPointers.delete(e.pointerId);
-				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const hits=raycaster.intersectObjects(selectableTargets(),true); if(hits.length){ let obj=hits[0].object; while(obj.parent && obj.parent.type === 'Group' && objects.includes(obj.parent)) obj = obj.parent; selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
+				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const hits=raycaster.intersectObjects(selectableTargets(),true); if(hits.length){ const obj = __resolvePickedObjectFromHits(hits); if (obj){ selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
 		}
 		// end handle drag if active
 	if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); snapVisuals.hide(); saveSessionDraftSoon(); }
@@ -2576,16 +2576,47 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const data = JSON.parse(raw); if(!data || !Array.isArray(data.objects)) return;
 			const buildOverlay = (dataObj)=>{
 				const group = new THREE.Group(); group.name = '2D Overlay'; group.userData.__helper = true;
-				// Dynamic line material that inverts against background
+				// Color handling: use 2D stroke/fill; invert if too close to 3D background
 				const getBgColor = ()=>{ const c = new THREE.Color(); try { renderer.getClearColor(c); } catch{} return c; };
-				const lineMat = new THREE.LineBasicMaterial({ color: 0x222222, transparent: true, depthTest: true });
+				const normHex = (hex)=>{ if(!hex||typeof hex!=='string') return null; const h=hex.trim().toLowerCase(); if(h==='#00000000'||h==='transparent') return null; if(/^#?[0-9a-f]{6,8}$/.test(h)){ const s=h.startsWith('#')?h.slice(1):h; return '#'+s.slice(0,6); } return null; };
+				const strToColor = (hex, fallback)=>{ const h=normHex(hex); try { return h? new THREE.Color(h) : (fallback? new THREE.Color(fallback): null); } catch { return fallback? new THREE.Color(fallback): null; } };
+				const relLum = (c)=>{ const srgb=[c.r,c.g,c.b].map(v=> v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055, 2.4)); return 0.2126*srgb[0]+0.7152*srgb[1]+0.0722*srgb[2]; };
+				const contrastRatio = (a,b)=>{ const L1=Math.max(relLum(a),relLum(b)); const L2=Math.min(relLum(a),relLum(b)); return (L1+0.05)/(L2+0.05); };
+				const invertColor = (c)=> new THREE.Color(1-c.r, 1-c.g, 1-c.b);
+				const CONTRAST_MIN = 2.6; // threshold for readability
+				const trackedMats = []; // { type: 'stroke'|'fill', mat, base }
+				const strokeCache = new Map();
+				const fillCache = new Map();
+				function getStrokeMat(baseHex){
+					const key = normHex(baseHex) || '#111111';
+					let rec = strokeCache.get(key);
+					if(!rec){
+						const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, depthTest: true });
+						rec = { mat, base: strToColor(key, '#111111') };
+						strokeCache.set(key, rec); trackedMats.push({ type:'stroke', ...rec });
+					}
+					return rec.mat;
+				}
+				function getFillMat(baseHex, opacity){
+					const key = normHex(baseHex); if(!key) return null;
+					let rec = fillCache.get(key);
+					if(!rec){
+						const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: Math.max(0.05, Math.min(1, opacity ?? 0.25)), side: THREE.DoubleSide, depthWrite:false });
+						rec = { mat, base: strToColor(key, '#cccccc') };
+						fillCache.set(key, rec); trackedMats.push({ type:'fill', ...rec });
+					}
+					return rec.mat;
+				}
 				const updateOverlayColors = ()=>{
 					const bg = getBgColor();
-					const luminance = 0.2126*bg.r + 0.7152*bg.g + 0.0722*bg.b;
-					lineMat.color.setHex((luminance < 0.45) ? 0xeeeeee : 0x222222);
+					for(const rec of trackedMats){
+						const base = rec.base; if(!base) continue;
+						let adj = base;
+						try { if (contrastRatio(base, bg) < CONTRAST_MIN) adj = invertColor(base); } catch {}
+						rec.mat.color.set(adj);
+					}
 				};
 				updateOverlayColors();
-				const faceMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite:false });
 				const zLift = 0.02;
 				// Compute 2D content bounds in feet to recenter geometry about (0,0) so gizmo sits at sketch center
 				const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -2600,30 +2631,32 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const shiftX = -cx, shiftY = -cy; // recenters to origin
 				// Build geometry shifted so the group's origin is the sketch center
 				for(const o of (dataObj.objects||[])){
+					const strokeHex = o.stroke || '#111111';
+					const fillHex = (o.fill && o.fill !== '#00000000') ? o.fill : null;
 					if(o.type==='line'){
 						const g = new THREE.BufferGeometry().setFromPoints([ new THREE.Vector3(o.a.x+shiftX, 0, o.a.y+shiftY), new THREE.Vector3(o.b.x+shiftX, 0, o.b.y+shiftY) ]);
-						const line = new THREE.Line(g, lineMat); line.position.y = zLift; group.add(line);
+						const line = new THREE.Line(g, getStrokeMat(strokeHex)); line.position.y = zLift; group.add(line);
 					} else if(o.type==='rect'){
 						const minX = Math.min(o.a.x,o.b.x)+shiftX, maxX=Math.max(o.a.x,o.b.x)+shiftX;
 						const minY = Math.min(o.a.y,o.b.y)+shiftY, maxY=Math.max(o.a.y,o.b.y)+shiftY;
 						const w = Math.max(0.001, maxX-minX); const d = Math.max(0.001, maxY-minY);
-						const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), faceMat.clone());
-						mesh.rotation.x = -Math.PI/2; mesh.position.set((minX+maxX)/2, zLift, (minY+maxY)/2);
-						group.add(mesh);
+						const cxr = (minX+maxX)/2, cyr = (minY+maxY)/2;
+						const fm = fillHex ? getFillMat(fillHex, 0.28) : null;
+						if (fm){ const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), fm); mesh.rotation.x = -Math.PI/2; mesh.position.set(cxr, zLift, cyr); group.add(mesh); }
 						const edges = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w,d));
-						const edgeL = new THREE.LineSegments(edges, lineMat); edgeL.rotation.x = -Math.PI/2; edgeL.position.copy(mesh.position); group.add(edgeL);
+						const edgeL = new THREE.LineSegments(edges, getStrokeMat(strokeHex)); edgeL.rotation.x = -Math.PI/2; edgeL.position.set(cxr, zLift, cyr); group.add(edgeL);
 					} else if(o.type==='ellipse'){
 						const cx2 = (o.a.x+o.b.x)/2 + shiftX; const cy2=(o.a.y+o.b.y)/2 + shiftY; const rx=Math.abs(o.a.x-o.b.x)/2; const ry=Math.abs(o.a.y-o.b.y)/2;
 						const shape = new THREE.Shape(); const steps = 64; for(let i=0;i<=steps;i++){ const t=i/steps*2*Math.PI; const x=cx2+Math.cos(t)*rx; const y=cy2+Math.sin(t)*ry; if(i===0) shape.moveTo(x, y); else shape.lineTo(x, y); }
-						const geo = new THREE.ShapeGeometry(shape);
-						const mesh = new THREE.Mesh(geo, faceMat.clone()); mesh.rotation.x=-Math.PI/2; mesh.position.y = zLift; group.add(mesh);
+						if (fillHex){ const geo = new THREE.ShapeGeometry(shape); const mesh = new THREE.Mesh(geo, getFillMat(fillHex, 0.26)); mesh.rotation.x=-Math.PI/2; mesh.position.y = zLift; group.add(mesh); }
 						const pts = shape.getPoints(64).map(p=> new THREE.Vector3(p.x, zLift+1e-4, p.y));
 						const g = new THREE.BufferGeometry().setFromPoints(pts);
-						const line = new THREE.LineLoop(g, lineMat); group.add(line);
+						const line = new THREE.LineLoop(g, getStrokeMat(strokeHex)); group.add(line);
 					} else if(o.type==='path' && Array.isArray(o.pts) && o.pts.length>1){
 						const pts = o.pts.map(p=> new THREE.Vector3(p.x+shiftX, zLift, p.y+shiftY));
 						const g = new THREE.BufferGeometry().setFromPoints(pts);
-						const line = o.closed ? new THREE.LineLoop(g, lineMat) : new THREE.Line(g, lineMat);
+						const mat = getStrokeMat(strokeHex);
+						const line = o.closed ? new THREE.LineLoop(g, mat) : new THREE.Line(g, mat);
 						group.add(line);
 					}
 				}
