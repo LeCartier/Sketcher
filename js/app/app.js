@@ -447,6 +447,10 @@ export async function init() {
 				clearHandles();
 				transformControls.attach(selectedObjects[0]);
 				if (typeof transformControls.setMode === 'function') transformControls.setMode('translate');
+				// Restore translate gizmo axes in case a previous selection (e.g., 2D Overlay) hid Y
+				if ('showX' in transformControls) { transformControls.showX = true; }
+				if ('showY' in transformControls) { transformControls.showY = true; }
+				if ('showZ' in transformControls) { transformControls.showZ = true; }
 				transformControlsRotate.attach(selectedObjects[0]);
 				if (typeof transformControlsRotate.setMode === 'function') transformControlsRotate.setMode('rotate');
 				// Restore rotate axes visibility if previously restricted
@@ -457,7 +461,7 @@ export async function init() {
 				enableRotateGizmo();
 			}
 		}
-		else if(selectedObjects.length >= 2){ updateMultiSelectPivot(); transformControls.attach(multiSelectPivot); transformControlsRotate.attach(multiSelectPivot); enableTranslateGizmo(); enableRotateGizmo(); clearHandles(); }
+		else if(selectedObjects.length >= 2){ updateMultiSelectPivot(); transformControls.attach(multiSelectPivot); if ('showX' in transformControls) { transformControls.showX = true; } if ('showY' in transformControls) { transformControls.showY = true; } if ('showZ' in transformControls) { transformControls.showZ = true; } transformControlsRotate.attach(multiSelectPivot); if ('showX' in transformControlsRotate) { transformControlsRotate.showX = true; } if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; } if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; } enableTranslateGizmo(); enableRotateGizmo(); clearHandles(); }
 		else { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); }
 	}
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
@@ -725,18 +729,20 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				div.append(cb,span); objectList.append(div);
 			}
 		} catch{}
-		// Toggle delete bar only on devices likely without a hardware keyboard
+		// Toggle delete bar; always show on Meta Quest (OculusBrowser) when appropriate
 		try {
 			if (mobileDeleteBar) {
 				const ua = navigator.userAgent || '';
-				const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+				const isHeadsetUA = /OculusBrowser|Meta Quest|Quest/i.test(ua);
+				const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || isHeadsetUA;
 				const isTouchCapable = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 				const pointerFineHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-				const likelyDesktop = pointerFineHover && !isMobileUA;
+				const likelyDesktop = pointerFineHover && !isMobileUA && !isHeadsetUA;
 				const inXR = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!arActive;
+				// Show for: XR sessions, headset UA (Quest), or devices without hardware keyboard
 				const noKeyboard = !hasHardwareKeyboard3D && !likelyDesktop && (isMobileUA || isTouchCapable || inXR);
-				const show = noKeyboard && mode==='edit' && (selectedObjects && selectedObjects.length > 0);
-				mobileDeleteBar.style.display = show ? 'flex' : 'none';
+				const shouldShow = mode==='edit' && (selectedObjects && selectedObjects.length > 0) && (inXR || isHeadsetUA || noKeyboard);
+				mobileDeleteBar.style.display = shouldShow ? 'flex' : 'none';
 			}
 		} catch {}
 	}
@@ -1681,11 +1687,57 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		await loadWebXRPolyfillIfNeeded();
 		const isSecure = window.isSecureContext || location.protocol === 'https:';
 		const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-		if (!isSecure) { alert('AR requires HTTPS. Please host this page over https://'); return; }
+		if (!isSecure) { alert('AR/VR requires HTTPS. Please host this page over https://'); return; }
 		try {
-			const xr = navigator.xr; const xrSupported = xr && await xr.isSessionSupported('immersive-ar');
-			if (xrSupported) {
-				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'], optionalFeatures: ['hand-tracking'] });
+			const xr = navigator.xr;
+			const supportsVR = xr && await xr.isSessionSupported('immersive-vr');
+			const supportsAR = xr && await xr.isSessionSupported('immersive-ar');
+
+			if (supportsVR) {
+				// Start immersive VR for headsets; use hands/controllers for manipulation
+				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
+				renderer.xr.setSession(session);
+				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
+				arActive = true; arPlaced = false; grid.visible = false;
+				// Hide existing editor objects to avoid duplicates while VR export copy is shown
+				try {
+					arPrevVisibility = new Map();
+					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
+					updateVisibilityUI();
+				} catch {}
+				// Reference space (floor-aligned)
+				xrLocalSpace = await session.requestReferenceSpace('local-floor');
+				// Build content once and place 1.5m in front of the user at floor height
+				try {
+					const root = buildExportRootFromObjects(objects);
+					prepareModelForAR(root); // converts to meters and recenters to ground
+					arContent = root; scene.add(arContent);
+					arContent.position.set(0, 0, -1.5);
+					try { arEdit.setTarget(arContent); } catch {}
+					arPlaced = true;
+				} catch {}
+				session.addEventListener('end', () => {
+					arActive = false;
+					try { arEdit.stop(); } catch {}
+					grid.visible = true;
+					if (arContent) { scene.remove(arContent); arContent = null; }
+					arPlaced = false;
+					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
+					// Restore editor object visibility
+					try {
+						if (arPrevVisibility) {
+							for (const [o, v] of arPrevVisibility.entries()) { o.visible = !!v; }
+							arPrevVisibility = null;
+							updateVisibilityUI();
+						}
+					} catch {}
+					// Return UI to Edit mode
+					modeSelect.value = 'edit';
+					modeSelect.dispatchEvent(new Event('change'));
+				});
+			} else if (supportsAR) {
+				// Fall back to immersive AR on mobile with hit-test placement
+				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'], optionalFeatures: ['hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				// start AR edit service
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
@@ -1722,8 +1774,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					modeSelect.value = 'edit';
 					modeSelect.dispatchEvent(new Event('change'));
 				});
-			} else if (isIOS) { await openQuickLookUSDZ(); } else { alert('AR not supported on this device or browser.'); }
-		} catch (e) { alert('Failed to start AR: ' + (e?.message || e)); console.error(e); }
+			} else if (isIOS) {
+				await openQuickLookUSDZ();
+			} else {
+				alert('AR/VR not supported on this device or browser.');
+			}
+		} catch (e) { alert('Failed to start AR/VR: ' + (e?.message || e)); console.error(e); }
 	});
 
 	// Room Scan (beta) using service API

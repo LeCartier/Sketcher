@@ -84,11 +84,20 @@ resize();
 
 // Reliable local coordinates helper (Chrome/trackpad friendly)
 function eventToLocal(e){
+  // Prefer client coordinates for robust mapping across mouse/touch/pen.
+  // offsetX/offsetY are unreliable on some browsers for PointerEvents (often 0 on touch).
+  const rect = canvas.getBoundingClientRect();
+  const cx = (typeof e.clientX === 'number') ? e.clientX : (typeof e.pageX === 'number' ? e.pageX : null);
+  const cy = (typeof e.clientY === 'number') ? e.clientY : (typeof e.pageY === 'number' ? e.pageY : null);
+  if (cx != null && cy != null) {
+    return { x: cx - rect.left, y: cy - rect.top };
+  }
+  // Fallback to offset if client/page are unavailable
   if (typeof e.offsetX === 'number' && typeof e.offsetY === 'number') {
     return { x: e.offsetX, y: e.offsetY };
   }
-  const rect = canvas.getBoundingClientRect();
-  return { x: (e.clientX - rect.left), y: (e.clientY - rect.top) };
+  // Last resort
+  return { x: 0, y: 0 };
 }
 
 // Grid
@@ -136,6 +145,7 @@ function worldToScreen(pt){
 }
 function screenToWorld(pt){
   const s = view.scale * view.pxPerFt;
+  // pt is in CSS pixels; ctx is scaled by dpr in draw(). Keep mapping in CSS px here.
   return { x: pt.x / s + view.x, y: pt.y / s + view.y };
 }
 
@@ -200,9 +210,10 @@ function drawObject(o, g = ctx){
 // --- hit-test/selection/draw/erase now come from modules ---
 
 function draw(){
-  // Main canvas prep
+  // Main canvas prep: clear in device pixels, then draw in CSS pixels
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0,0,W,H);
   // Underlay first
   if(underlay.image && underlay.worldRect){
     const s = view.scale * view.pxPerFt;
@@ -220,21 +231,30 @@ function draw(){
   drawGrid();
   // Draw objects into offscreen layer
   if(objectsCtx){
+    // Clear offscreen in device pixels, then draw in CSS pixels
+    objectsCtx.setTransform(1, 0, 0, 1, 0, 0);
+    objectsCtx.clearRect(0, 0, W, H);
     objectsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    objectsCtx.clearRect(0,0,W,H);
     for(const o of objects){ drawObject(o, objectsCtx); }
     if(drawing) drawObject(drawing, objectsCtx);
     // Apply erase mask as destination-out (only affects objects)
     if(eraseMask){
   // Recompute mask for current view/zoom
   rebuildEraseMask();
+      // Draw mask in device pixels; avoid double-scaling under HiDPI
       objectsCtx.save();
       objectsCtx.globalCompositeOperation = 'destination-out';
+      // Reset transform so 1 unit = 1 device pixel while drawing the mask
+      objectsCtx.setTransform(1, 0, 0, 1, 0, 0);
       objectsCtx.drawImage(eraseMask, 0, 0);
       objectsCtx.restore();
     }
     // Composite objects layer onto main canvas
+    // Draw offscreen in device pixels to avoid double-scaling at dpr
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(objectsLayer, 0, 0);
+    ctx.restore();
   }
   // Selection overlay above
   if(selectToggle && selection.index>=0){ drawSelectionOverlay(); }
@@ -809,7 +829,7 @@ function parseDXF(text){
 // Pointer handling
 let pointersDown = new Map();
 function onPointerDown(e){
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch {}
   const local = eventToLocal(e);
   const world = screenToWorld(local);
   erasing.cursor = { ...world, visible:true };

@@ -1,3 +1,23 @@
+# Sketcher
+
+## Version bump on commit
+
+This repo includes a Git pre-commit hook that automatically bumps `version.json` (patch number and date) on every commit.
+
+Files:
+- `scripts/bump-version.ps1` — PowerShell script that increments `version.json` and sets today’s date.
+- `.githooks/pre-commit` — Git hook that runs the script and re-adds `version.json`.
+
+Enable the hooks for this repository:
+
+```powershell
+# Run once inside the repo root
+git config core.hooksPath .githooks
+```
+
+Notes:
+- Requires PowerShell (Windows PowerShell or PowerShell 7+). The hook tries `pwsh` first, then `powershell`.
+- The hook only bumps the patch segment (x.y.Z). To bump minor/major, edit `version.json` manually before commit.
 # AnArch – Lightweight 3D Modeling Playground
 [https://lecartier.github.io/Sketcher/](https://lecartier.github.io/Sketcher/)
 
