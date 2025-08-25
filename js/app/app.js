@@ -83,6 +83,7 @@ export async function init() {
 	// Room Scan is now provided by a service module
 	let arContent = null; // cloned scene content for AR
 	let arPlaced = false;
+	let arPrevVisibility = null; // Map(object -> prevVisible) to restore after AR
 	let xrHitTestSource = null;
 	let xrViewerSpace = null;
 	let xrLocalSpace = null;
@@ -718,17 +719,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				div.append(cb,span); objectList.append(div);
 			}
 		} catch{}
-		// Toggle mobile delete bar: small screens only when selection exists in edit mode
+		// Toggle delete bar on devices without a keyboard (touch-capable or XR)
 		try {
-			const isMobile = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
 			if (mobileDeleteBar) {
-				const show = isMobile && mode==='edit' && (selectedObjects && selectedObjects.length > 0);
+				const noKeyboard = (('ontouchstart' in window) || (navigator.maxTouchPoints > 0)) || !!(navigator.xr);
+				const show = noKeyboard && mode==='edit' && (selectedObjects && selectedObjects.length > 0);
 				mobileDeleteBar.style.display = show ? 'flex' : 'none';
 			}
 		} catch {}
 	}
 
-	// Hook delete action for mobile button (mirrors Delete/Backspace handler)
+	// Hook delete action for mobile/no-keyboard button (mirrors Delete/Backspace handler)
 	if (mobileDeleteBtn) {
 		mobileDeleteBtn.addEventListener('click', () => {
 			if (mode !== 'edit') return;
@@ -1679,6 +1680,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				arActive = true;
 				arPlaced = false;
 				grid.visible = false;
+				// Hide existing editor objects to avoid duplicates while AR export copy is shown
+				try {
+					arPrevVisibility = new Map();
+					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
+					updateVisibilityUI();
+				} catch {}
 				// Setup hit test source and reference spaces for initial placement
 				xrViewerSpace = await session.requestReferenceSpace('viewer');
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
@@ -1691,6 +1698,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arPlaced = false;
 					if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
+					// Restore editor object visibility
+					try {
+						if (arPrevVisibility) {
+							for (const [o, v] of arPrevVisibility.entries()) { o.visible = !!v; }
+							arPrevVisibility = null;
+							updateVisibilityUI();
+						}
+					} catch {}
 					// Return UI to Edit mode
 					modeSelect.value = 'edit';
 					modeSelect.dispatchEvent(new Event('change'));

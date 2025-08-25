@@ -47,6 +47,9 @@ let objectsLayer = null, objectsCtx = null;
 let eraseMask = null, eraseMaskCtx = null;
 // Underlay (PDF image or DXF-rendered offscreen)
 const underlay = { type:null, image:null, worldRect:null, opacity:0.85 };
+// No-keyboard delete UI (2D)
+const mobileDeleteBar2D = document.getElementById('mobileDeleteBar');
+const mobileDeleteBtn2D = document.getElementById('mobileDeleteBtn2D');
 
 function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
 
@@ -77,6 +80,15 @@ function resize(){
 window.addEventListener('resize', resize);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
+
+// Reliable local coordinates helper (Chrome/trackpad friendly)
+function eventToLocal(e){
+  if (typeof e.offsetX === 'number' && typeof e.offsetY === 'number') {
+    return { x: e.offsetX, y: e.offsetY };
+  }
+  const rect = canvas.getBoundingClientRect();
+  return { x: (e.clientX - rect.left), y: (e.clientY - rect.top) };
+}
 
 // Grid
 function drawGrid(){
@@ -141,7 +153,8 @@ function drawObjects(){
 function drawObject(o, g = ctx){
   g.save();
   g.lineJoin = 'round'; g.lineCap = 'round';
-  g.strokeStyle = o.stroke; g.lineWidth = Math.max(0.5, o.thickness * view.scale);
+  // Keep line width in screen pixels (do not multiply by view.scale) so geometry stays visually pinned to the grid
+  g.strokeStyle = o.stroke; g.lineWidth = Math.max(0.5, o.thickness);
   g.fillStyle = o.fill || 'transparent';
   switch(o.type){
     case 'path': {
@@ -224,6 +237,14 @@ function draw(){
   }
   // Selection overlay above
   if(selectToggle && selection.index>=0){ drawSelectionOverlay(); }
+  // Toggle delete bar on devices without a keyboard (touch-capable or XR)
+  try {
+    const noKeyboard = (('ontouchstart' in window) || (navigator.maxTouchPoints > 0)) || !!(navigator.xr);
+    if (mobileDeleteBar2D) {
+      const shouldShow = noKeyboard && selection.index >= 0;
+      mobileDeleteBar2D.style.display = shouldShow ? 'flex' : 'none';
+    }
+  } catch {}
   // Brush cursor
   if(tool==='erase-pixel' && erasing.cursor.visible){
     const s = view.scale * view.pxPerFt;
@@ -782,10 +803,7 @@ function parseDXF(text){
 let pointersDown = new Map();
 function onPointerDown(e){
   canvas.setPointerCapture(e.pointerId);
-  const rect = canvas.getBoundingClientRect();
-  const px = (e.clientX - rect.left) * dpr;
-  const py = (e.clientY - rect.top) * dpr;
-  const local = { x: px/dpr, y: py/dpr };
+  const local = eventToLocal(e);
   const world = screenToWorld(local);
   erasing.cursor = { ...world, visible:true };
   pointersDown.set(e.pointerId, { x: local.x, y: local.y });
@@ -853,10 +871,7 @@ function onPointerDown(e){
   }
 }
 function onPointerMove(e){
-  const rect = canvas.getBoundingClientRect();
-  const px = (e.clientX - rect.left) * dpr;
-  const py = (e.clientY - rect.top) * dpr;
-  const local = { x: px/dpr, y: py/dpr };
+  const local = eventToLocal(e);
   const world = screenToWorld(local);
   if(pointersDown.has(e.pointerId)) pointersDown.set(e.pointerId, { x: local.x, y: local.y });
   // Pinch zoom
@@ -962,18 +977,21 @@ canvas.addEventListener('pointerup', onPointerUp);
 canvas.addEventListener('pointercancel', onPointerUp);
 
 // Wheel zoom (desktop)
-canvas.addEventListener('wheel', e => {
-  e.preventDefault();
+function handleWheelEvent(e){
   const rect = canvas.getBoundingClientRect();
   // Normalize deltas
   const norm = (val) => (e.deltaMode === 1) ? val * 16 : (e.deltaMode === 2) ? val * rect.height : val;
   const dx = norm(e.deltaX);
-  const dy = norm(e.deltaY);
+  const dyRaw = norm(e.deltaY);
   const s = view.scale * view.pxPerFt;
-  if (e.ctrlKey) {
+  // Heuristic: treat as pinch-zoom if ctrlKey is held OR dy is large while dx is minimal (typical precision trackpad pinch)
+  const pinchHeuristic = Math.abs(dyRaw) > Math.max(40, rect.height * 0.015) && Math.abs(dx) < 2;
+  if (e.ctrlKey || pinchHeuristic) {
     // Pinch-zoom gesture: zoom toward pointer
     const pivot = { x: (e.clientX - rect.left), y: (e.clientY - rect.top) };
     const worldBefore = screenToWorld(pivot);
+    // Clamp dy to avoid huge jumps
+    const dy = Math.max(-800, Math.min(800, dyRaw));
     const z = Math.exp(-dy * 0.001);
     view.scale = Math.max(0.2, Math.min(6, view.scale * z));
     const worldAfter = screenToWorld(pivot);
@@ -982,9 +1000,26 @@ canvas.addEventListener('wheel', e => {
   } else {
     // Two-finger scroll: pan
     view.x += dx / s;
-    view.y += dy / s;
+    view.y += dyRaw / s;
   }
   draw(); scheduleSave();
+}
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); handleWheelEvent(e); }, { passive: false });
+// Also capture wheel at the document level to fully suppress Chrome page zoom during ctrl+wheel over the canvas
+document.addEventListener('wheel', (e) => {
+  try {
+    const rect = canvas.getBoundingClientRect();
+    const inside = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+    if (!inside) return;
+    const norm = (val) => (e.deltaMode === 1) ? val * 16 : (e.deltaMode === 2) ? val * rect.height : val;
+    const dx = norm(e.deltaX);
+    const dy = norm(e.deltaY);
+    const pinchHeuristic = Math.abs(dy) > Math.max(40, rect.height * 0.015) && Math.abs(dx) < 2;
+    if (e.ctrlKey || pinchHeuristic) {
+      e.preventDefault();
+      handleWheelEvent(e);
+    }
+  } catch {}
 }, { passive: false });
 
 // Keyboard shortcuts
@@ -1029,6 +1064,19 @@ window.addEventListener('keydown', e => {
   else if(k===' ') { spacePanActive = true; setStatus('Panning'); }
 });
 window.addEventListener('keyup', e => { if(e.key===' ') { spacePanActive = false; if(!isPanning) setStatus('Ready'); } });
+
+// Hook 2D delete bar button
+if (mobileDeleteBtn2D) {
+  mobileDeleteBtn2D.addEventListener('click', () => {
+    if (selection.index>=0 && selection.index < objects.length) {
+      pushUndo();
+      objects.splice(selection.index, 1);
+      selection.index = -1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null;
+      setStatus('Deleted');
+      draw(); scheduleSave();
+    }
+  });
+}
 
 // Touch-action tuning for consistent pen/finger behavior
 canvas.style.touchAction = 'none';
@@ -1081,6 +1129,10 @@ function wireCollapse(toggleId, groupId){
     group.classList.toggle('open', !open);
     group.setAttribute('aria-hidden', open ? 'true' : 'false');
     toggle.setAttribute('aria-pressed', open ? 'false' : 'true');
+    // If closing the Draw parent, return to navigation (pan)
+    if (groupId === 'draw2DGroup' && open) {
+      setTool('pan');
+    }
   });
 }
 // Wire collapsible groups in required order: drawing, shapes, text, style, erase, edit/export

@@ -17,34 +17,33 @@ body { margin: 0; overflow: hidden; }
 canvas { display: block; touch-action: none; }
 /* Shared variables */
 :root { --toolbox-width: 56px; }
-/* Mobile delete bar (hidden by default on desktop) */
-#mobileDeleteBar { display: none; }
+/* Mobile/Tablet/VR delete bar (hidden by default; JS toggles display) */
+#mobileDeleteBar {
+	display: none;
+	position: fixed;
+	left: 24px;
+	top: calc(50% + 180px); /* below centered toolbox stack */
+	transform: translateY(0);
+	background: rgba(255,255,255,0.96);
+	border: 1px solid #e0e0e0;
+	border-radius: 14px; /* match toolbox */
+	box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+	width: var(--toolbox-width);
+	padding: 8px 4px; /* match toolbox vertical padding */
+	z-index: 120;
+	align-items: center;
+	justify-content: center;
+}
+#mobileDeleteBar .icon-btn {
+	width: 48px; /* fill most of the toolbox width */
+	height: 48px;
+	min-width: 48px;
+	min-height: 48px;
+	border-radius: 12px;
+}
+#mobileDeleteBar .icon-btn svg { width: 24px; height: 24px; }
 @media (max-width: 640px) {
-	#mobileDeleteBar {
-		position: fixed;
-		left: 24px;
-		top: calc(50% + 180px); /* below centered toolbox stack */
-		transform: translateY(0);
-		background: rgba(255,255,255,0.96);
-		border: 1px solid #e0e0e0;
-		border-radius: 14px; /* match toolbox */
-		box-shadow: 0 2px 12px rgba(0,0,0,0.10);
-		width: var(--toolbox-width);
-		padding: 8px 4px; /* match toolbox vertical padding */
-		z-index: 120;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-	#mobileDeleteBar .icon-btn {
-		width: 48px; /* fill most of the toolbox width on mobile */
-		height: 48px;
-		min-width: 48px;
-		min-height: 48px;
-		border-radius: 12px;
-	}
-	#mobileDeleteBar .icon-btn svg { width: 24px; height: 24px; }
-	/* If toolbox is docked to top on short devices, follow it */
+	/* keep same sizing; media left for future overrides */
 }
 /* Placing popup styles */
 #placingPopup {
