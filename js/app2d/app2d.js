@@ -50,6 +50,7 @@ const underlay = { type:null, image:null, worldRect:null, opacity:0.85 };
 // No-keyboard delete UI (2D)
 const mobileDeleteBar2D = document.getElementById('mobileDeleteBar');
 const mobileDeleteBtn2D = document.getElementById('mobileDeleteBtn2D');
+let hasHardwareKeyboard2D = false; // becomes true after any keydown
 
 function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
 
@@ -237,9 +238,15 @@ function draw(){
   }
   // Selection overlay above
   if(selectToggle && selection.index>=0){ drawSelectionOverlay(); }
-  // Toggle delete bar on devices without a keyboard (touch-capable or XR)
+  // Toggle delete bar only on devices likely without a hardware keyboard
   try {
-    const noKeyboard = (('ontouchstart' in window) || (navigator.maxTouchPoints > 0)) || !!(navigator.xr);
+    const ua = navigator.userAgent || '';
+    const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    const isTouchCapable = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    const pointerFineHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    // Likely desktop/laptop if fine pointer with hover and not a mobile UA
+    const likelyDesktop = pointerFineHover && !isMobileUA;
+    const noKeyboard = !hasHardwareKeyboard2D && !likelyDesktop && (isMobileUA || isTouchCapable);
     if (mobileDeleteBar2D) {
       const shouldShow = noKeyboard && selection.index >= 0;
       mobileDeleteBar2D.style.display = shouldShow ? 'flex' : 'none';
@@ -1064,6 +1071,16 @@ window.addEventListener('keydown', e => {
   else if(k===' ') { spacePanActive = true; setStatus('Panning'); }
 });
 window.addEventListener('keyup', e => { if(e.key===' ') { spacePanActive = false; if(!isPanning) setStatus('Ready'); } });
+
+// If any key is pressed, assume hardware keyboard is present; hide the 2D delete bar thereafter
+window.addEventListener('keydown', e => {
+  // Ignore modifier-only keys (Shift, Control, Alt, Meta) to reduce false positives
+  const ign = ['Shift','Control','Alt','Meta','CapsLock','NumLock','ScrollLock'];
+  if (!ign.includes(e.key)) {
+    hasHardwareKeyboard2D = true;
+    if (mobileDeleteBar2D) mobileDeleteBar2D.style.display = 'none';
+  }
+}, { once: false });
 
 // Hook 2D delete bar button
 if (mobileDeleteBtn2D) {

@@ -182,6 +182,7 @@ export async function init() {
 	let loadedModel=null;
 	let selectionOutlines = [];
 	let selectedObjects = [];
+	let hasHardwareKeyboard3D = false; // set true after any keydown (non-modifier)
 	// Touch double-tap tracking
 	let lastTapAt = 0;
 	let lastTapObj = null;
@@ -656,6 +657,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 	// Global key handler for Ctrl/Cmd+Z (no Shift); ignore when typing in inputs/textarea/contentEditable
 	window.addEventListener('keydown',e=>{
+		// Mark potential hardware keyboard presence on any non-modifier key
+		try {
+			const ign = ['Shift','Control','Alt','Meta','CapsLock','NumLock','ScrollLock'];
+			if (!ign.includes(e.key)) hasHardwareKeyboard3D = true;
+		} catch {}
 		const isZ = (e.key === 'z' || e.key === 'Z');
 		if (isZ && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
 			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
@@ -719,10 +725,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				div.append(cb,span); objectList.append(div);
 			}
 		} catch{}
-		// Toggle delete bar on devices without a keyboard (touch-capable or XR)
+		// Toggle delete bar only on devices likely without a hardware keyboard
 		try {
 			if (mobileDeleteBar) {
-				const noKeyboard = (('ontouchstart' in window) || (navigator.maxTouchPoints > 0)) || !!(navigator.xr);
+				const ua = navigator.userAgent || '';
+				const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+				const isTouchCapable = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+				const pointerFineHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+				const likelyDesktop = pointerFineHover && !isMobileUA;
+				const inXR = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!arActive;
+				const noKeyboard = !hasHardwareKeyboard3D && !likelyDesktop && (isMobileUA || isTouchCapable || inXR);
 				const show = noKeyboard && mode==='edit' && (selectedObjects && selectedObjects.length > 0);
 				mobileDeleteBar.style.display = show ? 'flex' : 'none';
 			}
@@ -1767,6 +1779,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				updateVisibilityUI();
 			}
 		}
+	});
+
+	// Mark hardware keyboard presence if any non-modifier key is pressed (late hook)
+	window.addEventListener('keydown', (e)=>{
+		try {
+			const ign = ['Shift','Control','Alt','Meta','CapsLock','NumLock','ScrollLock'];
+			if (!ign.includes(e.key)) hasHardwareKeyboard3D = true;
+		} catch {}
 	});
 
 	// OBJ export (now in utilities popup)
