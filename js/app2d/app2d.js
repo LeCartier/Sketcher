@@ -1,13 +1,24 @@
 // Sketcher 2D: lightweight, pointer-friendly 2D drawing canvas
 // Supports mouse, touch, and stylus (including Apple Pencil) via Pointer Events.
+import { smartInterpretPath } from './features/smart-draw.js';
+import { getObjectBBox, getBBoxCenter, pointInBBox, deepCopyObject } from './features/geometry-2d.js';
+import {
+  drawSelectionOverlay as drawSelOverlayMod,
+  pickSelectionHandleAt as pickHandleMod,
+  moveObject as moveObjectMod,
+  scaleObject as scaleObjectMod,
+  rotateObject as rotateObjectMod
+} from './features/selection-2d.js';
+import { hitTestObject, eraseObjectAt as eraseObjectAtMod, erasePixelAt as erasePixelAtMod } from './features/erase-2d.js';
+import { exportPNG as exportPNGMod, exportPDF as exportPDFMod } from './features/export-2d.js';
 
 const canvas = document.getElementById('grid2d');
 const ctx = canvas.getContext('2d');
-const dpr = Math.max(1, window.devicePixelRatio || 1);
+let dpr = Math.max(1, window.devicePixelRatio || 1);
 let W = 0, H = 0;
 
 // State
-let tool = 'select'; // select | pan | pen | line | rect | ellipse | text | erase-object | erase-pixel
+let tool = 'pan'; // select | pan | pen | line | rect | ellipse | text | erase-object | erase-pixel
 let stroke = '#111111';
 let fill = '#00000000';
 let thickness = 2;
@@ -16,6 +27,10 @@ let isPanning = false;
 let panStart = { vx: 0, vy: 0, sx: 0, sy: 0 };
 // 2D view: x,y in feet; scale is zoom factor; pxPerFt controls screen mapping
 let view = { x: 0, y: 0, scale: 1, pxPerFt: 20 };
+// Selection/transform state for Select mode
+const selection = { index: -1, mode: null, handle: null, startWorld:{x:0,y:0}, bbox0:null, orig:null };
+let selectToggle = false; // top-level toggle that enables object selection on left-click
+let feetPerInch = 4; // default working scale; import flows can override per underlay or entities
 // Realtime broadcast channel to 3D (and any listeners)
 const bc2D = (typeof window !== 'undefined' && 'BroadcastChannel' in window) ? new BroadcastChannel('sketcher-2d') : null;
 let drawing = null; // active draft object
@@ -25,10 +40,19 @@ let spacePanActive = false; // hold Space to pan temporarily
 let pinch = { active:false, startDist:0, startScale:1, startCenterWorld:{x:0,y:0} };
 // Erase state
 const erasing = { active:false, radiusFt: 0.5, points: [], cursor:{x:0,y:0,visible:false} }; // radius in feet
+// Pixel-erase strokes (non-destructive mask of objects layer)
+let eraseStrokes = []; // [{ pts:[{x,y}], radiusFt:number }]
+// Offscreens: objects layer (before mask) and erase mask
+let objectsLayer = null, objectsCtx = null;
+let eraseMask = null, eraseMaskCtx = null;
+// Underlay (PDF image or DXF-rendered offscreen)
+const underlay = { type:null, image:null, worldRect:null, opacity:0.85 };
 
 function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
 
 function resize(){
+  // Refresh DPR in case browser/page zoom changed (trackpad pinch, display scale)
+  dpr = Math.max(1, window.devicePixelRatio || 1);
   // Preserve the world point at the screen center during resize
   const r = canvas.getBoundingClientRect();
   const centerBefore = { x: r.width/2, y: r.height/2 };
@@ -36,6 +60,13 @@ function resize(){
   W = Math.max(1, Math.round(r.width * dpr));
   H = Math.max(1, Math.round(r.height * dpr));
   canvas.width = W; canvas.height = H;
+  // Resize offscreens
+  if(!objectsLayer){ objectsLayer = document.createElement('canvas'); }
+  if(!eraseMask){ eraseMask = document.createElement('canvas'); }
+  objectsLayer.width = W; objectsLayer.height = H; objectsCtx = objectsLayer.getContext('2d');
+  eraseMask.width = W; eraseMask.height = H; eraseMaskCtx = eraseMask.getContext('2d');
+  // Rebuild mask after resize
+  rebuildEraseMask();
   // Adjust view to keep the same world point at the new screen center
   const r2 = canvas.getBoundingClientRect();
   const worldCenterAfter = screenToWorld({ x: r2.width/2, y: r2.height/2 });
@@ -44,6 +75,7 @@ function resize(){
   draw();
 }
 window.addEventListener('resize', resize);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
 
 // Grid
@@ -94,185 +126,105 @@ function screenToWorld(pt){
   return { x: pt.x / s + view.x, y: pt.y / s + view.y };
 }
 
+// Thin wrappers binding module functions to current canvas/view state
+const drawSelectionOverlay = () => drawSelOverlayMod(ctx, view, objects, selection, worldToScreen);
+const pickSelectionHandleAt = (localPt) => pickHandleMod(localPt, view, objects, selection, worldToScreen);
+const moveObject = (o0, dx, dy) => moveObjectMod(o0, dx, dy);
+const scaleObject = (o0, bbox0, handle, world) => scaleObjectMod(o0, bbox0, handle, world);
+const rotateObject = (o0, center, da) => rotateObjectMod(o0, center, da);
+const eraseObjectAt = (p) => eraseObjectAtMod(objects, p, erasing.radiusFt);
+const erasePixelAt = (p) => erasePixelAtMod(objects, p, erasing.radiusFt);
+
 function drawObjects(){
   for(const o of objects){ drawObject(o); }
 }
-function drawObject(o){
-  ctx.save();
-  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  ctx.strokeStyle = o.stroke; ctx.lineWidth = Math.max(0.5, o.thickness * view.scale);
-  ctx.fillStyle = o.fill || 'transparent';
+function drawObject(o, g = ctx){
+  g.save();
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  g.strokeStyle = o.stroke; g.lineWidth = Math.max(0.5, o.thickness * view.scale);
+  g.fillStyle = o.fill || 'transparent';
   switch(o.type){
     case 'path': {
-      ctx.beginPath();
+      g.beginPath();
       for(let i=0;i<o.pts.length;i++){
         const p = worldToScreen(o.pts[i]);
-        if(i===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+        if(i===0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y);
       }
-      if(o.closed) ctx.closePath();
-      if(o.fill && o.fill !== '#00000000') ctx.fill();
-      ctx.stroke();
+      if(o.closed) g.closePath();
+      if(o.fill && o.fill !== '#00000000') g.fill();
+      g.stroke();
       break;
     }
     case 'line': {
       const a = worldToScreen(o.a); const b = worldToScreen(o.b);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
       break;
     }
     case 'rect': {
       const a = worldToScreen(o.a); const b = worldToScreen(o.b);
       const x = Math.min(a.x,b.x), y = Math.min(a.y,b.y), w = Math.abs(a.x-b.x), h = Math.abs(a.y-b.y);
-      if(o.fill && o.fill !== '#00000000'){ ctx.fillRect(x,y,w,h); }
-      ctx.strokeRect(x,y,w,h); break;
+      if(o.fill && o.fill !== '#00000000'){ g.fillRect(x,y,w,h); }
+      g.strokeRect(x,y,w,h); break;
     }
     case 'ellipse': {
       const a = worldToScreen(o.a); const b = worldToScreen(o.b);
       const cx = (a.x+b.x)/2, cy=(a.y+b.y)/2; const rx = Math.abs(a.x-b.x)/2, ry = Math.abs(a.y-b.y)/2;
-      ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
-      if(o.fill && o.fill !== '#00000000') ctx.fill();
-      ctx.stroke(); break;
+      g.beginPath(); g.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
+      if(o.fill && o.fill !== '#00000000') g.fill();
+      g.stroke(); break;
     }
     case 'text': {
-  const p = worldToScreen(o.p);
-  ctx.fillStyle = o.stroke; ctx.font = `${Math.round(14*view.scale)}px system-ui, sans-serif`;
-      ctx.fillText(o.text||'', p.x, p.y);
+      const p = worldToScreen(o.p);
+      g.fillStyle = o.stroke; g.font = `${Math.round(14*view.scale)}px system-ui, sans-serif`;
+      g.fillText(o.text||'', p.x, p.y);
       break;
     }
   }
-  ctx.restore();
+  g.restore();
 }
 
-// --- Hit-testing and geometry utils for erase ---
-function distToSegment(p, a, b){
-  const vx = b.x - a.x, vy = b.y - a.y;
-  const wx = p.x - a.x, wy = p.y - a.y;
-  const c1 = vx*wx + vy*wy; if(c1<=0) return Math.hypot(p.x-a.x, p.y-a.y);
-  const c2 = vx*vx + vy*vy; if(c2<=c1) return Math.hypot(p.x-b.x, p.y-b.y);
-  const t = c1/c2; const proj = { x: a.x + t*vx, y: a.y + t*vy };
-  return Math.hypot(p.x-proj.x, p.y-proj.y);
-}
-function pointInRect(p, a, b){ const x1=Math.min(a.x,b.x), y1=Math.min(a.y,b.y), x2=Math.max(a.x,b.x), y2=Math.max(a.y,b.y); return p.x>=x1 && p.x<=x2 && p.y>=y1 && p.y<=y2; }
-function pointInEllipse(p, a, b){ const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, rx=Math.abs(a.x-b.x)/2, ry=Math.abs(a.y-b.y)/2; if(rx<1e-6||ry<1e-6) return false; const dx=(p.x-cx)/rx, dy=(p.y-cy)/ry; return dx*dx+dy*dy<=1; }
-
-function hitTestObject(o, p, radius){
-  switch(o.type){
-    case 'path': {
-      // Check distance to each stroke segment
-      for(let i=1;i<o.pts.length;i++){
-        if(distToSegment(p, o.pts[i-1], o.pts[i]) <= Math.max(radius, o.thickness/2)) return {hit:true, seg:i-1};
-      }
-      return {hit:false};
-    }
-    case 'line': {
-      const d = distToSegment(p, o.a, o.b);
-      return { hit: d <= Math.max(radius, o.thickness/2) };
-    }
-    case 'rect': {
-      // Erase on edge: check to edges similar to line
-      const a={x:Math.min(o.a.x,o.b.x),y:Math.min(o.a.y,o.b.y)}, b={x:Math.max(o.a.x,o.b.x),y:Math.max(o.a.y,o.b.y)};
-      const segs=[[{x:a.x,y:a.y},{x:b.x,y:a.y}],[{x:b.x,y:a.y},{x:b.x,y:b.y}],[{x:b.x,y:b.y},{x:a.x,y:b.y}],[{x:a.x,y:b.y},{x:a.x,y:a.y}]];
-      const ok = segs.some(([s,e])=> distToSegment(p,s,e) <= Math.max(radius, o.thickness/2));
-      return { hit: ok };
-    }
-    case 'ellipse': {
-      // Approximate: consider within stroke band
-      const cx=(o.a.x+o.b.x)/2, cy=(o.a.y+o.b.y)/2, rx=Math.abs(o.a.x-o.b.x)/2, ry=Math.abs(o.a.y-o.b.y)/2;
-      if(rx<1e-3||ry<1e-3) return {hit:false};
-      const dx=(p.x-cx)/rx, dy=(p.y-cy)/ry; const d=Math.abs(dx*dx+dy*dy-1);
-      return { hit: d <= Math.max(0.05, radius/(Math.max(rx,ry)||1)) };
-    }
-    case 'text': {
-      // Remove text on direct click within a small radius
-      const d = Math.hypot((p.x-o.p.x),(p.y-o.p.y));
-      return { hit: d <= Math.max(radius, 0.5) };
-    }
-  }
-  return {hit:false};
-}
-
-function eraseObjectAt(p){
-  const r = erasing.radiusFt;
-  for(let i=objects.length-1;i>=0;i--){
-    const o = objects[i];
-    const ht = hitTestObject(o, p, r);
-    if(!ht.hit) continue;
-    // For paths, split instead of full delete if erasing pixel-wise is desired
-    if(o.type==='path'){
-      // remove the touching segment to create up to two paths
-      const idx = ht.seg;
-      if(idx!=null){
-        const left = o.pts.slice(0, idx+1);
-        const right = o.pts.slice(idx+1);
-        // discard a small gap around the erased point
-        const gap = 1; // one vertex on each side
-        const leftTrim = left.slice(0, Math.max(1, left.length-gap));
-        const rightTrim = right.slice(Math.min(gap, right.length-1));
-        objects.splice(i,1);
-        if(leftTrim.length>1) objects.splice(i,0,{...o, pts:leftTrim});
-        if(rightTrim.length>1) objects.splice(i+(leftTrim.length>1?1:0),0,{...o, pts:rightTrim});
-        return;
-      }
-    }
-    // Else, remove object entirely
-    objects.splice(i,1);
-    return;
-  }
-}
-
-function erasePixelAt(p){
-  const r = erasing.radiusFt;
-  for(let i=objects.length-1;i>=0;i--){
-    const o = objects[i];
-    if(o.type==='path'){
-      // Filter path points: remove those within radius; split into multiple paths across removed spans
-      const keep = o.pts.map(pt => Math.hypot(pt.x-p.x, pt.y-p.y) > r);
-      if(keep.every(v=>v)) continue;
-      const parts = [];
-      let cur = [];
-      for(let k=0;k<o.pts.length;k++){
-        if(keep[k]){ cur.push(o.pts[k]); }
-        else { if(cur.length>1) { parts.push(cur); } cur = []; }
-      }
-      if(cur.length>1) parts.push(cur);
-      objects.splice(i,1);
-      for(let pi=parts.length-1; pi>=0; pi--){ objects.splice(i,0,{...o, pts: parts[pi]}); }
-    } else if(o.type==='line'){
-      const hit = distToSegment(p, o.a, o.b) <= Math.max(r, o.thickness/2);
-      if(hit){
-        // Clip out a small segment around the erase point: split line into two if possible
-        const ax=o.a.x, ay=o.a.y, bx=o.b.x, by=o.b.y; const vx=bx-ax, vy=by-ay; const len2=vx*vx+vy*vy; if(len2<1e-6){ objects.splice(i,1); continue; }
-        const t = ((p.x-ax)*vx + (p.y-ay)*vy)/len2; const tcut = Math.max(0, Math.min(1, t));
-        const cutLen = (r / Math.sqrt(len2)) * 2; // parametric length to remove
-        const t1 = Math.max(0, tcut - cutLen);
-        const t2 = Math.min(1, tcut + cutLen);
-        const P1 = { x: ax + vx*t1, y: ay + vy*t1 };
-        const P2 = { x: ax + vx*t2, y: ay + vy*t2 };
-        objects.splice(i,1);
-        if(t1>0.01) objects.splice(i,0,{...o, a:o.a, b:P1});
-        if(t2<0.99) objects.splice(i,0,{...o, a:P2, b:o.b});
-      }
-    } else if(o.type==='rect'){
-      const a={x:Math.min(o.a.x,o.b.x),y:Math.min(o.a.y,o.b.y)}, b={x:Math.max(o.a.x,o.b.x),y:Math.max(o.a.y,o.b.y)};
-      const edges=[[{x:a.x,y:a.y},{x:b.x,y:a.y}],[{x:b.x,y:a.y},{x:b.x,y:b.y}],[{x:b.x,y:b.y},{x:a.x,y:b.y}],[{x:a.x,y:b.y},{x:a.x,y:a.y}]];
-      if(edges.some(([s,e])=> distToSegment(p,s,e) <= Math.max(r, o.thickness/2))){ objects.splice(i,1); }
-    } else if(o.type==='ellipse'){
-      const cx=(o.a.x+o.b.x)/2, cy=(o.a.y+o.b.y)/2, rx=Math.abs(o.a.x-o.b.x)/2, ry=Math.abs(o.a.y-o.b.y)/2;
-      if(rx<1e-3||ry<1e-3) { objects.splice(i,1); continue; }
-      const dx=(p.x-cx)/rx, dy=(p.y-cy)/ry; const d=Math.abs(dx*dx+dy*dy-1);
-      if(d <= Math.max(0.05, r/(Math.max(rx,ry)||1))) objects.splice(i,1);
-    } else if(o.type==='text'){
-      if(Math.hypot(o.p.x-p.x, o.p.y-p.y) <= Math.max(r, 0.5)) objects.splice(i,1);
-    }
-  }
-}
+// --- hit-test/selection/draw/erase now come from modules ---
 
 function draw(){
+  // Main canvas prep
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0,0,W,H);
+  // Underlay first
+  if(underlay.image && underlay.worldRect){
+    const s = view.scale * view.pxPerFt;
+    const r = underlay.worldRect;
+    const x = (r.x - view.x) * s;
+    const y = (r.y - view.y) * s;
+    const w = r.w * s;
+    const h = r.h * s;
+    ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, underlay.opacity));
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(underlay.image, x, y, w, h);
+    ctx.restore();
+  }
+  // Grid below objects
   drawGrid();
-  drawObjects();
-  if(drawing) drawObject(drawing);
-  // brush cursor
+  // Draw objects into offscreen layer
+  if(objectsCtx){
+    objectsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    objectsCtx.clearRect(0,0,W,H);
+    for(const o of objects){ drawObject(o, objectsCtx); }
+    if(drawing) drawObject(drawing, objectsCtx);
+    // Apply erase mask as destination-out (only affects objects)
+    if(eraseMask){
+  // Recompute mask for current view/zoom
+  rebuildEraseMask();
+      objectsCtx.save();
+      objectsCtx.globalCompositeOperation = 'destination-out';
+      objectsCtx.drawImage(eraseMask, 0, 0);
+      objectsCtx.restore();
+    }
+    // Composite objects layer onto main canvas
+    ctx.drawImage(objectsLayer, 0, 0);
+  }
+  // Selection overlay above
+  if(selectToggle && selection.index>=0){ drawSelectionOverlay(); }
+  // Brush cursor
   if(tool==='erase-pixel' && erasing.cursor.visible){
     const s = view.scale * view.pxPerFt;
     const px = erasing.radiusFt * s;
@@ -284,19 +236,42 @@ function draw(){
   }
 }
 
+function rebuildEraseMask(){
+  if(!eraseMaskCtx) return;
+  // Clear mask
+  eraseMaskCtx.setTransform(1,0,0,1,0,0);
+  eraseMaskCtx.clearRect(0,0,eraseMask.width, eraseMask.height);
+  eraseMaskCtx.fillStyle = '#000';
+  eraseMaskCtx.globalCompositeOperation = 'source-over';
+  const drawPts = (pts, rFt)=>{
+    const s = view.scale * view.pxPerFt;
+    const radPx = Math.max(0.5, rFt * s * dpr);
+    eraseMaskCtx.beginPath();
+    for(const wpt of pts){
+      const p = worldToScreen(wpt);
+      const x = p.x * dpr, y = p.y * dpr;
+      eraseMaskCtx.moveTo(x + radPx, y);
+      eraseMaskCtx.arc(x, y, radPx, 0, Math.PI*2);
+    }
+    eraseMaskCtx.fill();
+  };
+  // Persisted strokes
+  for(const st of eraseStrokes){ if(st && Array.isArray(st.pts) && st.pts.length){ drawPts(st.pts, st.radiusFt || erasing.radiusFt); } }
+  // Live stroke
+  if(erasing.active && erasing.points && erasing.points.length){ drawPts(erasing.points, erasing.radiusFt); }
+}
+
 // UI wiring
 function setTool(id){
   tool = id; setStatus(`Tool: ${id}`);
-  const ids = ['tSelect','tPan','tPen','tLine','tRect','tEllipse','tText','tEraseObj','tErasePix'];
-  ids.forEach(i => { const el = document.getElementById(i); if(!el) return; const map = { tSelect:'select', tPan:'pan', tPen:'pen', tLine:'line', tRect:'rect', tEllipse:'ellipse', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel' }; el.setAttribute('aria-pressed', String(map[i]===id)); });
+  const ids = ['tPen','tSmart','tLine','tRect','tEllipse','tText','tEraseObj','tErasePix'];
+  ids.forEach(i => { const el = document.getElementById(i); if(!el) return; const map = { tPen:'pen', tSmart:'smart', tLine:'line', tRect:'rect', tEllipse:'ellipse', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel' }; el.setAttribute('aria-pressed', String(map[i]===id)); });
 }
-['tSelect','tPan','tPen','tLine','tRect','tEllipse','tText','tEraseObj','tErasePix'].forEach(id => {
+['tPen','tSmart','tLine','tRect','tEllipse','tText','tEraseObj','tErasePix'].forEach(id => {
   const el = document.getElementById(id); if(!el) return; el.addEventListener('click',()=>{
-    const map = { tSelect:'select', tPan:'pan', tPen:'pen', tLine:'line', tRect:'rect', tEllipse:'ellipse', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel' };
+    const map = { tPen:'pen', tSmart:'smart', tLine:'line', tRect:'rect', tEllipse:'ellipse', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel' };
     const targetTool = map[id];
-    // Toggle behavior: clicking the active tool returns to Select
-    if (tool === targetTool) { setTool('select'); }
-    else { setTool(targetTool); }
+    setTool(targetTool);
   });
 });
 
@@ -320,13 +295,46 @@ if(fillNoneBtn) fillNoneBtn.addEventListener('click', ()=>{
 if(thickEl) thickEl.addEventListener('input', ()=>{ thickness = parseInt(thickEl.value||'2',10); if(thickVal) thickVal.textContent = `${thickness} px`; });
 
 // Undo/Redo helpers
-function pushUndo(){ try { const snapshot = JSON.stringify(objects); undoStack.push(snapshot); if(undoStack.length>undoLimit) undoStack.shift(); redoStack.length = 0; } catch{} }
-function undo(){ if(!undoStack.length) return; const snap = undoStack.pop(); redoStack.push(JSON.stringify(objects)); const list = JSON.parse(snap||'[]'); objects.length = 0; objects.push(...list); draw(); }
-function redo(){ if(!redoStack.length) return; const snap = redoStack.pop(); if(snap){ undoStack.push(JSON.stringify(objects)); const list = JSON.parse(snap||'[]'); objects.length = 0; objects.push(...list); draw(); } }
+function pushUndo(){
+  try {
+    const snapshot = JSON.stringify({ objects, eraseStrokes });
+    undoStack.push(snapshot);
+    if(undoStack.length>undoLimit) undoStack.shift();
+    redoStack.length = 0;
+  } catch{}
+}
+function undo(){
+  if(!undoStack.length) return;
+  const prev = JSON.stringify({ objects, eraseStrokes });
+  const snap = undoStack.pop();
+  redoStack.push(prev);
+  try {
+    const data = JSON.parse(snap||'{}');
+    objects.length = 0; if(Array.isArray(data.objects)) objects.push(...data.objects);
+    eraseStrokes = Array.isArray(data.eraseStrokes) ? data.eraseStrokes : (data.erase && Array.isArray(data.erase.strokes) ? data.erase.strokes : []);
+  } catch{}
+  rebuildEraseMask(); draw();
+}
+function redo(){
+  if(!redoStack.length) return;
+  const cur = JSON.stringify({ objects, eraseStrokes });
+  const snap = redoStack.pop();
+  undoStack.push(cur);
+  try {
+    const data = JSON.parse(snap||'{}');
+    objects.length = 0; if(Array.isArray(data.objects)) objects.push(...data.objects);
+    eraseStrokes = Array.isArray(data.eraseStrokes) ? data.eraseStrokes : (data.erase && Array.isArray(data.erase.strokes) ? data.erase.strokes : []);
+  } catch{}
+  rebuildEraseMask(); draw();
+}
 function clearAll(){
-  if(!objects.length) { draw(); scheduleSave(); return; }
-  pushUndo();
+  if(objects.length || underlay.image){ pushUndo(); }
   objects.length = 0;
+  // also clear any underlay
+  underlay.type = null; underlay.image = null; underlay.worldRect = null;
+  // clear erase strokes/mask
+  eraseStrokes = [];
+  rebuildEraseMask();
   draw();
   // Persist and broadcast immediately so 3D can reset overlay to center
   try { if (bc2D) bc2D.postMessage(toJSON()); } catch{}
@@ -337,46 +345,12 @@ const undoBtn = document.getElementById('undo'); if(undoBtn) undoBtn.addEventLis
 const redoBtn = document.getElementById('redo'); if(redoBtn) redoBtn.addEventListener('click', redo);
 const clearBtn = document.getElementById('clear'); if(clearBtn) clearBtn.addEventListener('click', clearAll);
 
-// Export (PNG/SVG) + JSON save for 3D projection handoff
-function exportPNG(){ const tmp = document.createElement('canvas'); const s = 2; tmp.width = Math.round(W/dpr*s); tmp.height = Math.round(H/dpr*s); const c = tmp.getContext('2d'); c.scale(s, s); // device independent
-  // Background white for PNG readability
-  c.fillStyle = '#fff'; c.fillRect(0,0,tmp.width,tmp.height);
-  // Re-draw grid light (optional)
-  c.fillStyle = '#fff';
-  // Draw objects in view space
-  c.save(); c.scale(1,1);
-  // approximate: reuse render (not pixel-perfect vs. view)
-  c.drawImage(canvas, 0,0, tmp.width, tmp.height);
-  c.restore();
-  const a = document.createElement('a'); a.href = tmp.toDataURL('image/png'); a.download = 'sketch2d.png'; a.click(); }
-function exportSVG(){
-  const parts = ['<?xml version="1.0" encoding="UTF-8"?>','<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="100%" height="100%" viewBox="0 0 '+(W/dpr)+' '+(H/dpr)+'">'];
-  for(const o of objects){
-    switch(o.type){
-      case 'path': {
-        const d = o.pts.map((p,i)=> (i?'L':'M') + ((p.x - view.x)) + ' ' + ((p.y - view.y))).join(' ');
-        parts.push(`<path d="${d}" stroke="${o.stroke}" stroke-width="${o.thickness}" fill="${o.fill||'none'}" stroke-linecap="round" stroke-linejoin="round"/>`);
-        break;
-      }
-      case 'line': parts.push(`<line x1="${o.a.x - view.x}" y1="${o.a.y - view.y}" x2="${o.b.x - view.x}" y2="${o.b.y - view.y}" stroke="${o.stroke}" stroke-width="${o.thickness}"/>`); break;
-      case 'rect': {
-        const x = Math.min(o.a.x, o.b.x) - view.x; const y = Math.min(o.a.y, o.b.y) - view.y; const w = Math.abs(o.a.x - o.b.x); const h = Math.abs(o.a.y - o.b.y);
-        parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${o.fill||'none'}" stroke="${o.stroke}" stroke-width="${o.thickness}"/>`);
-        break;
-      }
-      case 'ellipse': {
-        const cx = (o.a.x + o.b.x)/2 - view.x; const cy = (o.a.y + o.b.y)/2 - view.y; const rx = Math.abs(o.a.x - o.b.x)/2; const ry = Math.abs(o.a.y - o.b.y)/2;
-        parts.push(`<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${o.fill||'none'}" stroke="${o.stroke}" stroke-width="${o.thickness}"/>`);
-        break;
-      }
-      case 'text': parts.push(`<text x="${o.p.x - view.x}" y="${o.p.y - view.y}" fill="${o.stroke}">${(o.text||'')}</text>`); break;
-    }
-  }
-  parts.push('</svg>');
-  const blob = new Blob([parts.join('\n')], {type:'image/svg+xml'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'sketch2d.svg'; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000);
-}
+// Export (PNG/PDF) now provided by features/export-2d
+const exportPNG = () => exportPNGMod(canvas, W, H, dpr);
+const exportPDF = () => exportPDFMod(canvas, W, H, dpr);
+
 const exportPNGBtn = document.getElementById('exportPNG'); if(exportPNGBtn) exportPNGBtn.addEventListener('click', exportPNG);
-const exportSVGBtn = document.getElementById('exportSVG'); if(exportSVGBtn) exportSVGBtn.addEventListener('click', exportSVG);
+const exportPDFBtn = document.getElementById('exportPDF'); if(exportPDFBtn) exportPDFBtn.addEventListener('click', exportPDF);
 
 // JSON serialize for projection
 function toJSON(){
@@ -386,7 +360,7 @@ function toJSON(){
     const prev = localStorage.getItem('sketcher:2d') || sessionStorage.getItem('sketcher:2d');
     if (prev) { const d = JSON.parse(prev); if (d && d.meta && d.meta.createdAt) createdAt = d.meta.createdAt; }
   } catch {}
-  return { view, objects, meta: { units: 'feet', createdAt, updatedAt: Date.now() } };
+  return { view, objects, erase: { strokes: eraseStrokes }, underlay: serializeUnderlay(), scale: { feetPerInch }, meta: { units: 'feet', createdAt, updatedAt: Date.now() } };
 }
 function saveToSession(){
   try {
@@ -405,7 +379,404 @@ const to3D = document.getElementById('to3D');
 if(to3D){ to3D.addEventListener('click', (e)=>{ e.preventDefault(); saveToSession(); try { document.body.classList.add('page-leave'); } catch{} const url = new URL('./index.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170); }); }
 
 // Restore if any prior 2D exists
-(function restore2D(){ try { const raw = sessionStorage.getItem('sketcher:2d'); if(raw){ const data = JSON.parse(raw); if(data && Array.isArray(data.objects)){ objects.length=0; objects.push(...data.objects); if(data.view){ view = { ...view, ...data.view }; } draw(); } } } catch {} })();
+(function restore2D(){
+  try {
+    // If navigating with a sketchId, load it from IndexedDB; else restore session/local
+    const params = new URLSearchParams(location.search);
+    const sketchId = params.get('sketchId');
+    if (sketchId) {
+      // Defer async fetch
+      setTimeout(async ()=>{
+        try {
+          const mod = await import('../app/local-store.js');
+          const rec = mod && mod.getSketch2D ? await mod.getSketch2D(sketchId) : null;
+          if (rec && rec.json) {
+            // Replace current state entirely; broadcast to 3D overlay only
+            objects.length = 0; if (Array.isArray(rec.json.objects)) objects.push(...rec.json.objects);
+            if (rec.json.view) view = { ...view, ...rec.json.view };
+            if (rec.json.scale && typeof rec.json.scale.feetPerInch==='number') {
+              feetPerInch = rec.json.scale.feetPerInch;
+            }
+            if (rec.json.underlay) restoreUnderlay(rec.json.underlay);
+            draw();
+            // Broadcast without overwriting session immediately; mark loaded id
+            try { if (bc2D) bc2D.postMessage(rec.json); } catch{}
+            try { sessionStorage.setItem('sketcher:2d:currentId', rec.id); } catch{}
+            // Since we replaced content, refresh session/local to this loaded sketch
+            saveToSession();
+          }
+        } catch(e){ console.warn('Failed to open 2D sketch', e); }
+      }, 0);
+      return;
+    }
+    const raw = sessionStorage.getItem('sketcher:2d');
+    if(raw){
+      const data = JSON.parse(raw);
+      if(data){
+        if(Array.isArray(data.objects)){ objects.length=0; objects.push(...data.objects); }
+        if(data.view){ view = { ...view, ...data.view }; }
+        if(data.scale && typeof data.scale.feetPerInch==='number'){ feetPerInch = data.scale.feetPerInch; }
+        if(data.underlay){ restoreUnderlay(data.underlay); }
+        if(data.erase && Array.isArray(data.erase.strokes)) { eraseStrokes = data.erase.strokes; rebuildEraseMask(); }
+        draw();
+      }
+    }
+  } catch {}
+})();
+
+// ----- Import: PDF and DXF/DWG (DXF only) -----
+const importPDFBtn = document.getElementById('importPDF2D');
+const importDXFBtn = document.getElementById('importDXF2D');
+if(importPDFBtn){ importPDFBtn.addEventListener('click', async ()=>{ try { await importPDFFlow(); } catch(e){ console.error(e); alert('PDF import failed.'); } }); }
+if(importDXFBtn){ importDXFBtn.addEventListener('click', async ()=>{ try { await importDXFFlow(); } catch(e){ console.error(e); alert('DXF import failed.'); } }); }
+
+function askScaleFeetPerInch(){
+  // Prompt for architectural scale; return feet-per-inch (real feet represented by 1 drawing inch)
+  // Examples: 1/4"=1' => 4 ft/in; 1"=1' => 1 ft/in; 1:48 => 4 ft/in; also accepts plain number as feet-per-inch
+  const preset = prompt('Enter scale (architectural). Examples:\n- 1/4\"=1\' (quarter-inch scale)\n- 1/8\"=1\'\n- 1\"=1\'\n- ratio like 1:48\n- or a number = feet-per-inch (e.g., 1)', '1/4"=1\'');
+  if(!preset) return null;
+  const t = preset.trim();
+  // e.g., 1/4"=1'
+  const inchEq = t.match(/^(\d+\/?\d*)\"\s*=\s*(\d+)'/);
+  if(inchEq){
+    const inches = evalFraction(inchEq[1]); const feet = parseFloat(inchEq[2]);
+    if(inches>0 && feet>0){ return feet / inches; }
+  }
+  // Ratio a:b where both are inches; 1:48 => 48 inches real per 1 inch drawing => 48/12 = 4 ft/in
+  const ratio = t.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if(ratio){ const a=parseFloat(ratio[1]), b=parseFloat(ratio[2]); if(a>0&&b>0) return (b/a)/12; }
+  // direct number => feet per inch
+  const num = parseFloat(t);
+  if(!isNaN(num) && isFinite(num) && num>0) return num;
+  alert('Could not parse scale.'); return null;
+}
+function evalFraction(s){ if(!s) return NaN; if(s.includes('/')){ const [n,d]=s.split('/').map(parseFloat); if(d) return n/d; } return parseFloat(s); }
+
+// Modal helpers for import flows
+const importModal = {
+  el: document.getElementById('importScaleModal'),
+  preview: document.getElementById('importPreview'),
+  preset: document.getElementById('importScalePreset'),
+  custom: document.getElementById('importScaleCustom'),
+  unitsWrap: document.getElementById('importDXFUnitsWrap'),
+  unit: document.getElementById('importUnit'),
+  opacityWrap: document.getElementById('importOpacityWrap'),
+  opacity: document.getElementById('importOpacity'),
+  pdfPageWrap: document.getElementById('importPDFPageWrap'),
+  pdfPageNumber: document.getElementById('importPageNumber'),
+  pdfPageTotal: document.getElementById('importPageTotal'),
+  pdfPrev: document.getElementById('importPagePrev'),
+  pdfNext: document.getElementById('importPageNext'),
+  pdfThumbsWrap: document.getElementById('importPDFThumbsWrap'),
+  pdfThumbs: document.getElementById('importPageThumbs'),
+  cancel: document.getElementById('importCancel'),
+  confirm: document.getElementById('importConfirm')
+};
+
+function getChosenFeetPerInch(){
+  const custom = parseFloat(importModal.custom && importModal.custom.value || '');
+  if(!isNaN(custom) && custom > 0) return custom;
+  const preset = parseFloat(importModal.preset && importModal.preset.value || '');
+  return (!isNaN(preset) && preset > 0) ? preset : feetPerInch;
+}
+
+function openImportModal({ type, drawPreview, pdfController }){
+  return new Promise(resolve => {
+    if(!importModal.el) { resolve(null); return; }
+    // Configure sections
+    if(importModal.unitsWrap) importModal.unitsWrap.style.display = (type==='dxf') ? 'block' : 'none';
+    const isPDF = (type==='pdf');
+    if(importModal.opacityWrap) importModal.opacityWrap.style.display = isPDF ? 'block' : 'none';
+    if(importModal.pdfPageWrap) importModal.pdfPageWrap.style.display = isPDF ? 'block' : 'none';
+    if(importModal.custom) importModal.custom.value = '';
+    if(importModal.preset) importModal.preset.value = '4'; // 1/4"=1'
+    if(importModal.opacity) importModal.opacity.value = String(underlay.opacity ?? 0.85);
+    if(isPDF && pdfController){
+      const total = pdfController.pageCount || 1;
+      if(importModal.pdfPageTotal) importModal.pdfPageTotal.textContent = String(total);
+      if(importModal.pdfPageNumber) importModal.pdfPageNumber.value = String(Math.max(1, Math.min(total, pdfController.current || 1)));
+      if(importModal.pdfThumbsWrap) importModal.pdfThumbsWrap.style.display = (total>1) ? 'block' : 'none';
+      if(importModal.pdfThumbs){
+        importModal.pdfThumbs.innerHTML = '';
+        const makeThumb = async (i)=>{
+          const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 128; canvas.style.cssText = 'flex:0 0 auto; width:64px; height:86px; border:2px solid transparent; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.08); background:#fff; cursor:pointer;';
+          canvas.setAttribute('data-page', String(i));
+          try {
+            const page = await pdfController.getPage(i);
+            // scale page to thumb canvas
+            const vp1 = page.getViewport({ scale: 1 });
+            const k = Math.min(canvas.width/vp1.width, canvas.height/vp1.height);
+            const vp = page.getViewport({ scale: k });
+            const ctx2 = canvas.getContext('2d');
+            if(ctx2){
+              ctx2.fillStyle = '#fff'; ctx2.fillRect(0,0,canvas.width,canvas.height);
+              await page.render({ canvasContext: ctx2, viewport: vp }).promise;
+            }
+          } catch {}
+          canvas.addEventListener('click', async ()=>{
+            const n = parseInt(canvas.getAttribute('data-page')||'1',10);
+            await pdfController.goTo(n);
+            if(importModal.pdfPageNumber) importModal.pdfPageNumber.value = String(n);
+            // Highlight selected
+            Array.from(importModal.pdfThumbs.children).forEach(ch => ch.style.borderColor = 'transparent');
+            canvas.style.borderColor = '#111';
+            if(typeof drawPreview==='function') drawPreview(importModal.preview);
+          });
+          importModal.pdfThumbs.appendChild(canvas);
+        };
+        // generate first up to 12 thumbs quickly, lazy others after a frame
+        const totalThumbs = Math.min(total, 50);
+        for(let i=1;i<=Math.min(12,totalThumbs);i++){ makeThumb(i); }
+        if(totalThumbs>12){ setTimeout(()=>{ for(let i=13;i<=totalThumbs;i++){ makeThumb(i); } },0); }
+      }
+      const update = async (pageNum)=>{
+        try { await pdfController.goTo(pageNum); if(typeof drawPreview==='function') drawPreview(importModal.preview); } catch{}
+        // sync highlight
+        if(importModal.pdfThumbs){
+          Array.from(importModal.pdfThumbs.children).forEach(ch => {
+            const n = parseInt(ch.getAttribute('data-page')||'1',10);
+            ch.style.borderColor = (n===pageNum) ? '#111' : 'transparent';
+          });
+        }
+      };
+      const onPrev = ()=>{ const cur = parseInt(importModal.pdfPageNumber.value||'1',10); if(cur>1){ importModal.pdfPageNumber.value = String(cur-1); update(cur-1); } };
+      const onNext = ()=>{ const cur = parseInt(importModal.pdfPageNumber.value||'1',10); const t = pdfController.pageCount||1; if(cur<t){ importModal.pdfPageNumber.value = String(cur+1); update(cur+1); } };
+      const onInput = ()=>{ let v = parseInt(importModal.pdfPageNumber.value||'1',10); const t=pdfController.pageCount||1; if(!isFinite(v)) v=1; v=Math.max(1,Math.min(t,v)); importModal.pdfPageNumber.value=String(v); update(v); };
+      if(importModal.pdfPrev) importModal.pdfPrev.addEventListener('click', onPrev);
+      if(importModal.pdfNext) importModal.pdfNext.addEventListener('click', onNext);
+      if(importModal.pdfPageNumber) importModal.pdfPageNumber.addEventListener('change', onInput);
+    }
+  // Show modal and lock background scroll
+  importModal.el.style.display = 'flex';
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+    // Draw initial preview
+    try { if(typeof drawPreview==='function') drawPreview(importModal.preview); } catch{}
+  // Wire buttons
+    const onCancel = ()=>{ cleanup(); resolve(null); };
+    const onConfirm = ()=>{
+      const fpi = getChosenFeetPerInch();
+      const unit = (importModal.unit && importModal.unit.value) || 'in';
+      const opacity = importModal.opacity ? parseFloat(importModal.opacity.value) : (underlay.opacity ?? 0.85);
+      cleanup(); resolve({ fpi, unit, opacity });
+    };
+    importModal.cancel.addEventListener('click', onCancel, { once:true });
+    importModal.confirm.addEventListener('click', onConfirm, { once:true });
+  function cleanup(){ importModal.el.style.display = 'none'; document.body.style.overflow = prevOverflow; }
+  });
+}
+
+async function importPDFFlow(){
+  const file = await pickFile(['.pdf']); if(!file) return;
+  setStatus('Loading PDF…');
+  // Lazy-load pdf.js from CDN
+  const pdfjsURL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs';
+  const { getDocument, GlobalWorkerOptions } = await import(/* @vite-ignore */ pdfjsURL);
+  try { GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.js'; } catch{}
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await getDocument({ data }).promise;
+  let currentPage = 1; const pageCount = (pdf.numPages||1);
+  // shared offscreen canvas for preview/import
+  const tmp = document.createElement('canvas'); const c = tmp.getContext('2d', { willReadFrequently: false });
+  async function renderPage(pageNum){
+    const page = await pdf.getPage(pageNum);
+    const sc = 2; const vp = page.getViewport({ scale: sc });
+    tmp.width = Math.ceil(vp.width); tmp.height = Math.ceil(vp.height);
+    c.clearRect(0,0,tmp.width,tmp.height);
+    await page.render({ canvasContext: c, viewport: vp }).promise;
+    return page;
+  }
+  let lastPage = await renderPage(currentPage);
+  const choice = await openImportModal({ type:'pdf', pdfController: {
+      pageCount,
+      get current(){ return currentPage; },
+      async goTo(n){ currentPage = Math.max(1, Math.min(pageCount, n)); lastPage = await renderPage(currentPage); },
+      async getPage(n){ return pdf.getPage(n); }
+    }, drawPreview: (cnv)=>{
+  if(!cnv) return; const pctx = cnv.getContext('2d'); if(!pctx) return;
+  // adjust for device pixel ratio for crispness on mobile
+  const dpr = Math.max(1, window.devicePixelRatio||1);
+  const rect = cnv.getBoundingClientRect();
+  const targetW = Math.max(1, Math.round(rect.width * dpr));
+  const targetH = Math.max(1, Math.round(rect.height * dpr));
+  if(cnv.width !== targetW || cnv.height !== targetH){ cnv.width = targetW; cnv.height = targetH; }
+  pctx.clearRect(0,0,cnv.width,cnv.height);
+  const sw = cnv.width, sh = cnv.height; const iw = tmp.width, ih = tmp.height;
+    const k = Math.min(sw/iw, sh/ih);
+    const w = Math.max(1, Math.floor(iw*k)); const h = Math.max(1, Math.floor(ih*k));
+    const x = (sw - w)/2, y = (sh - h)/2; pctx.imageSmoothingEnabled = true; pctx.imageSmoothingQuality = 'high';
+    pctx.drawImage(tmp, 0,0,iw,ih, x,y,w,h);
+  }});
+  if(!choice){ setStatus('PDF import canceled'); return; }
+  const { fpi, opacity } = choice;
+  feetPerInch = fpi; // update working scale
+  // Convert to world size using PDF points: 1 unit = 1/72 inch at scale=1
+  // We use the last rendered page's viewport to compute inches
+  const page1x = lastPage.getViewport({ scale: 1 });
+  const widthInches = page1x.width / 72; const heightInches = page1x.height / 72;
+  const worldW = widthInches * fpi; const worldH = heightInches * fpi;
+  underlay.type = 'pdf'; underlay.image = tmp; underlay.worldRect = { x: view.x, y: view.y, w: worldW, h: worldH };
+  if(typeof opacity==='number' && !isNaN(opacity)) underlay.opacity = Math.max(0, Math.min(1, opacity));
+  draw(); scheduleSave(); setStatus('PDF imported');
+}
+
+async function importDXFFlow(){
+  const file = await pickFile(['.dxf','.DXF']); if(!file) return;
+  setStatus('Loading DXF…');
+  const text = await file.text();
+  const ents = parseDXF(text);
+  // Compute bounds for preview
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  for(const e of ents){
+    if(e.type==='LINE'){
+      minX=Math.min(minX,e.x1,e.x2); maxX=Math.max(maxX,e.x1,e.x2);
+      minY=Math.min(minY,e.y1,e.y2); maxY=Math.max(maxY,e.y1,e.y2);
+    } else if(e.type==='LWPOLYLINE' || e.type==='POLYLINE'){
+      for(const p of e.points){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); }
+    } else if(e.type==='CIRCLE'){
+      minX=Math.min(minX, e.cx - e.r); maxX=Math.max(maxX, e.cx + e.r);
+      minY=Math.min(minY, e.cy - e.r); maxY=Math.max(maxY, e.cy + e.r);
+    }
+  }
+  if(!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)){
+    alert('DXF appears empty or unsupported.'); setStatus('DXF import canceled'); return;
+  }
+  const choice = await openImportModal({ type:'dxf', drawPreview: (cnv)=>{
+  if(!cnv) return; const pctx = cnv.getContext('2d'); if(!pctx) return;
+  const dpr = Math.max(1, window.devicePixelRatio||1);
+  const rect = cnv.getBoundingClientRect();
+  const targetW = Math.max(1, Math.round(rect.width * dpr));
+  const targetH = Math.max(1, Math.round(rect.height * dpr));
+  if(cnv.width !== targetW || cnv.height !== targetH){ cnv.width = targetW; cnv.height = targetH; }
+  pctx.clearRect(0,0,cnv.width,cnv.height);
+  // Fit drawing into canvas with padding
+  const pad = Math.round(20 * dpr); const sw = cnv.width-2*pad, sh = cnv.height-2*pad;
+    const dw = (maxX-minX), dh = (maxY-minY); const k = Math.min(sw/dw, sh/dh);
+    const ox = pad + (sw - dw*k)/2; const oy = pad + (sh - dh*k)/2;
+    // Draw axes/background
+    pctx.fillStyle = '#ffffff'; pctx.fillRect(0,0,cnv.width,cnv.height);
+    pctx.strokeStyle = '#e0e0e0'; pctx.lineWidth = 1; pctx.beginPath(); pctx.rect(pad-0.5,pad-0.5,sw+1,sh+1); pctx.stroke();
+    // Draw entities in screen space (DXF units)
+    pctx.save(); pctx.translate(ox, oy); pctx.scale(k, k); pctx.translate(-minX, -minY);
+    pctx.lineWidth = 1/Math.max(1,k);
+    pctx.strokeStyle = '#111';
+    for(const e of ents){
+      if(e.type==='LINE'){
+        pctx.beginPath(); pctx.moveTo(e.x1, e.y1); pctx.lineTo(e.x2, e.y2); pctx.stroke();
+      } else if(e.type==='LWPOLYLINE' || e.type==='POLYLINE'){
+        pctx.beginPath();
+        for(let i=0;i<e.points.length;i++){ const p=e.points[i]; if(i===0) pctx.moveTo(p.x,p.y); else pctx.lineTo(p.x,p.y); }
+        if(e.closed && e.points.length>1) pctx.closePath(); pctx.stroke();
+      } else if(e.type==='CIRCLE'){
+        pctx.beginPath(); pctx.ellipse(e.cx, e.cy, e.r, e.r, 0, 0, Math.PI*2); pctx.stroke();
+      }
+    }
+    pctx.restore();
+  }});
+  if(!choice){ setStatus('DXF import canceled'); return; }
+  const { fpi, unit } = choice; feetPerInch = fpi;
+  const inchPerUnit = unit==='in' ? 1 : unit==='ft' ? 12 : unit==='mm' ? (1/25.4) : unit==='m' ? 39.37007874 : 1;
+  const feetPerUnit = fpi * inchPerUnit;
+  const added = [];
+  pushUndo();
+  for(const e of ents){
+    if(e.type==='LINE'){
+      const a = { x: e.x1*feetPerUnit, y: e.y1*feetPerUnit };
+      const b = { x: e.x2*feetPerUnit, y: e.y2*feetPerUnit };
+      objects.push({ type:'line', a, b, stroke:'#111', fill:'#00000000', thickness: 1 });
+      added.push('line');
+    } else if(e.type==='LWPOLYLINE' || e.type==='POLYLINE'){
+      const pts = e.points.map(p=>({ x: p.x*feetPerUnit, y: p.y*feetPerUnit }));
+      objects.push({ type:'path', pts, closed: !!e.closed, stroke:'#111', fill:'#00000000', thickness: 1 });
+      added.push('path');
+    } else if(e.type==='CIRCLE'){
+      const a = { x: (e.cx - e.r)*feetPerUnit, y: (e.cy - e.r)*feetPerUnit };
+      const b = { x: (e.cx + e.r)*feetPerUnit, y: (e.cy + e.r)*feetPerUnit };
+      objects.push({ type:'ellipse', a, b, stroke:'#111', fill:'#00000000', thickness: 1 });
+      added.push('ellipse');
+    }
+  }
+  draw(); scheduleSave(); setStatus(`DXF imported (${added.length} objects)`);
+}
+
+function pickFile(acceptExt){
+  return new Promise(resolve => {
+    const inp = document.createElement('input'); inp.type = 'file'; if(Array.isArray(acceptExt)) inp.accept = acceptExt.join(',');
+    inp.onchange = ()=>{ resolve(inp.files && inp.files[0] ? inp.files[0] : null); document.body.removeChild(inp); };
+    inp.style.display='none'; document.body.appendChild(inp); inp.click();
+  });
+}
+
+function serializeUnderlay(){
+  if(!underlay.image || !underlay.worldRect) return null;
+  // Downscale to a reasonable data URL to persist (avoid massive storage). Max side ~2048.
+  const maxSide = 2048;
+  const iw = underlay.image.width, ih = underlay.image.height;
+  const scale = Math.min(1, maxSide / Math.max(iw, ih));
+  const tmp = document.createElement('canvas'); tmp.width = Math.max(2, Math.round(iw*scale)); tmp.height = Math.max(2, Math.round(ih*scale));
+  tmp.getContext('2d').drawImage(underlay.image, 0,0,tmp.width,tmp.height);
+  const url = tmp.toDataURL('image/png');
+  return { type: underlay.type, img: url, worldRect: underlay.worldRect, opacity: underlay.opacity };
+}
+function restoreUnderlay(data){
+  try {
+    if(!data || !data.img || !data.worldRect) return;
+    const img = new Image(); img.onload = ()=>{ underlay.type = data.type; underlay.image = img; underlay.worldRect = data.worldRect; underlay.opacity = data.opacity ?? 0.85; draw(); };
+    img.src = data.img;
+  } catch{}
+}
+
+// Basic DXF parser (very limited)
+function parseDXF(text){
+  const lines = text.split(/\r?\n/);
+  const ents = []; let i=0; let inENT=false; let cur=null; let section='';
+  function next(){ const code = lines[i++]; const val = lines[i++]; return [code, val]; }
+  while(i<lines.length){
+    const [code, val] = next(); if(code===undefined) break;
+    if(code==='0'){
+      if(val==='SECTION'){ const [, name] = next(); if(name==='2'){ const [, secName] = next(); section = secName && secName.trim(); }
+      } else if(val==='ENDSEC'){ section=''; }
+      else if(val==='EOF'){ break; }
+      else if(section==='ENTITIES'){
+        if(val==='LINE' || val==='LWPOLYLINE' || val==='POLYLINE' || val==='VERTEX' || val==='SEQEND' || val==='CIRCLE'){
+          if(val==='LINE'){ cur = { type:'LINE' }; ents.push(cur); }
+          else if(val==='CIRCLE'){ cur = { type:'CIRCLE' }; ents.push(cur); }
+          else if(val==='LWPOLYLINE'){ cur = { type:'LWPOLYLINE', points:[], closed:false }; ents.push(cur); }
+          else if(val==='POLYLINE'){ cur = { type:'POLYLINE', points:[], closed:false }; ents.push(cur); }
+          else if(val==='VERTEX'){ cur = { type:'VERTEX' }; ents.push(cur); }
+          else if(val==='SEQEND'){ cur = null; }
+        } else {
+          cur = null;
+        }
+      } else {
+        cur = null;
+      }
+    } else if(cur){
+      const c = parseInt(code,10); const v = parseFloat(val);
+      if(cur.type==='LINE'){
+        if(c===10) cur.x1 = v; else if(c===20) cur.y1 = v; else if(c===11) cur.x2 = v; else if(c===21) cur.y2 = v;
+      } else if(cur.type==='CIRCLE'){
+        if(c===10) cur.cx=v; else if(c===20) cur.cy=v; else if(c===40) cur.r=v;
+      } else if(cur.type==='LWPOLYLINE'){
+        if(c===90) cur.count = v; else if(c===70) cur.closed = (v & 1)===1; else if(c===10){ cur.points.push({ x:v, y:0 }); } else if(c===20){ const last = cur.points[cur.points.length-1]; if(last) last.y = v; }
+      } else if(cur.type==='POLYLINE'){
+        // closed flag in code 70
+        if(c===70) cur.closed = (v & 1)===1;
+      } else if(cur.type==='VERTEX'){
+        if(c===10){ cur.vx = v; } else if(c===20){ cur.vy=v; }
+      }
+    }
+  }
+  // Stitch POLYLINE + VERTEX sequence
+  const out = []; let acc=null;
+  for(const e of ents){
+    if(e.type==='LINE' || e.type==='LWPOLYLINE' || e.type==='CIRCLE'){ out.push(e); }
+    else if(e.type==='POLYLINE'){ acc = { type:'LWPOLYLINE', points:[], closed: !!e.closed }; }
+    else if(e.type==='VERTEX' && acc){ acc.points.push({ x:e.vx||0, y:e.vy||0 }); }
+    else if(e.type==='SEQEND' && acc){ out.push(acc); acc=null; }
+  }
+  return out;
+}
 
 // Pointer handling
 let pointersDown = new Map();
@@ -433,10 +804,34 @@ function onPointerDown(e){
   // Pan with pan tool, Space, middle, or right mouse
   const isMouseMiddle = (e.pointerType==='mouse' && e.button===1);
   const isMouseRight = (e.pointerType==='mouse' && e.button===2);
-  if(tool === 'pan' || spacePanActive || isMouseMiddle || isMouseRight){
+  if(spacePanActive || isMouseMiddle || isMouseRight){
     isPanning = true; panStart = { vx: view.x, vy: view.y, sx: local.x, sy: local.y }; canvas.style.cursor='grabbing'; setStatus('Panning'); return;
   }
-  if(tool === 'pen'){
+  if(selectToggle){
+    // Priority: handles > object hit > clear
+    if(selection.index>=0){
+      const h = pickSelectionHandleAt(local);
+      if(h){
+        pushUndo(); selection.handle = h; selection.startWorld = { ...world }; selection.orig = deepCopyObject(objects[selection.index]); selection.bbox0 = getObjectBBox(selection.orig);
+        if(h==='rotate'){ selection.mode='rotate'; } else if(h==='move'){ selection.mode='move'; } else { selection.mode='scale'; }
+        return;
+      }
+    }
+    // hit-test objects from top
+    const rFeet = 6 / (view.scale * view.pxPerFt);
+    let hitIdx = -1;
+    for(let i=objects.length-1;i>=0;i--){ const o = objects[i]; const ht = hitTestObject(o, world, rFeet); if(ht && ht.hit){ hitIdx=i; break; } }
+    selection.index = hitIdx;
+    if(hitIdx>=0){
+      const bb = getObjectBBox(objects[hitIdx]);
+      if(pointInBBox(world, bb)){ pushUndo(); selection.mode='move'; selection.handle='move'; selection.startWorld = { ...world }; selection.orig = deepCopyObject(objects[hitIdx]); selection.bbox0 = bb; setStatus('Move'); draw(); return; }
+      draw(); return;
+    } else {
+      // empty space
+      selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null; draw(); return;
+    }
+  }
+  if(tool === 'pen' || tool === 'smart'){
     pushUndo(); drawing = { type:'path', pts:[world], closed:false, stroke, fill, thickness };
   } else if(tool === 'line'){
     pushUndo(); drawing = { type:'line', a: world, b: world, stroke, fill, thickness };
@@ -451,10 +846,10 @@ function onPointerDown(e){
     eraseObjectAt(world);
     draw(); scheduleSave();
   } else if(tool === 'erase-pixel'){
-    pushUndo();
-    erasing.active = true; erasing.points = [world];
-    erasePixelAt(world);
-    draw(); scheduleSave();
+  pushUndo();
+  erasing.active = true; erasing.points = [world];
+  rebuildEraseMask();
+  draw(); scheduleSave();
   }
 }
 function onPointerMove(e){
@@ -484,6 +879,17 @@ function onPointerMove(e){
     view.y = panStart.vy - (local.y - panStart.sy) / s;
   draw(); scheduleSave(); return;
   }
+  if(selectToggle && selection.index>=0 && selection.mode){
+    const o0 = selection.orig; if(!o0){ draw(); return; }
+    if(selection.mode==='move'){
+      const dx = world.x - selection.startWorld.x; const dy = world.y - selection.startWorld.y; objects[selection.index] = moveObject(o0, dx, dy);
+      draw(); scheduleSave(); return;
+    } else if(selection.mode==='scale'){
+      objects[selection.index] = scaleObject(o0, selection.bbox0, selection.handle, world); draw(); scheduleSave(); return;
+    } else if(selection.mode==='rotate'){
+      const center = getBBoxCenter(selection.bbox0); const a0 = Math.atan2(selection.startWorld.y - center.y, selection.startWorld.x - center.x); const a1 = Math.atan2(world.y - center.y, world.x - center.x); const da = a1 - a0; objects[selection.index] = rotateObject(o0, center, da); draw(); scheduleSave(); return;
+    }
+  }
   // Object erase: only on click, not on hover/move
   if(tool === 'erase-object'){
     // No-op on move; erase handled on pointerdown only
@@ -494,9 +900,9 @@ function onPointerMove(e){
   if(tool === 'erase-pixel'){
     erasing.cursor = { ...world, visible:true };
     if (erasing.active) {
-      erasing.points.push(world);
-      erasePixelAt(world);
-      draw(); scheduleSave(); return;
+  erasing.points.push(world);
+  rebuildEraseMask();
+  draw(); scheduleSave(); return;
     }
   }
   if(!drawing) return;
@@ -528,8 +934,23 @@ function onPointerUp(e){
   pointersDown.delete(e.pointerId);
   if(pinch.active && pointersDown.size<2){ pinch.active = false; setStatus('Ready'); }
   if(isPanning && pointersDown.size===0){ isPanning=false; setStatus('Ready'); canvas.style.cursor='default'; }
-  if(drawing){ objects.push(drawing); drawing = null; draw(); scheduleSave(); }
-  if(tool === 'erase-pixel'){ erasing.active = false; erasing.cursor.visible=false; draw(); }
+  if(drawing){
+    // If smart tool, try to interpret shape
+    if(tool==='smart' && drawing.type==='path'){
+      const snapped = smartInterpretPath(drawing.pts);
+      if(snapped){ objects.push({ ...snapped, stroke, fill: (snapped.type==='line' ? '#00000000' : fill), thickness }); }
+      else { objects.push(drawing); }
+    } else {
+      objects.push(drawing);
+    }
+    drawing = null; draw(); scheduleSave();
+  }
+  if(selectToggle && selection.mode){ selection.mode=null; selection.handle=null; selection.orig=null; }
+  if(tool === 'erase-pixel'){
+    if(erasing.points && erasing.points.length){ eraseStrokes.push({ pts: erasing.points.slice(), radiusFt: erasing.radiusFt }); }
+    erasing.active = false; erasing.cursor.visible=false; erasing.points = [];
+    rebuildEraseMask(); draw(); scheduleSave();
+  }
 }
 // Eraser UI
 const eraserEl = document.getElementById('eraserRadius');
@@ -544,14 +965,25 @@ canvas.addEventListener('pointercancel', onPointerUp);
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
-  // Zoom around screen center to reduce perceived recentering
-  const center = { x: rect.width/2, y: rect.height/2 };
-  const worldBefore = screenToWorld(center);
-  const z = Math.exp(-e.deltaY * 0.001);
-  view.scale = Math.max(0.2, Math.min(6, view.scale * z));
-  const worldAfter = screenToWorld(center);
-  view.x += worldBefore.x - worldAfter.x;
-  view.y += worldBefore.y - worldAfter.y;
+  // Normalize deltas
+  const norm = (val) => (e.deltaMode === 1) ? val * 16 : (e.deltaMode === 2) ? val * rect.height : val;
+  const dx = norm(e.deltaX);
+  const dy = norm(e.deltaY);
+  const s = view.scale * view.pxPerFt;
+  if (e.ctrlKey) {
+    // Pinch-zoom gesture: zoom toward pointer
+    const pivot = { x: (e.clientX - rect.left), y: (e.clientY - rect.top) };
+    const worldBefore = screenToWorld(pivot);
+    const z = Math.exp(-dy * 0.001);
+    view.scale = Math.max(0.2, Math.min(6, view.scale * z));
+    const worldAfter = screenToWorld(pivot);
+    view.x += worldBefore.x - worldAfter.x;
+    view.y += worldBefore.y - worldAfter.y;
+  } else {
+    // Two-finger scroll: pan
+    view.x += dx / s;
+    view.y += dy / s;
+  }
   draw(); scheduleSave();
 }, { passive: false });
 
@@ -565,16 +997,32 @@ window.addEventListener('keydown', e => {
     // Quit any tool back to Select: cancel drawings and erasing
     if(drawing){ drawing=null; }
     if(tool==='erase-pixel'){ erasing.active=false; erasing.cursor.visible=false; }
-    if(tool!=='select'){ setTool('select'); }
+    // Default interaction: disable selection overlay, clear transform, remain in current draw/erase tool
+    selectToggle = false; try { const b=document.getElementById('toggle2DSelect'); if(b) b.setAttribute('aria-pressed','false'); } catch{}
+    selection.mode=null; selection.handle=null; selection.orig=null; selection.index = -1;
     draw(); setStatus('Ready');
   }
-  else if(k==='v') setTool('select');
-  else if(k==='h') setTool('pan');
+  else if(k==='v') {
+    selectToggle = !selectToggle; const b=document.getElementById('toggle2DSelect'); if(b) b.setAttribute('aria-pressed', String(selectToggle)); if(!selectToggle){ selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; draw(); }
+  }
+  else if(k==='h') { /* Hint key for panning, but pan is via middle/right/Space. No state change needed. */ }
   else if(k==='p') setTool('pen');
+  else if(k==='s' || (e.shiftKey && k==='p')) setTool('smart');
   else if(k==='l') setTool('line');
   else if(k==='r') setTool('rect');
   else if(k==='o') setTool('ellipse');
   else if(k==='t') setTool('text');
+  else if(k==='backspace' || k==='delete'){
+    // Delete selected object
+    if(selection.index>=0 && selection.index < objects.length){
+      e.preventDefault();
+      pushUndo();
+      objects.splice(selection.index, 1);
+      selection.index = -1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null;
+      setStatus('Deleted');
+      draw(); scheduleSave();
+    }
+  }
   else if(k==='e') setTool(e.shiftKey ? 'erase-object' : 'erase-pixel');
   else if(k==='=') { erasing.radiusFt = Math.min(5, erasing.radiusFt + 0.25); setStatus(`Eraser: ${erasing.radiusFt.toFixed(2)} ft`); }
   else if(k==='-') { erasing.radiusFt = Math.max(0.1, erasing.radiusFt - 0.25); setStatus(`Eraser: ${erasing.radiusFt.toFixed(2)} ft`); }
@@ -587,6 +1035,41 @@ canvas.style.touchAction = 'none';
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 setStatus('Ready');
+// Wire select toggle button
+const selectBtn = document.getElementById('toggle2DSelect');
+if(selectBtn){ selectBtn.addEventListener('click', ()=>{ selectToggle = !selectToggle; selectBtn.setAttribute('aria-pressed', String(selectToggle)); if(!selectToggle){ selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; draw(); } }); }
+
+// Save to Personal Columbarium (2D)
+async function save2DToColumbarium(){
+  try {
+    const name = prompt('Save sketch as:', 'Untitled Sketch'); if (!name) return;
+    // Generate a compact PNG thumbnail
+    const thumb = (()=>{ try { const s=0.5; const tmp=document.createElement('canvas'); tmp.width=Math.max(2,Math.round(W/dpr*s)); tmp.height=Math.max(2,Math.round(H/dpr*s)); const c=tmp.getContext('2d'); c.fillStyle='#0b0b0b'; c.fillRect(0,0,tmp.width,tmp.height); c.drawImage(canvas,0,0,tmp.width,tmp.height); return tmp.toDataURL('image/png'); } catch{ return null; } })();
+    const data = toJSON();
+    const mod = await import('../app/local-store.js');
+    const id = await mod.saveSketch2D({ name, json: data, thumb });
+    try { sessionStorage.setItem('sketcher:newSceneId', id); } catch{}
+    // Navigate to Columbarium
+    const url = new URL('../..//columbarium.html', import.meta.url).href;
+    document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = url; }, 170);
+  } catch(e){ console.error(e); alert('Save failed'); }
+}
+const save2DBtn = document.getElementById('save2D'); if (save2DBtn) save2DBtn.addEventListener('click', ()=>{ save2DToColumbarium(); });
+
+// Floating navigation from 2D
+const toColBtn = document.getElementById('toColumbariumFrom2D');
+if(toColBtn){ toColBtn.addEventListener('click', (e)=>{ e.preventDefault(); saveToSession(); try { document.body.classList.add('page-leave'); } catch{} const url = new URL('./columbarium.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170); }); }
+const toARBtn2D = document.getElementById('toARFrom2D');
+if(toARBtn2D){ toARBtn2D.addEventListener('click', (e)=>{ e.preventDefault(); saveToSession(); try { document.body.classList.add('page-leave'); } catch{} const url = new URL('./index.html', location.href); url.searchParams.set('autoAR','1'); setTimeout(()=>{ window.location.href = url.toString(); }, 170); }); }
+
+// Replace current sketch flow when opening another sketchId: prompt if unsaved changes
+window.addEventListener('beforeunload', (e)=>{
+  try {
+    const cur = sessionStorage.getItem('sketcher:2d');
+    const lastSaved = localStorage.getItem('sketcher:2d');
+    if (cur && cur !== lastSaved) { e.preventDefault(); e.returnValue = ''; }
+  } catch {}
+});
 
 // 2D toolbox collapsibles (match 3D pattern)
 function wireCollapse(toggleId, groupId){
@@ -600,11 +1083,10 @@ function wireCollapse(toggleId, groupId){
     toggle.setAttribute('aria-pressed', open ? 'false' : 'true');
   });
 }
-// Wire collapsible groups in required order: drawing, shapes, text, style, erase, tools, edit/export
+// Wire collapsible groups in required order: drawing, shapes, text, style, erase, edit/export
 wireCollapse('toggle2DDraw', 'draw2DGroup');
 wireCollapse('toggle2DShapes', 'shapes2DGroup');
 wireCollapse('toggle2DText', 'text2DGroup');
 wireCollapse('toggle2DStyle', 'style2DGroup');
 wireCollapse('toggle2DErase', 'erase2DGroup');
-wireCollapse('toggle2DTools', 'tools2DGroup');
 wireCollapse('toggle2DEdit', 'edit2DGroup');

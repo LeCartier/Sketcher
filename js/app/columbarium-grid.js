@@ -143,6 +143,23 @@ async function duplicateSceneById(srcId){
   }
 }
 
+async function duplicateSketchById(srcId){
+  try {
+    const rec = await localStore.getSketch2D(srcId);
+    if (!rec || !rec.json) { alert('Could not read sketch to duplicate.'); return; }
+    const origTile = tiles.find(t => t.id === srcId) || null;
+    const newName = bumpVersionName(rec.name || 'Untitled Sketch');
+    const others = tiles.slice();
+    const neighbor = nearestNeighborFreeCell(origTile, others) || nearestFreeCell(others);
+    const posX = neighbor.cx * CELL + CELL/2;
+    const posY = neighbor.cy * CELL + CELL/2;
+    const newId = await localStore.saveSketch2D({ name: newName, json: rec.json, thumb: rec.thumb, posX, posY });
+    await loadTiles();
+    draw();
+    return newId;
+  } catch (e) { console.error('Duplicate sketch failed', e); throw e; }
+}
+
 // ---------- 3D overlay viewer for expanded tile ----------
 let overlay3D = null; // { id, container, canvas, renderer, scene, camera, controls, raf, lastRect }
 let overlay3DPending = false;
@@ -408,7 +425,14 @@ function drawTiles(){
     roundRect(ctx, s.x, s.y, baseW, baseH, r);
     ctx.fillStyle = 'rgba(20,20,20,0.98)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+    // Distinct accent for 2D sketches
+    if (t.type === '2d') {
+      ctx.strokeStyle = 'rgba(0, 212, 170, 0.9)';
+      ctx.lineWidth = 2;
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+    }
+    ctx.stroke();
     ctx.restore();
 
     // Content (full-bleed preview)
@@ -432,8 +456,13 @@ function drawTiles(){
     // Name overlay (bottom-left) with subtle gradient for legibility
     const gradH = Math.max(36 * scale, 28);
     const g = ctx.createLinearGradient(0, s.y + baseH - gradH, 0, s.y + baseH);
-    g.addColorStop(0, 'rgba(0,0,0,0.0)');
-    g.addColorStop(1, 'rgba(0,0,0,0.45)');
+    if (t.type === '2d') {
+      g.addColorStop(0, 'rgba(0,0,0,0.0)');
+      g.addColorStop(1, 'rgba(0, 80, 70, 0.55)');
+    } else {
+      g.addColorStop(0, 'rgba(0,0,0,0.0)');
+      g.addColorStop(1, 'rgba(0,0,0,0.45)');
+    }
     ctx.fillStyle = g; ctx.fillRect(s.x, s.y + baseH - gradH, baseW, gradH);
     const name = (t.name || 'Untitled').replace(/^gallery:/,'');
     ctx.font = `${Math.max(12, 12*scale)}px system-ui, sans-serif`;
@@ -473,7 +502,7 @@ function drawTiles(){
     // To = centered rect with padding
     const pad = 40;
     const maxSize = Math.min(vw - pad*2, vh - pad*2);
-    const targetSize = Math.max(fromW * 1.8, Math.min(maxSize, 520));
+  const targetSize = Math.max(fromW * 1.8, Math.min(maxSize, 520));
     const toW = targetSize, toH = targetSize;
     const toX = (vw - toW) / 2, toY = (vh - toH) / 2;
 
@@ -492,9 +521,9 @@ function drawTiles(){
     ctx.fillStyle = 'rgba(20,20,20,0.98)'; ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 1; ctx.stroke();
 
-    // Content: switch to interactive 3D overlay once animation completes
+  // Content: switch to interactive 3D overlay once animation completes (3D only)
     expandedTile.overlayRect = { x: sX, y: sY, w: sW, h: sH };
-    const needFallback = (prog < 1) || (!overlay3D || overlay3D.id !== expandedTile.id);
+  const needFallback = (prog < 1) || (expandedTile.type !== '3d') || (!overlay3D || overlay3D.id !== expandedTile.id);
     // Fallback: draw static preview + title + buttons
     if (needFallback) {
       // Full-bleed image
@@ -512,8 +541,13 @@ function drawTiles(){
       // Bottom gradient for legibility
       const gradH2 = Math.min(96, Math.max(56, sH * 0.25));
       const g2 = ctx.createLinearGradient(0, sY + sH - gradH2, 0, sY + sH);
-      g2.addColorStop(0, 'rgba(0,0,0,0.0)');
-      g2.addColorStop(1, 'rgba(0,0,0,0.55)');
+      if (expandedTile.type === '2d') {
+        g2.addColorStop(0, 'rgba(0,0,0,0.0)');
+        g2.addColorStop(1, 'rgba(0, 80, 70, 0.6)');
+      } else {
+        g2.addColorStop(0, 'rgba(0,0,0,0.0)');
+        g2.addColorStop(1, 'rgba(0,0,0,0.55)');
+      }
       ctx.fillStyle = g2; ctx.fillRect(sX, sY + sH - gradH2, sW, gradH2);
       // Title text
       const name2 = (expandedTile.name || 'Untitled').replace(/^gallery:/,'');
@@ -539,17 +573,23 @@ function drawTiles(){
       ctx.restore();
     }
     // Manage the overlay viewer lifecycle
-    if (prog < 1) { if (overlay3D) destroyOverlay3D(); overlay3DPending = false; }
-    else {
-      if (!overlay3D || overlay3D.id !== expandedTile.id) {
-        if (!overlay3DPending) {
-          overlay3DPending = true;
-          createOverlay3D(expandedTile, expandedTile.overlayRect).finally(()=>{ overlay3DPending = false; });
+    if (expandedTile.type !== '3d') {
+      // Never create a 3D overlay for 2D tiles
+      if (overlay3D) destroyOverlay3D();
+      overlay3DPending = false;
+    } else {
+      if (prog < 1) { if (overlay3D) destroyOverlay3D(); overlay3DPending = false; }
+      else {
+        if (!overlay3D || overlay3D.id !== expandedTile.id) {
+          if (!overlay3DPending) {
+            overlay3DPending = true;
+            createOverlay3D(expandedTile, expandedTile.overlayRect).finally(()=>{ overlay3DPending = false; });
+          }
+        } else {
+          updateOverlay3DRect(expandedTile.overlayRect);
+          // When the overlay is active, in-canvas button rects are not needed
+          expandedTile.btnDuplicate = null; expandedTile.btnDelete = null; expandedTile.btnOpen = null; expandedTile.nameRect = null;
         }
-      } else {
-        updateOverlay3DRect(expandedTile.overlayRect);
-        // When the overlay is active, in-canvas button rects are not needed
-  expandedTile.btnDuplicate = null; expandedTile.btnDelete = null; expandedTile.btnOpen = null; expandedTile.nameRect = null;
       }
     }
     ctx.restore();
@@ -599,6 +639,52 @@ function drawButton(rect, label){
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, rect.x + rect.w/2, rect.y + rect.h/2);
   ctx.restore();
+}
+
+// Render a 2D sketch JSON to a PNG data URL for thumbnails
+async function generate2DThumbFromJSON(data){
+  try {
+    if (!data) return null;
+    const W = 480, H = 360; // landscape
+    const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+    // Background tint matched to 2D card accent
+    g.fillStyle = '#0b0b0b'; g.fillRect(0,0,W,H);
+    // Determine bounds of objects to fit view
+    const objs = Array.isArray(data.objects) ? data.objects : [];
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    for(const o of objs){
+      if(o.type==='line'){ minX=Math.min(minX,o.a.x,o.b.x); minY=Math.min(minY,o.a.y,o.b.y); maxX=Math.max(maxX,o.a.x,o.b.x); maxY=Math.max(maxY,o.a.y,o.b.y); }
+      else if(o.type==='rect' || o.type==='ellipse'){ const xs=[o.a.x,o.b.x], ys=[o.a.y,o.b.y]; minX=Math.min(minX,...xs); minY=Math.min(minY,...ys); maxX=Math.max(maxX,...xs); maxY=Math.max(maxY,...ys); }
+      else if(o.type==='path' && Array.isArray(o.pts)){ for(const p of o.pts){ minX=Math.min(minX,p.x); minY=Math.min(minY,p.y); maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y); } }
+      else if(o.type==='text' && o.p){ minX=Math.min(minX,o.p.x); minY=Math.min(minY,o.p.y); maxX=Math.max(maxX,o.p.x); maxY=Math.max(maxY,o.p.y); }
+    }
+    if(!isFinite(minX)||!isFinite(minY)||!isFinite(maxX)||!isFinite(maxY) || maxX<=minX || maxY<=minY){
+      // Nothing: draw subtle grid
+      g.strokeStyle='rgba(255,255,255,0.06)'; g.lineWidth=1;
+      for(let x=0;x<W;x+=24){ g.beginPath(); g.moveTo(x+0.5,0); g.lineTo(x+0.5,H); g.stroke(); }
+      for(let y=0;y<H;y+=24){ g.beginPath(); g.moveTo(0,y+0.5); g.lineTo(W,y+0.5); g.stroke(); }
+      return c.toDataURL('image/png');
+    }
+    const pad = 10; const sx = (W - pad*2) / (maxX-minX); const sy = (H - pad*2) / (maxY-minY); const s = Math.min(sx, sy);
+    const offX = pad - minX*s; const offY = pad - minY*s;
+    g.lineCap='round'; g.lineJoin='round';
+    for(const o of objs){
+      const stroke = o.stroke || '#ccc'; const fill = o.fill && o.fill !== '#00000000' ? o.fill : null;
+      g.strokeStyle = stroke; g.fillStyle = fill || 'transparent'; g.lineWidth = Math.max(1, (o.thickness||2) * (s/8));
+      if(o.type==='line'){
+        g.beginPath(); g.moveTo(o.a.x*s+offX, o.a.y*s+offY); g.lineTo(o.b.x*s+offX, o.b.y*s+offY); g.stroke();
+      } else if(o.type==='rect'){
+        const x = Math.min(o.a.x,o.b.x)*s+offX; const y=Math.min(o.a.y,o.b.y)*s+offY; const w=Math.abs(o.a.x-o.b.x)*s; const h=Math.abs(o.a.y-o.b.y)*s;
+        if(fill) g.fillRect(x,y,w,h); g.strokeRect(x,y,w,h);
+      } else if(o.type==='ellipse'){
+        const cx = (o.a.x+o.b.x)/2*s+offX; const cy=(o.a.y+o.b.y)/2*s+offY; const rx=Math.abs(o.a.x-o.b.x)/2*s; const ry=Math.abs(o.a.y-o.b.y)/2*s;
+        g.beginPath(); g.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); if(fill) g.fill(); g.stroke();
+      } else if(o.type==='path' && Array.isArray(o.pts)){
+        g.beginPath(); for(let i=0;i<o.pts.length;i++){ const p=o.pts[i]; const x=p.x*s+offX, y=p.y*s+offY; if(i===0) g.moveTo(x,y); else g.lineTo(x,y); } if(o.closed) g.closePath(); if(fill) g.fill(); g.stroke();
+      } else if(o.type==='text' && o.p){ g.fillStyle=stroke; g.font = '12px system-ui, sans-serif'; g.fillText(o.text||'', o.p.x*s+offX, o.p.y*s+offY); }
+    }
+    return c.toDataURL('image/png');
+  } catch { return null; }
 }
 
 function drawDeleteX(rect){
@@ -771,26 +857,26 @@ canvas.addEventListener('pointerdown', async (e) => {
       if (o) {
         // Duplicate button
         if (t.btnDuplicate && x>=t.btnDuplicate.x && x<=t.btnDuplicate.x+t.btnDuplicate.w && y>=t.btnDuplicate.y && y<=t.btnDuplicate.y+t.btnDuplicate.h) {
-          (async ()=>{ try { await duplicateSceneById(t.id); } catch(e){ console.error(e);} })();
+          (async ()=>{ try { if (t.type==='2d') await duplicateSketchById(t.id); else await duplicateSceneById(t.id); } catch(e){ console.error(e);} })();
           return;
         }
         // Open button
         if (t.btnOpen && x>=t.btnOpen.x && x<=t.btnOpen.x+t.btnOpen.w && y>=t.btnOpen.y && y<=t.btnOpen.y+t.btnOpen.h) {
-          const url = new URL('./index.html', location.href);
-          url.searchParams.set('sceneId', t.id);
+          const url = new URL(t.type==='2d' ? './sketch2d.html' : './index.html', location.href);
+          url.searchParams.set(t.type==='2d' ? 'sketchId' : 'sceneId', t.id);
           document.body.classList.add('page-leave');
           setTimeout(()=>{ window.location.href = url.toString(); }, 170);
           return;
         }
         // Delete button (only in expanded view)
         if (t.btnDelete && x>=t.btnDelete.x && x<=t.btnDelete.x+t.btnDelete.w && y>=t.btnDelete.y && y<=t.btnDelete.y+t.btnDelete.h) {
-          (async ()=>{ const ok = confirm('Delete this scene?'); if (ok) { await localStore.deleteScene(t.id); expandedId = null; await loadTiles(); draw(); } })();
+          (async ()=>{ const ok = confirm(t.type==='2d' ? 'Delete this 2D sketch?' : 'Delete this scene?'); if (ok) { if (t.type==='2d') await localStore.deleteSketch2D(t.id); else await localStore.deleteScene(t.id); expandedId = null; await loadTiles(); draw(); } })();
           return;
         }
         // Rename hotspot
         if (t.nameRect && x>=t.nameRect.x && x<=t.nameRect.x+t.nameRect.w && y>=t.nameRect.y && y<=t.nameRect.y+t.nameRect.h) {
-          const newName = prompt('Rename scene:', t.name || 'Untitled');
-          if (newName && newName.trim().length) { await localStore.updateSceneName(t.id, { name: newName.trim() }); await loadTiles(); draw(); }
+          const newName = prompt(t.type==='2d' ? 'Rename 2D sketch:' : 'Rename scene:', t.name || 'Untitled');
+          if (newName && newName.trim().length) { if (t.type==='2d') await localStore.updateSketch2DName(t.id, { name: newName.trim() }); else await localStore.updateSceneName(t.id, { name: newName.trim() }); await loadTiles(); draw(); }
           return;
         }
         // Inside overlay: treat as potential toggle on pointerup (left-click only)
@@ -1000,7 +1086,8 @@ canvas.addEventListener('pointerup', async (e) => {
         const start = animStart; const run = () => { if (animStart !== start) return; draw(); if (performance.now()-start < ANIM_MS) requestAnimationFrame(run); }; run();
       }
     } else {
-      await localStore.updateScenePosition(dragTile.id, { posX: dragTile.x, posY: dragTile.y });
+      if (dragTile.type === '2d') await localStore.updateSketch2DPosition(dragTile.id, { posX: dragTile.x, posY: dragTile.y });
+      else await localStore.updateScenePosition(dragTile.id, { posX: dragTile.x, posY: dragTile.y });
     }
     dragTile = null;
   }
@@ -1015,15 +1102,22 @@ canvas.addEventListener('pointercancel', (e) => {
 
 // ---------- Data loading ----------
 async function loadTiles(){
-  const list = await localStore.listScenes().catch(()=>[]);
-  tiles = list.map((s, idx) => ({
-    id: s.id,
-    name: s.name,
-    x: Number.isFinite(s.posX) ? s.posX : (((idx % 3) * CELL * 1.4) + CELL/2),
-    y: Number.isFinite(s.posY) ? s.posY : ((Math.floor(idx / 3) * CELL * 1.4) + CELL/2),
-    w: CELL, h: CELL,
-    thumb: s.thumb || null,
-  }));
+  const [list3d, list2d] = await Promise.all([
+    localStore.listScenes().catch(()=>[]),
+    localStore.listSketches2D ? localStore.listSketches2D().catch(()=>[]) : Promise.resolve([])
+  ]);
+  const all = [];
+  let idx = 0;
+  for (const s of list3d) {
+    all.push({ id: s.id, name: s.name, type:'3d', x: Number.isFinite(s.posX) ? s.posX : (((idx % 3) * CELL * 1.4) + CELL/2), y: Number.isFinite(s.posY) ? s.posY : ((Math.floor(idx / 3) * CELL * 1.4) + CELL/2), w: CELL, h: CELL, thumb: s.thumb || null });
+    idx++;
+  }
+  for (const s of list2d) {
+    all.push({ id: s.id, name: s.name, type:'2d', x: Number.isFinite(s.posX) ? s.posX : (((idx % 3) * CELL * 1.4) + CELL/2), y: Number.isFinite(s.posY) ? s.posY : ((Math.floor(idx / 3) * CELL * 1.4) + CELL/2), w: CELL, h: CELL, thumb: s.thumb || null });
+    idx++;
+  }
+  // Sort by updatedAt desc if available via original lists order; keep as appended which are already sorted
+  tiles = all;
 
   // If there is a pending new scene from trade, place it in the nearest free cell now
   if (!pendingPlaceId) {
@@ -1050,13 +1144,25 @@ async function loadTiles(){
       }
     } else {
       try {
-        const rec = await localStore.getScene(t.id);
-        if (rec && rec.json) {
-          const { generateSceneThumbnail } = await import('./columbarium.js');
-          const thumb = await generateSceneThumbnail(rec.json).catch(()=>null);
-          if (thumb) {
-            await localStore.updateSceneThumbnail(t.id, { thumb });
-            const img = new Image(); img.onload = () => { thumbCache.set(t.id, img); draw(); }; img.src = thumb;
+        if (t.type === '3d') {
+          const rec = await localStore.getScene(t.id);
+          if (rec && rec.json) {
+            const { generateSceneThumbnail } = await import('./columbarium.js');
+            const thumb = await generateSceneThumbnail(rec.json).catch(()=>null);
+            if (thumb) {
+              await localStore.updateSceneThumbnail(t.id, { thumb });
+              const img = new Image(); img.onload = () => { thumbCache.set(t.id, img); draw(); }; img.src = thumb;
+            }
+          }
+        } else if (t.type === '2d') {
+          const rec = await localStore.getSketch2D(t.id);
+          if (rec && rec.json) {
+            // Generate a 2D thumbnail from the JSON
+            const thumb = await generate2DThumbFromJSON(rec.json).catch(()=>null);
+            if (thumb) {
+              await localStore.updateSketch2DThumbnail(t.id, { thumb });
+              const img = new Image(); img.onload = () => { thumbCache.set(t.id, img); draw(); }; img.src = thumb;
+            }
           }
         }
       } catch {}

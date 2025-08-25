@@ -15,38 +15,79 @@
     #grid2d { position: fixed; inset: 0; z-index: 0; }
   /* Slightly smaller buttons inside Erase panel */
   #erase2DGroup .icon-btn { width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
+  /* Import modal mobile ergonomics */
+  #importScaleModal .icon-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
+  #importScaleModal .btn { font: 14px/1.2 system-ui, sans-serif; }
+  #importScaleModal select, #importScaleModal input[type="number"], #importScaleModal input[type="range"] { font-size: 14px; }
+  #importPageThumbs { -webkit-overflow-scrolling: touch; }
+  @media (max-width: 720px){
+    #importModalBody { flex-direction: column !important; }
+    #importPreviewContainer { min-height: 40vh; }
+    #importScaleModal .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  }
   </style>
 </head>
 <body>
   <div id="pageFade"></div>
   <canvas id="grid2d"></canvas>
   <div id="toolbox">
+    <!-- Object Select toggle (affects left-click). Middle-click always pans. -->
+    <button id="toggle2DSelect" class="icon-btn toggle-btn" title="Object Select (V)" aria-label="Object Select" aria-pressed="false">
+      <span class="sr-only">Object Select</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l9 9-5 1 1 5-5-15z" fill="#222"/></svg>
+    </button>
     <!-- Drawing parent (freehand) -->
     <button id="toggle2DDraw" class="icon-btn toggle-btn" title="Drawing" aria-label="Drawing" aria-pressed="false">
       <span class="sr-only">Drawing</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <!-- Pencil body at 45deg (eraser up-right) -->
-        <path d="M6 18l9-9 3 3-9 9-4 1 1-4z" fill="#222"/>
-        <!-- Eraser cap -->
-        <path d="M16.5 5.5l2 2-2 2-2-2z" fill="#555"/>
-        <!-- Thin curved stroke from tip -->
-        <path d="M4 20c1.6-2 3.6-3 6-3 1.8 0 3.2.5 4.5 1.3" fill="none" stroke="#222" stroke-width="1" stroke-linecap="round"/>
+        <!-- Recognizable linework pencil at ~45°: wider body, 45° point, black eraser -->
+        <g fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+          <!-- Wider pencil body -->
+          <rect x="6.5" y="10" width="11.5" height="4" rx="1.5" transform="rotate(-45 12.25 12)"/>
+          <!-- 45° point composed of two strokes forming a tip -->
+          <path d="M6 19 L8 17"/>
+          <path d="M8 17 L9.4 18.4"/>
+          <!-- Black eraser cap (filled) -->
+          <rect x="16.2" y="5.2" width="4.2" height="3.2" rx="0.9" transform="rotate(-45 18.3 6.8)" fill="#222"/>
+        </g>
       </svg>
     </button>
     <div id="draw2DGroup" class="collapse" aria-hidden="true">
       <button id="tPen" class="icon-btn" aria-pressed="false" title="Freehand (P)" aria-label="Pen">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 9-9-3-3-9 9-1 4z" fill="#222"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 16c2-3 6-3 8-1s4 2 8 0" fill="none" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="4" cy="16" r="1" fill="#222"/>
+        </svg>
+      </button>
+      <button id="tSmart" class="icon-btn" aria-pressed="false" title="Smart Draw" aria-label="Smart Draw">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Tiny wand/sparkle + circle hint -->
+          <path d="M5 18 L8 15" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="15.5" cy="8.5" r="3" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M13.2 6.2L13.9 5.5M17.8 10.5L18.5 11.2M15.5 4.6L15.5 3.6" stroke="#222" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
       </button>
     </div>
 
     <!-- Shapes parent (line/rect/ellipse) -->
     <button id="toggle2DShapes" class="icon-btn toggle-btn" title="Shapes" aria-label="Shapes" aria-pressed="false">
       <span class="sr-only">Shapes</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" fill="none" stroke="#222" stroke-width="2"/><circle cx="17" cy="7" r="3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Square bottom-left -->
+        <rect x="3" y="13" width="7" height="7" fill="none" stroke="#222" stroke-width="2"/>
+        <!-- Circle top-right (nudged up-right and slightly smaller) -->
+        <circle cx="19" cy="6" r="3" fill="none" stroke="#222" stroke-width="2"/>
+        <!-- Triangle mid-right (shifted left/down to avoid touching the circle) -->
+        <path d="M12.5 17 L17.5 17 L15 11 Z" fill="none" stroke="#222" stroke-width="2"/>
+      </svg>
     </button>
     <div id="shapes2DGroup" class="collapse" aria-hidden="true">
       <button id="tLine" class="icon-btn" aria-pressed="false" title="Line (L)" aria-label="Line">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18L18 4" stroke="#222" stroke-width="2"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 19L19 5" stroke="#222" stroke-width="2"/>
+          <circle cx="5" cy="19" r="1.5" fill="#222"/>
+          <circle cx="19" cy="5" r="1.5" fill="#222"/>
+        </svg>
       </button>
       <button id="tRect" class="icon-btn" aria-pressed="false" title="Rectangle (R)" aria-label="Rect">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2"/></svg>
@@ -59,18 +100,31 @@
     <!-- Text parent -->
     <button id="toggle2DText" class="icon-btn toggle-btn" title="Text" aria-label="Text" aria-pressed="false">
       <span class="sr-only">Text</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M12 6v12" stroke="#222" stroke-width="2"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 6h16" stroke="#222" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M12 6v12" stroke="#222" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
     </button>
     <div id="text2DGroup" class="collapse" aria-hidden="true">
       <button id="tText" class="icon-btn" aria-pressed="false" title="Text (T)" aria-label="Text">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12M10 6v12" stroke="#222" stroke-width="2"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 6h14" stroke="#222" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M12 6v12" stroke="#222" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
       </button>
     </div>
 
   <!-- Style parent -->
     <button id="toggle2DStyle" class="icon-btn toggle-btn" title="Style" aria-label="Style" aria-pressed="false">
       <span class="sr-only">Style</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="#222"/><circle cx="16" cy="12" r="3" fill="#555"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Linework palette outline -->
+        <path d="M12 4c-4.4 0-8 3.1-8 7 0 2.9 2.1 5 5 5h1a2 2 0 110-4h1a2 2 0 012-2h2a3 3 0 100-6z" fill="none" stroke="#222" stroke-width="2"/>
+        <!-- Small linework swatch circles -->
+        <circle cx="8.5" cy="9.5" r="1" fill="none" stroke="#222" stroke-width="2"/>
+        <circle cx="6.5" cy="12.5" r="1" fill="none" stroke="#222" stroke-width="2"/>
+        <circle cx="10.5" cy="12.5" r="1" fill="none" stroke="#222" stroke-width="2"/>
+      </svg>
     </button>
     <div id="style2DGroup" class="collapse" aria-hidden="true">
       <div class="row center" style="flex-direction:column; gap:4px;">
@@ -98,8 +152,14 @@
     <button id="toggle2DErase" class="icon-btn toggle-btn" title="Erase" aria-label="Erase" aria-pressed="false">
       <span class="sr-only">Erase</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M3 14l6-6 5 5-6 6H5L3 17z" fill="#222"/>
-        <path d="M14 8l3-3 3 3-3 3" stroke="#222" stroke-width="2" fill="none"/>
+        <!-- Eraser top with filled black eraser and two extending lines; bottom cut off -->
+        <g stroke="#222" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+          <!-- Eraser cap (filled) -->
+          <rect x="6" y="5" width="12" height="6" rx="2" fill="#222"/>
+          <!-- Two lines extending from the eraser block (ferrule) -->
+          <path d="M6 13h12" fill="none"/>
+          <path d="M6 15h12" fill="none"/>
+        </g>
       </svg>
     </button>
   <div id="erase2DGroup" class="collapse" aria-hidden="true">
@@ -109,13 +169,15 @@
           <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
             <path d="M4 7h16" stroke="#222" stroke-width="2" fill="none"/>
             <rect x="6" y="7" width="12" height="13" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-            <path d="M9 11l6 6M15 11l-6 6" stroke="#222" stroke-width="2"/>
+            <path d="M10 11v8M14 11v8" stroke="#222" stroke-width="2"/>
           </svg>
         </button>
         <!-- 2) Pixel Erase -->
         <button id="tErasePix" class="icon-btn" aria-pressed="false" title="Erase Pixels (E)" aria-label="Erase Pixels">
           <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
-            <path d="M3 15l6-6 8 8-2 2H9l-6-6z" fill="#222"/>
+            <path d="M4 15l6-6 6 6-2 2H6l-2-2z" fill="#222"/>
+            <rect x="16" y="17" width="1.5" height="1.5" fill="#222"/>
+            <rect x="18.5" y="17" width="1.5" height="1.5" fill="#222"/>
           </svg>
         </button>
         <!-- 3) Pixel Brush Size -->
@@ -124,32 +186,35 @@
       </div>
     </div>
 
-    <!-- Tools parent -->
-    <button id="toggle2DTools" class="icon-btn toggle-btn" title="Tools" aria-label="Tools" aria-pressed="false">
-      <span class="sr-only">Tools</span>
+    <!-- Save to Personal Columbarium (parent button) -->
+    <button id="save2D" class="icon-btn" title="Save to Columbarium" aria-label="Save to Columbarium">
+      <span class="sr-only">Save to Columbarium</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M6 5l5 5-3 1-2 4-1-1 2-4-1-5z" fill="#222"/>
-        <path d="M16 7v8m-2-6v8m-2-4v6" stroke="#222" stroke-width="1.8"/>
+        <!-- Personal columbarium: tic-tac-toe with black center + up arrow (matched to 3D) -->
+        <g fill="none" stroke="#222" stroke-width="1.8">
+          <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+        </g>
+        <!-- Filled black center square -->
+        <rect x="8.9" y="8.9" width="6.2" height="6.2" fill="#222"/>
+  <!-- Down arrow to denote save/download to Columbarium -->
+  <path d="M22.3 3V15" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+  <path d="M22.3 21 L19 15 L24 15 Z" fill="#222"/>
       </svg>
     </button>
-    <div id="tools2DGroup" class="collapse" aria-hidden="true">
-      <button id="tSelect" class="icon-btn" aria-pressed="true" title="Select (V)" aria-label="Select (V)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4l8 8-5 1 1 5-4-10z" fill="#222"/></svg>
-      </button>
-      <button id="tPan" class="icon-btn" aria-pressed="false" title="Pan (Space/Middle)" aria-label="Pan">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16" stroke="#222" stroke-width="2"/></svg>
-      </button>
-    </div>
 
-    <!-- Edit/Export parent -->
-    <button id="toggle2DEdit" class="icon-btn toggle-btn" title="Edit/Export" aria-label="Edit/Export" aria-pressed="false">
-      <span class="sr-only">Edit/Export</span>
+  <!-- Tools parent removed (panning is via middle/right/Space; selection is a top-level toggle) -->
+
+    <!-- Utilities (was Edit/Export) -->
+    <button id="toggle2DEdit" class="icon-btn toggle-btn" title="Utilities" aria-label="Utilities" aria-pressed="false">
+      <span class="sr-only">Utilities</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-        <path d="M12 16V10M9 10l3-3 3 3" stroke="#222" stroke-width="2"/>
+        <rect x="3" y="9" width="18" height="10" rx="2" ry="2" fill="none" stroke="#222" stroke-width="2"/>
+        <rect x="8" y="6" width="8" height="3" rx="1.5" ry="1.5" fill="none" stroke="#222" stroke-width="2"/>
+        <path d="M8 9V7m8 2V7" stroke="#222" stroke-width="2"/>
       </svg>
     </button>
     <div id="edit2DGroup" class="collapse" aria-hidden="true">
+  <!-- Architectural scale selector removed from toolbox; scale is chosen during import flow -->
       <button id="undo" class="icon-btn" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l-4 4 4 4" stroke="#222" stroke-width="2" fill="none"/><path d="M20 15a7 7 0 0 0-7-7H7" stroke="#222" stroke-width="2" fill="none"/></svg>
       </button>
@@ -157,23 +222,141 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 7l4 4-4 4" stroke="#222" stroke-width="2" fill="none"/><path d="M4 15a7 7 0 0 1 7-7h6" stroke="#222" stroke-width="2" fill="none"/></svg>
       </button>
       <button id="clear" class="icon-btn" title="Clear" aria-label="Clear">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" stroke="#222" stroke-width="2" fill="none"/><rect x="6" y="7" width="12" height="13" rx="2" fill="none" stroke="#222" stroke-width="2"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Square with X (unified clear icon) -->
+          <rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <path d="M8 8l8 8M16 8l-8 8" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <!-- Import PDF (as underlay with scale) -->
+      <button id="importPDF2D" class="icon-btn" title="Import PDF (underlay)" aria-label="Import PDF">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="5" y="3" width="12" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Up arrow to denote import/upload -->
+          <path d="M12 14V8" stroke="#222" stroke-width="2"/>
+          <path d="M9 11l3-3 3 3" stroke="#222" stroke-width="2" fill="none"/>
+        </svg>
+      </button>
+  <!-- Import DXF (vector) -->
+  <button id="importDXF2D" class="icon-btn" title="Import DXF (vector)" aria-label="Import DXF">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="5" y="3" width="12" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Up arrow to denote import/upload -->
+          <path d="M12 14V8" stroke="#222" stroke-width="2"/>
+          <path d="M9 11l3-3 3 3" stroke="#222" stroke-width="2" fill="none"/>
+        </svg>
       </button>
       <button id="exportPNG" class="icon-btn" title="Export PNG" aria-label="Export PNG">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6M9 14l3 3 3-3" stroke="#222" stroke-width="2"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Down arrow to denote save/download -->
+          <path d="M12 8v6" stroke="#222" stroke-width="2"/>
+          <path d="M9 14l3 3 3-3" stroke="#222" stroke-width="2" fill="none"/>
+        </svg>
       </button>
-      <button id="exportSVG" class="icon-btn" title="Export SVG" aria-label="Export SVG">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="none" stroke="#222" stroke-width="2"/><circle cx="16" cy="12" r="3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      <button id="exportPDF" class="icon-btn" title="Export PDF" aria-label="Export PDF">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="5" y="3" width="14" height="18" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Down arrow to denote save/download -->
+          <path d="M12 8v6" stroke="#222" stroke-width="2"/>
+          <path d="M9 14l3 3 3-3" stroke="#222" stroke-width="2" fill="none"/>
+        </svg>
       </button>
     </div>
   </div>
   <div id="statusBar">Ready</div>
+  
+  <!-- Import Scale Modal (used by PDF and DXF imports) -->
+  <div id="importScaleModal" style="display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,0.5); align-items:center; justify-content:center;">
+    <div style="background:#fff; color:#222; width:min(92vw, 840px); max-height:90vh; border-radius:12px; border:1px solid #ddd; box-shadow:0 12px 32px rgba(0,0,0,0.2); display:flex; flex-direction:column;">
+      <div style="padding:10px 14px; border-bottom:1px solid #eee; font:600 14px system-ui, sans-serif;">Import Preview & Scale</div>
+      <div id="importModalBody" style="display:flex; gap:12px; padding:12px; overflow:auto;">
+        <div id="importPreviewContainer" style="flex:1; min-width:320px; display:flex; align-items:center; justify-content:center; background:#f7f7f7; border:1px solid #eee; border-radius:8px;">
+          <canvas id="importPreview" width="720" height="480" style="max-width:100%; height:auto; display:block;"></canvas>
+        </div>
+        <div style="width:240px; display:flex; flex-direction:column; gap:10px;">
+          <div id="importPDFPageWrap" style="display:none;">
+            <label for="importPageNumber" style="display:block; font:12px/1.2 system-ui; color:#333; margin-bottom:4px;">Page</label>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <button id="importPagePrev" class="icon-btn" title="Previous page" aria-label="Previous page" type="button" style="width:28px; height:28px; min-width:28px; min-height:28px;">
+                <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18"><path d="M15 6l-6 6 6 6" fill="none" stroke="#222" stroke-width="2"/></svg>
+              </button>
+              <input id="importPageNumber" type="number" min="1" value="1" style="width:64px; padding:6px 8px; font:13px system-ui; border:1px solid #ddd; border-radius:6px;" />
+              <span style="font:12px/1.2 system-ui; color:#555;">of <span id="importPageTotal">1</span></span>
+              <button id="importPageNext" class="icon-btn" title="Next page" aria-label="Next page" type="button" style="width:28px; height:28px; min-width:28px; min-height:28px;">
+                <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18"><path d="M9 6l6 6-6 6" fill="none" stroke="#222" stroke-width="2"/></svg>
+              </button>
+            </div>
+          </div>
+          <div id="importPDFThumbsWrap" style="display:none;">
+            <label style="display:block; font:12px/1.2 system-ui; color:#333; margin:6px 0 4px;">Thumbnails</label>
+            <div id="importPageThumbs" style="display:flex; gap:8px; overflow:auto; padding:6px; border:1px solid #eee; border-radius:8px; background:#fafafa; max-height:160px;"></div>
+          </div>
+          <div>
+            <label for="importScalePreset" style="display:block; font:12px/1.2 system-ui; color:#333; margin-bottom:4px;">Architectural Scale</label>
+            <select id="importScalePreset" style="width:100%; padding:6px 8px; font:13px system-ui; border:1px solid #ddd; border-radius:6px;">
+              <option value="0.3333333333">3" = 1'-0"</option>
+              <option value="0.6666666667">1-1/2" = 1'-0"</option>
+              <option value="1">1" = 1'-0"</option>
+              <option value="1.3333333333">3/4" = 1'-0"</option>
+              <option value="2">1/2" = 1'-0"</option>
+              <option value="2.6666666667">3/8" = 1'-0"</option>
+              <option value="4" selected>1/4" = 1'-0"</option>
+              <option value="5.3333333333">3/16" = 1'-0"</option>
+              <option value="8">1/8" = 1'-0"</option>
+              <option value="10.6666666667">3/32" = 1'-0"</option>
+              <option value="16">1/16" = 1'-0"</option>
+              <option value="0.0833333333">1:1 (inch = inch)</option>
+            </select>
+          </div>
+          <div>
+            <label for="importScaleCustom" style="display:block; font:12px/1.2 system-ui; color:#333; margin-bottom:4px;">Custom feet-per-inch</label>
+            <input id="importScaleCustom" type="number" step="0.01" min="0.01" placeholder="e.g. 4 for 1/4\"=1'" style="width:100%; padding:6px 8px; font:13px system-ui; border:1px solid #ddd; border-radius:6px;" />
+          </div>
+          <div id="importDXFUnitsWrap" style="display:none;">
+            <label for="importUnit" style="display:block; font:12px/1.2 system-ui; color:#333; margin-bottom:4px;">DXF Units</label>
+            <select id="importUnit" style="width:100%; padding:6px 8px; font:13px system-ui; border:1px solid #ddd; border-radius:6px;">
+              <option value="in">Inches</option>
+              <option value="ft">Feet</option>
+              <option value="mm">Millimeters</option>
+              <option value="m">Meters</option>
+            </select>
+          </div>
+          <div id="importOpacityWrap" style="display:none;">
+            <label for="importOpacity" style="display:block; font:12px/1.2 system-ui; color:#333; margin-bottom:4px;">Underlay Opacity</label>
+            <input id="importOpacity" type="range" min="0" max="1" step="0.01" value="0.85" />
+          </div>
+          <div style="margin-top:auto; display:flex; gap:8px; justify-content:flex-end;">
+            <button id="importCancel" class="btn secondary" type="button" style="padding:6px 10px; border:1px solid #ddd; background:#f5f5f5; border-radius:6px;">Cancel</button>
+            <button id="importConfirm" class="btn" type="button" style="padding:6px 10px; background:#111; color:#fff; border-radius:6px;">Import</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   <!-- Floating 3D button to return to main scene -->
   <a id="to3D" class="floating-nav nav-top-right" href="./index.html" title="3D" aria-label="3D">
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
         <path d="M4 8l8-4 8 4-8 4-8-4z"/>
         <path d="M4 8v8l8 4 8-4V8"/>
+      </g>
+    </svg>
+  </a>
+  <!-- Floating: Personal Columbarium -->
+  <a id="toColumbariumFrom2D" class="floating-nav nav-top-right-2" href="./columbarium.html" title="Columbarium" aria-label="Columbarium">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
+        <path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>
+      </g>
+    </svg>
+  </a>
+  <!-- Floating: Push to AR (starts AR in 3D) -->
+  <a id="toARFrom2D" class="floating-nav nav-top-right-3" href="./index.html?autoAR=1" title="Push to AR" aria-label="Push to AR">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
+        <rect x="4" y="4" width="16" height="16" rx="3"/>
+        <path d="M12 16V8M9 11l3-3 3 3"/>
       </g>
     </svg>
   </a>

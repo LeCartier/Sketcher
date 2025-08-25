@@ -86,8 +86,9 @@
         <button id="zoneClear" class="icon-btn" title="Clear All Zones" aria-label="Clear All Zones">
           <span class="sr-only">Clear All Zones</span>
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="8" fill="none" stroke="#222" stroke-width="2" />
-            <line x1="7" y1="17" x2="17" y2="7" stroke="#222" stroke-width="2" stroke-linecap="round" />
+            <!-- Unified clear icon: square with an X -->
+            <rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+            <path d="M8 8l8 8M16 8l-8 8" stroke="#222" stroke-width="2" stroke-linecap="round"/>
           </svg>
         </button>
       </div>
@@ -132,6 +133,16 @@
         <path d="M12 18 L12 8" stroke-width="1" opacity=".8"/>
         <path d="M16 18 L13 8" stroke-width="1" opacity=".8"/>
         <path d="M20 18 L15 8" stroke-width="1" opacity=".8"/>
+      </g>
+    </svg>
+  </a>
+  <!-- Floating button to 2D Sketch (top-right cluster) -->
+  <a id="toSketch2DFromCol" class="floating-nav nav-top-right-4" href="./sketch2d.html" title="2D Sketch" aria-label="2D Sketch">
+    <!-- Flat grid icon to indicate 2D -->
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="#fff" stroke-width="1.8" opacity=".92">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+        <path d="M4 12h16M12 4v16" opacity=".9"/>
       </g>
     </svg>
   </a>
@@ -181,7 +192,7 @@
     // Page fade-in/out
     document.addEventListener('DOMContentLoaded', () => {
       requestAnimationFrame(()=>document.body.classList.add('page-ready'));
-  const hooks = [document.getElementById('toEditorFloating')].filter(Boolean);
+  const hooks = [document.getElementById('toEditorFloating'), document.getElementById('toSketch2DFromCol')].filter(Boolean);
       hooks.forEach(el => el.addEventListener('click', (e) => {
         e.preventDefault();
         const href = el.getAttribute('href');

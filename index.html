@@ -198,8 +198,9 @@
         <span class="sr-only">Export Scene (OBJ)</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-          <path d="M12 16V10" stroke="#222" stroke-width="2"/>
-          <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Down arrow to denote export/download -->
+          <path d="M12 8v6" stroke="#222" stroke-width="2"/>
+          <path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
       <button id="exportRevitFamily" class="icon-btn" title="Export Revit Family (guide)" aria-label="Export Revit Family (guide)">
@@ -278,15 +279,18 @@
         <span class="sr-only">Upload Model</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/>
-          <path d="M12 8v6" stroke="#222" stroke-width="2"/>
-          <path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
+          <!-- Up arrow to denote upload/import -->
+          <path d="M12 16V10" stroke="#222" stroke-width="2"/>
+          <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
       <button id="mapImport" class="icon-btn" title="Import from Map" aria-label="Import from Map">
         <span class="sr-only">Import from Map</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2V6z" fill="none" stroke="#222" stroke-width="1.8"/>
-          <circle cx="12" cy="12" r="2" fill="#222"/>
+          <!-- Up arrow badge to denote import -->
+          <path d="M12 16V10" stroke="#222" stroke-width="2"/>
+          <path d="M9 10l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
     </div>
@@ -340,6 +344,19 @@
         </button>
       </div>
     </div>
+    <!-- Textures parent button (opens Texture Editor) -->
+    <button id="openTextureEditor" class="icon-btn" title="Textures" aria-label="Textures" type="button">
+      <span class="sr-only">Textures</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <defs>
+          <pattern id="chk" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+            <rect x="0" y="0" width="2" height="2" fill="#222"/>
+            <rect x="2" y="2" width="2" height="2" fill="#222"/>
+          </pattern>
+        </defs>
+        <rect x="4" y="4" width="16" height="16" rx="2" fill="url(#chk)" stroke="#222" stroke-width="1.5"/>
+      </svg>
+    </button>
     <!-- Views parent button and group -->
     <button id="toggleViews" class="icon-btn toggle-btn" title="Views" aria-label="Views" aria-pressed="false">
       <span class="sr-only">Views</span>
@@ -446,6 +463,64 @@
           <div class="swatch-box" style="background:#ffffff; border:2px dashed #222;"></div>
           <div class="swatch-label">Sketch</div>
         </button>
+    </div>
+  </div>
+  <!-- Texture/Material Editor popup (draggable, resizable) -->
+  <div id="textureEditor" style="display:none; position:fixed; left: 96px; top: 96px; width: 320px; max-width: 90vw; background: rgba(255,255,255,0.86); border:1px solid #e0e0e0; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,0.12); z-index: 130; overflow: hidden;">
+    <div class="te-header" style="cursor:move; padding:8px 12px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:8px; justify-content:space-between; user-select:none;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <strong style="font-family:sans-serif; font-size:13px; color:#222;">Textures</strong>
+        <button id="teChooseFolder" class="btn" type="button" title="Set texture folder" aria-label="Set texture folder" style="width:28px; height:24px; padding:0; display:inline-flex; align-items:center; justify-content:center;">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" fill="none" stroke="#222" stroke-width="1.8"/></svg>
+        </button>
+        <span id="teFolderName" style="font-size:11px; color:#666; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">No folder</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button id="teCompact" title="Compact layout" aria-label="Compact layout" class="btn" type="button" style="width:auto; height:24px; padding:0 8px; line-height:22px;">▦</button>
+        <button id="textureEditorClose" title="Close" aria-label="Close" style="width:24px; height:24px; border:none; border-radius:50%; background:#f2f2f2; cursor:pointer;">×</button>
+      </div>
+    </div>
+    <div class="te-body" style="padding:10px 12px; font-family:sans-serif; font-size:13px; color:#222;">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <label title="Apply to whole object" style="display:inline-flex; align-items:center; gap:6px;"><input type="radio" name="teTarget" value="object" checked><span class="sr-only">Object</span><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="6" width="12" height="12" fill="none" stroke="#222" stroke-width="1.8"/></svg></label>
+        <label title="Apply to a single face" style="display:inline-flex; align-items:center; gap:6px;"><input type="radio" name="teTarget" value="face"><span class="sr-only">Face</span><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><polygon points="5,7 19,7 17,17 7,17" fill="none" stroke="#222" stroke-width="1.8"/></svg></label>
+        <button id="tePickFace" class="btn" type="button" title="Pick face" style="margin-left:auto; width:28px; height:24px; padding:0; display:inline-flex; align-items:center; justify-content:center;">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 12h8l2 2h6" fill="none" stroke="#222" stroke-width="1.8"/></svg>
+        </button>
+      </div>
+      <div class="te-grid-2">
+        <label title="Base (image or video)"><span class="sr-only">Base</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2" fill="none" stroke="#222" stroke-width="1.8"/><circle cx="9" cy="12" r="2" fill="#222"/></svg><input id="teBaseName" type="text" placeholder="name.ext" list="teTexList"><input id="teBaseColor" type="file" accept="image/*,video/*"></label>
+        <label title="Normal map"><span class="sr-only">Normal</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16c4-6 12-6 16 0" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teNormalName" type="text" placeholder="name.ext" list="teTexList"><input id="teNormal" type="file" accept="image/*"></label>
+        <label title="Roughness map"><span class="sr-only">Roughness</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8l4 8 4-8 4 8" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teRoughnessName" type="text" placeholder="name.ext" list="teTexList"><input id="teRoughness" type="file" accept="image/*"></label>
+        <label title="Metalness map"><span class="sr-only">Metalness</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.8"/><circle cx="16" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teMetalnessName" type="text" placeholder="name.ext" list="teTexList"><input id="teMetalness" type="file" accept="image/*"></label>
+        <label title="Ambient Occlusion map"><span class="sr-only">AO</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="none" stroke="#222" stroke-width="1.8"/><circle cx="12" cy="12" r="2" fill="#222"/></svg><input id="teAOName" type="text" placeholder="name.ext" list="teTexList"><input id="teAO" type="file" accept="image/*"></label>
+        <label title="Emissive (image or video)"><span class="sr-only">Emissive</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v4M12 15v4M5 12h4M15 12h4" stroke="#222" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teEmissiveName" type="text" placeholder="name.ext" list="teTexList"><input id="teEmissive" type="file" accept="image/*,video/*"></label>
+        <label title="Alpha map"><span class="sr-only">Alpha</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="10" fill="none" stroke="#222" stroke-width="1.8"/><path d="M5 17h14" stroke="#222" stroke-width="1.8"/></svg><input id="teAlphaName" type="text" placeholder="name.ext" list="teTexList"><input id="teAlpha" type="file" accept="image/*"></label>
+      </div>
+      <datalist id="teTexList"></datalist>
+      <hr style="margin:10px 0; border:none; border-top:1px solid #eee;">
+      <div class="te-grid-2">
+        <label title="Repeat U"><span class="sr-only">Repeat X</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10M7 12h10M7 17h10" stroke="#222" stroke-width="1.8"/></svg><input id="teRepeatX" type="number" step="0.1" value="1"></label>
+        <label title="Repeat V"><span class="sr-only">Repeat Y</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7v10M12 7v10M17 7v10" stroke="#222" stroke-width="1.8"/></svg><input id="teRepeatY" type="number" step="0.1" value="1"></label>
+        <label title="Offset U"><span class="sr-only">Offset X</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14" stroke="#222" stroke-width="1.8"/></svg><input id="teOffsetX" type="number" step="0.01" value="0"></label>
+        <label title="Offset V"><span class="sr-only">Offset Y</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" stroke="#222" stroke-width="1.8"/></svg><input id="teOffsetY" type="number" step="0.01" value="0"></label>
+        <label title="Rotation (radians)"><span class="sr-only">Rotation</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-7 7" fill="none" stroke="#222" stroke-width="1.8"/><path d="M5 8v-3h3" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teRotation" type="number" step="0.01" value="0"></label>
+        <label title="Normal strength"><span class="sr-only">Normal Strength</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16c4-6 12-6 16 0" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teNormalScale" type="number" step="0.1" value="1"></label>
+        <label title="Roughness scalar"><span class="sr-only">Roughness</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8l4 8 4-8 4 8" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teRoughnessScalar" type="number" step="0.05" min="0" max="1" value="1"></label>
+        <label title="Metalness scalar"><span class="sr-only">Metalness</span><svg class="te-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.8"/><circle cx="16" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.8"/></svg><input id="teMetalnessScalar" type="number" step="0.05" min="0" max="1" value="0"></label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button id="teApply" class="btn primary" type="button">Apply</button>
+        <button id="teClear" class="btn" type="button" title="Clear" aria-label="Clear">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="#222" stroke-width="2"/>
+            <path d="M8 8l8 8M16 8l-8 8" stroke="#222" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="te-resizer" style="position:absolute; right:4px; bottom:4px; width:14px; height:14px; cursor:nwse-resize; opacity:0.6;">
+      <svg viewBox="0 0 10 10" width="14" height="14"><path d="M0 10 L10 0 M3 10 L10 3 M6 10 L10 6" stroke="#999"/></svg>
     </div>
   </div>
   <!-- Parent Columbarium button (opens Personal/Community popup) -->
@@ -961,6 +1036,10 @@
         (async () => {
           try { await import('./js/app/ui/materials-popup.js'); } catch {}
         })();
+        // Load Texture Editor UI module
+        (async () => {
+          try { await import('./js/app/ui/texture-editor.js'); } catch {}
+        })();
         // Load UI wiring for Views + Plan Lock (safe additive module)
         (async () => {
           try { await import('./js/app/ui/views.js'); } catch {}
@@ -1103,6 +1182,40 @@
             }
           });
           window.addEventListener('resize', () => { if (materialsPopup.classList.contains('open')) placeMatPopup(); });
+        }
+        // Texture editor open/close and placement
+        const openTextureEditorBtn = document.getElementById('openTextureEditor');
+        const textureEditor = document.getElementById('textureEditor');
+        const textureEditorClose = document.getElementById('textureEditorClose');
+        if (openTextureEditorBtn && textureEditor) {
+          const placeTE = () => {
+            const r = openTextureEditorBtn.getBoundingClientRect();
+            const width = textureEditor.offsetWidth || 320;
+            const height = textureEditor.offsetHeight || 240;
+            const proposedLeft = Math.round(r.right + 10);
+            const proposedTop = Math.round(r.top + (r.height/2) - (height/2));
+            const left = Math.min(proposedLeft, window.innerWidth - width - 12);
+            const top = Math.max(12, Math.min(proposedTop, window.innerHeight - height - 12));
+            textureEditor.style.left = left + 'px';
+            textureEditor.style.top = top + 'px';
+          };
+          openTextureEditorBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = textureEditor.style.display !== 'none';
+            if (!isOpen) {
+              textureEditor.style.display = 'block';
+              requestAnimationFrame(()=>{ placeTE(); });
+            } else {
+              textureEditor.style.display = 'none';
+            }
+          });
+          if (textureEditorClose) textureEditorClose.addEventListener('click', ()=>{ textureEditor.style.display = 'none'; });
+          document.addEventListener('click', (e) => {
+            if (textureEditor.style.display !== 'none' && !textureEditor.contains(e.target) && e.target !== openTextureEditorBtn) {
+              textureEditor.style.display = 'none';
+            }
+          });
+          window.addEventListener('resize', () => { if (textureEditor.style.display !== 'none') placeTE(); });
         }
     });
     init();

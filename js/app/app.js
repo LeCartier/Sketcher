@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -25,7 +25,8 @@ export async function init() {
 			import('./snapping-visuals.js'),
 			import('./session-draft.js'),
 			import('./features/primitives.js'),
-	]);
+			import('./services/ar-edit.js'),
+		]);
 
 	// Version badge
 	(async () => {
@@ -41,6 +42,8 @@ export async function init() {
 			if (el && !el.textContent) el.textContent = 'v1.1.0';
 		}
 	})();
+
+
 
 		async function loadWebXRPolyfillIfNeeded() {
 		const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
@@ -77,140 +80,23 @@ export async function init() {
 	} catch {}
 	renderer.xr.enabled = true;
 	let arActive = false;
-	// Room Scan (beta) state
-	let scanActive = false;
-	let scanSession = null;
-	let scanViewerSpace = null;
-	let scanLocalSpace = null;
-	let scanHitTestSource = null;
-	let scanGroup = null; // preview group in meters
-	const SCAN_M_TO_FT = 3.28084;
-	const scanExtents = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
-	// Depth sensing preview/accumulation (meters while scanning)
-	let depthPointsPreview = null; // THREE.Points inside scanGroup
-	let depthPointsAccum = []; // Array of THREE.Vector3 (meters)
-	let depthSampleTick = 0;
-	const MAX_DEPTH_POINTS = 15000;
+	// Room Scan is now provided by a service module
 	let arContent = null; // cloned scene content for AR
 	let arPlaced = false;
 	let xrHitTestSource = null;
 	let xrViewerSpace = null;
 	let xrLocalSpace = null;
+	// Track grab transitions per XR input source for haptics and statefulness
+	const xrGrabState = new WeakMap();
+
+	// AR editing helper (controllers or hands)
+	const arEdit = createAREdit(THREE, scene, renderer);
+	try { arEdit.setGizmoEnabled(false); } catch {}
 
 	// Snap highlight via module
 	const snapVisuals = createSnapVisuals({ THREE, scene });
 
-	// Manual Room Scan fallback (non-AR)
-	let manualScanActive = false;
-	let manualScanPreview = null; // THREE.Group
-	let manualScanStart = null; // THREE.Vector3
-	const MANUAL_FLOOR_THICKNESS_FT = 0.2;
-
-	function startManualRoomScan(){
-		// HUD wiring
-		const hud = document.getElementById('scanHud');
-		const hudStatus = document.getElementById('scanHudStatus');
-		const hudCancel = document.getElementById('scanHudCancel');
-		if (hud) hud.style.display = 'block';
-		if (hudStatus) hudStatus.textContent = 'Manual scan: drag to outline the room, release to finish.';
-		if (hudCancel) {
-			const cancel = () => {
-				manualScanActive = false;
-				controls.enabled = true;
-				if (hud) hud.style.display = 'none';
-				window.removeEventListener('pointerdown', onDown, true);
-				window.removeEventListener('pointermove', onMove, true);
-				window.removeEventListener('pointerup', onUp, true);
-			};
-			hudCancel.addEventListener('click', cancel);
-		}
-
-		if (manualScanActive) return;
-		manualScanActive = true;
-		controls.enabled = false;
-		// Build a preview group
-		manualScanPreview = new THREE.Group();
-		manualScanPreview.name = 'Room Scan Manual Preview';
-		scene.add(manualScanPreview);
-		const info = 'Room Scan (manual): tap-drag to outline the floor; release to finish.';
-		try { console.info(info); } catch {}
-		// Capture-phase handlers to avoid other tools
-		const onDown = (e) => {
-			if (!manualScanActive) return;
-			e.preventDefault(); e.stopPropagation();
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const pt = intersectGround();
-			if (!pt) return;
-			manualScanStart = pt.clone();
-		};
-		const onMove = (e) => {
-			if (!manualScanActive || !manualScanStart) return;
-			e.preventDefault(); e.stopPropagation();
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const pt = intersectGround(); if (!pt) return;
-			const minX = Math.min(manualScanStart.x, pt.x);
-			const maxX = Math.max(manualScanStart.x, pt.x);
-			const minZ = Math.min(manualScanStart.z, pt.z);
-			const maxZ = Math.max(manualScanStart.z, pt.z);
-			const w = Math.max(0.1, maxX - minX);
-			const d = Math.max(0.1, maxZ - minZ);
-			const cx = (minX + maxX) / 2;
-			const cz = (minZ + maxZ) / 2;
-			// Rebuild preview
-			manualScanPreview.clear();
-			const floor = new THREE.Mesh(new THREE.BoxGeometry(w, MANUAL_FLOOR_THICKNESS_FT, d), new THREE.MeshBasicMaterial({ color: 0x00ff88, opacity: 0.25, transparent: true }));
-			floor.position.set(cx, -MANUAL_FLOOR_THICKNESS_FT/2, cz);
-			manualScanPreview.add(floor);
-			const wallH = 2.4 * SCAN_M_TO_FT; // ~8 ft
-			const t = 0.05; // preview wall thickness
-			const y = wallH/2;
-			const n = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); n.position.set(cx, y, maxZ); manualScanPreview.add(n);
-			const s = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); s.position.set(cx, y, minZ); manualScanPreview.add(s);
-			const eMesh = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); eMesh.position.set(maxX, y, cz); manualScanPreview.add(eMesh);
-			const wMesh = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); wMesh.position.set(minX, y, cz); manualScanPreview.add(wMesh);
-		};
-		const onUp = (e) => {
-			if (!manualScanActive || !manualScanStart) return;
-			e.preventDefault(); e.stopPropagation();
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const pt = intersectGround(); if (!pt) return;
-			const minX = Math.min(manualScanStart.x, pt.x);
-			const maxX = Math.max(manualScanStart.x, pt.x);
-			const minZ = Math.min(manualScanStart.z, pt.z);
-			const maxZ = Math.max(manualScanStart.z, pt.z);
-			// Create final floor and walls in feet, aligned to Y=0
-			const w_ft = Math.max(0.2, maxX - minX);
-			const d_ft = Math.max(0.2, maxZ - minZ);
-			const cx_ft = (minX + maxX) / 2;
-			const cz_ft = (minZ + maxZ) / 2;
-			const h_ft = 8.0; // default wall height
-			{
-				const geo = new THREE.BoxGeometry(w_ft, MANUAL_FLOOR_THICKNESS_FT, d_ft);
-				const mesh = new THREE.Mesh(geo, material.clone());
-				mesh.position.set(cx_ft, -MANUAL_FLOOR_THICKNESS_FT/2, cz_ft);
-				mesh.name = 'Scan Floor';
-				addObjectToScene(mesh);
-			}
-			const t = 0.2;
-			const y_ft = h_ft/2;
-			{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, maxZ); mesh.name = 'Scan Wall N'; addObjectToScene(mesh); }
-			{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, minZ); mesh.name = 'Scan Wall S'; addObjectToScene(mesh); }
-			{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set(maxX, y_ft, cz_ft); mesh.name = 'Scan Wall E'; addObjectToScene(mesh); }
-			{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set(minX, y_ft, cz_ft); mesh.name = 'Scan Wall W'; addObjectToScene(mesh); }
-			// Cleanup
-			if (manualScanPreview) { scene.remove(manualScanPreview); manualScanPreview = null; }
-			manualScanStart = null;
-			manualScanActive = false;
-			controls.enabled = true;
-			if (hud) hud.style.display = 'none';
-			window.removeEventListener('pointerdown', onDown, true);
-			window.removeEventListener('pointermove', onMove, true);
-			window.removeEventListener('pointerup', onUp, true);
-		};
-		window.addEventListener('pointerdown', onDown, true);
-		window.addEventListener('pointermove', onMove, true);
-		window.addEventListener('pointerup', onUp, true);
-	}
+	// Room Scan service will be initialized after core scene state is created (see below)
 
 	// Grid & lights
 	let GRID_SIZE = 20;
@@ -303,6 +189,24 @@ export async function init() {
 	let lastClickObj = null;
 	// Single selection display mode: 'gizmo' (default) or 'handles'
 	let singleSelectionMode = 'gizmo';
+
+	// Room Scan service
+	const { createRoomScanService } = await import('./services/room-scan.js');
+	const roomScan = createRoomScanService({
+		THREE,
+		renderer,
+		scene,
+		camera,
+		controls,
+		raycaster,
+		pointer,
+		getPointer,
+		intersectGround,
+		addObjectToScene,
+		material,
+		grid,
+		loadWebXRPolyfillIfNeeded,
+	});
 
 	// Soft snapping config (feet): snap when within SNAP_ENTER; allow pushing past with up to SNAP_OVERLAP before releasing
 	const SNAP_ENABLED = true;
@@ -939,7 +843,22 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		return mat;
 	}
 	function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
-	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ ensureOriginalMaterial(m); m.material = sharedMat; }); }
+	function __isMaterialOverrideChain(node){ let n=node; while(n){ if (n.userData && n.userData.__materialOverride) return true; n = n.parent; } return false; }
+	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; ensureOriginalMaterial(m); m.material = sharedMat; }); }
+	function restoreOriginalMaterialsRespectingOverrides(){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
+	function applyStyleToSubtree(root, style){
+		const stack = [root];
+		const use = (s)=> getActiveSharedMaterial(s) || getProceduralSharedMaterial(s) || material;
+		while (stack.length){
+			const o = stack.pop();
+			if (!o) continue;
+			if (o.isMesh){
+				ensureOriginalMaterial(o);
+				if (style === 'original') o.material = material; else o.material = use(style);
+			}
+			if (o.children && o.children.length) stack.push(...o.children);
+		}
+	}
 
 	// Loader helpers for photoreal textures (optional assets)
 	const __textureLoader = new THREE.TextureLoader();
@@ -1148,6 +1067,212 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// Signal readiness for late-loading UI modules
 			document.dispatchEvent(new CustomEvent('sketcher:materials-ready'));
 		} catch {}
+	})();
+
+	// Texture library folder (File System Access API)
+	let __textureLibHandle = null;
+	let __textureNames = [];
+	async function restoreTextureLibraryHandle(){
+		try {
+			const { getTextureLibraryHandle } = localStore;
+			if (typeof getTextureLibraryHandle === 'function') {
+				const h = await getTextureLibraryHandle();
+				if (h && h.kind === 'directory') __textureLibHandle = h;
+			}
+		} catch {}
+	}
+	async function refreshTextureNameList(){
+		__textureNames = [];
+		if (!__textureLibHandle) return;
+		try {
+			for await (const entry of __textureLibHandle.values()){
+				if (entry.kind === 'file' && entry.name) __textureNames.push(entry.name);
+			}
+			try {
+				const dl = document.getElementById('teTexList');
+				if (dl) { dl.innerHTML = ''; __textureNames.slice(0,500).forEach(n=>{ const o=document.createElement('option'); o.value=n; dl.appendChild(o); }); }
+			} catch {}
+		} catch {}
+	}
+	async function chooseTextureLibrary(){
+		if (!window.showDirectoryPicker) { alert('Your browser does not support choosing a texture folder. Please use a recent Chromium-based browser.'); return; }
+		try {
+			const handle = await window.showDirectoryPicker({ mode: 'read' });
+			__textureLibHandle = handle;
+			const { setTextureLibraryHandle } = localStore;
+			if (typeof setTextureLibraryHandle === 'function') await setTextureLibraryHandle(handle);
+			try { const name = handle.name || 'Folder'; document.dispatchEvent(new CustomEvent('sketcher:texture-folder-updated', { detail: { name } })); } catch {}
+			await refreshTextureNameList();
+		} catch (e) { /* user cancelled */ }
+	}
+	document.addEventListener('sketcher:chooseTextureFolder', chooseTextureLibrary);
+	await restoreTextureLibraryHandle();
+	try { if (__textureLibHandle) document.dispatchEvent(new CustomEvent('sketcher:texture-folder-updated', { detail: { name: __textureLibHandle.name || 'Folder' } })); } catch {}
+	await refreshTextureNameList();
+
+	// Texture Editor wiring: per-object apply/clear (face mode stub)
+	(function(){
+		function setTexProps(tex, detail){
+			try {
+				tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+				tex.repeat.set(detail?.repeat?.x || 1, detail?.repeat?.y || 1);
+				tex.offset.set(detail?.offset?.x || 0, detail?.offset?.y || 0);
+				tex.rotation = detail?.rotation || 0;
+				const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 8;
+				tex.anisotropy = Math.min(16, maxAniso || 8);
+				tex.needsUpdate = true;
+			} catch {}
+		}
+		async function loadTexFromTextureLibrary(nameLike){
+			// Try to locate by basename (case-insensitive) in the chosen folder
+			if (!__textureLibHandle || !nameLike) return null;
+			try {
+				const lower = String(nameLike).toLowerCase();
+				for await (const entry of __textureLibHandle.values()){
+					if (entry.kind === 'file' && entry.name && entry.name.toLowerCase() === lower) {
+						const file = await entry.getFile();
+						return file || null;
+					}
+				}
+			} catch {}
+			return null;
+		}
+		function isVideoFile(file){ return typeof file?.type === 'string' && file.type.startsWith('video/'); }
+		function loadTexFromFile(file, { sRGB=false, detail }={}){
+			return new Promise((resolve,reject)=>{
+				if (!file) return resolve(null);
+				const url = URL.createObjectURL(file);
+				// Detect video vs image by MIME
+				const isVideo = isVideoFile(file);
+				if (isVideo) {
+					try {
+						const video = document.createElement('video');
+						video.src = url;
+						video.loop = true; video.muted = true; video.playsInline = true; video.crossOrigin = 'anonymous';
+						const onReady = () => {
+							try { video.play().catch(()=>{}); } catch {}
+							const tex = new THREE.VideoTexture(video);
+							try { if (sRGB && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace; } catch {}
+							tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+							setTexProps(tex, detail);
+							resolve(tex);
+						};
+						video.addEventListener('loadeddata', onReady, { once: true });
+						video.addEventListener('error', (e)=>{ try { URL.revokeObjectURL(url); } catch {} reject(e?.error||new Error('Video load failed')); }, { once: true });
+					} catch (e) { try { URL.revokeObjectURL(url); } catch {} reject(e); }
+					return;
+				}
+				const loader = new THREE.TextureLoader();
+				loader.load(url, (tex)=>{
+					try { if (sRGB && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace; } catch {}
+					setTexProps(tex, detail);
+					resolve(tex);
+					try { URL.revokeObjectURL(url); } catch {}
+				}, undefined, (err)=>{ try { URL.revokeObjectURL(url); } catch {} reject(err); });
+			});
+		}
+		document.addEventListener('sketcher:texture-editor:apply', async (ev) => {
+			const detail = ev.detail || {};
+			if (!selectedObjects || selectedObjects.length === 0) { alert('Select an object first.'); return; }
+			const targetObjs = selectedObjects; // face mode will refine
+			const filesUi = detail.files || {};
+			// Accept both UI naming variants
+			const files = {
+				base: filesUi.base || null,
+				normal: filesUi.normal || null,
+				rough: filesUi.rough || filesUi.roughness || null,
+				metal: filesUi.metal || filesUi.metalness || null,
+				ao: filesUi.ao || null,
+				emissive: filesUi.emissive || null,
+				alpha: filesUi.alpha || null,
+			};
+			// Allow linking by filename typed into the new name inputs
+			const names = {
+				base: document.getElementById('teBaseName')?.value?.trim() || '',
+				normal: document.getElementById('teNormalName')?.value?.trim() || '',
+				rough: document.getElementById('teRoughnessName')?.value?.trim() || '',
+				metal: document.getElementById('teMetalnessName')?.value?.trim() || '',
+				ao: document.getElementById('teAOName')?.value?.trim() || '',
+				emissive: document.getElementById('teEmissiveName')?.value?.trim() || '',
+				alpha: document.getElementById('teAlphaName')?.value?.trim() || '',
+			};
+			async function ensureFile(f, name){
+				if (f) return f;
+				if (name && __textureLibHandle) {
+					const file = await loadTexFromTextureLibrary(name);
+					return file || null;
+				}
+				return null;
+			}
+			try {
+				// Try to resolve using file picker first; if missing and we have a library handle, attempt to match by name
+				const baseF = await ensureFile(files.base, names.base);
+				const normalF = await ensureFile(files.normal, names.normal);
+				const roughF = await ensureFile(files.rough, names.rough);
+				const metalF = await ensureFile(files.metal, names.metal);
+				const aoF = await ensureFile(files.ao, names.ao);
+				const emissiveF = await ensureFile(files.emissive, names.emissive);
+				const alphaF = await ensureFile(files.alpha, names.alpha);
+				const [map, normalMap, roughnessMap, metalnessMap, aoMap, emissiveMap, alphaMap] = await Promise.all([
+					loadTexFromFile(baseF, { sRGB:true, detail }),
+					loadTexFromFile(normalF, { sRGB:false, detail }),
+					loadTexFromFile(roughF, { sRGB:false, detail }),
+					loadTexFromFile(metalF, { sRGB:false, detail }),
+					loadTexFromFile(aoF, { sRGB:false, detail }),
+					loadTexFromFile(emissiveF, { sRGB:true, detail }),
+					loadTexFromFile(alphaF, { sRGB:false, detail }),
+				]);
+				const roughScalar = Number.isFinite(detail?.scalars?.roughness) ? detail.scalars.roughness : undefined;
+				const metalScalar = Number.isFinite(detail?.scalars?.metalness) ? detail.scalars.metalness : undefined;
+				const emissiveIntensity = Number.isFinite(detail?.scalars?.emissiveIntensity) ? detail.scalars.emissiveIntensity : undefined;
+				// UI sends normalScale as a single number; allow vector too
+				let nScaleX, nScaleY;
+				if (detail && typeof detail.normalScale === 'number') { nScaleX = nScaleY = detail.normalScale; }
+				else if (detail && detail.normalScale && Number.isFinite(detail.normalScale.x) && Number.isFinite(detail.normalScale.y)) {
+					nScaleX = detail.normalScale.x; nScaleY = detail.normalScale.y;
+				}
+				// Mark roots as override so global style won't stomp
+				targetObjs.forEach(o => { try { o.userData.__materialOverride = true; } catch {} });
+				targetObjs.forEach(obj => {
+					obj.traverse(child => {
+						if (!child.isMesh) return;
+						const mats = Array.isArray(child.material) ? child.material : [child.material];
+						for (let i=0;i<mats.length;i++){
+							let mat = mats[i];
+							if (!mat || !mat.isMaterial) mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+							if (map) mat.map = map;
+							if (normalMap) { mat.normalMap = normalMap; if (Number.isFinite(nScaleX) && Number.isFinite(nScaleY)) mat.normalScale = new THREE.Vector2(nScaleX, nScaleY); }
+							if (roughnessMap) mat.roughnessMap = roughnessMap;
+							if (metalnessMap) mat.metalnessMap = metalnessMap;
+							if (aoMap) mat.aoMap = aoMap;
+							if (emissiveMap) { mat.emissiveMap = emissiveMap; try { mat.emissive = new THREE.Color(0xffffff); } catch {} if (Number.isFinite(emissiveIntensity)) mat.emissiveIntensity = emissiveIntensity; }
+							if (alphaMap) { mat.alphaMap = alphaMap; mat.transparent = true; }
+							if (Number.isFinite(roughScalar)) mat.roughness = roughScalar;
+							if (Number.isFinite(metalScalar)) mat.metalness = metalScalar;
+							mat.needsUpdate = true;
+							mats[i] = mat;
+						}
+						child.material = Array.isArray(child.material) ? mats : mats[0];
+					});
+				});
+				saveSessionDraftNow();
+			} catch (e) {
+				console.warn('Texture apply failed', e);
+				alert('Texture apply failed.');
+			}
+		});
+		document.addEventListener('sketcher:texture-editor:clear', () => {
+			if (!selectedObjects || selectedObjects.length === 0) return;
+			selectedObjects.forEach(obj => {
+				// Remove override and reapply current global style just for this subtree
+				try { delete obj.userData.__materialOverride; } catch {}
+				applyStyleToSubtree(obj, currentMaterialStyle);
+			});
+			saveSessionDraftNow();
+		});
+		document.addEventListener('sketcher:texture-editor:pick-face', () => {
+			alert('Face picking will be available soon. For now, apply textures to the whole object.');
+		});
 	})();
 
 	// Edge fade overlay for infinite grid
@@ -1513,10 +1638,26 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	} catch {}
 
 	// AR visibility
-		if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
+			if(mode==='ar') { arButton.style.display = 'block'; } else { arButton.style.display = 'none'; if(renderer.xr.isPresenting) renderer.xr.getSession().end(); }
 		if (typeof applyAutoTouchMapping === 'function') applyAutoTouchMapping();
 	});
 	modeSelect.dispatchEvent(new Event('change'));
+
+		// Auto-start AR when arriving from 2D with ?autoAR=1
+		try {
+			const usp = new URLSearchParams(location.search);
+			if (usp.get('autoAR') === '1') {
+				// switch mode to AR then click AR button once UI settles
+				setTimeout(()=>{
+					try {
+						const ms = document.getElementById('modeSelect');
+						if (ms) { ms.value = 'ar'; ms.dispatchEvent(new Event('change')); }
+						const btn = document.getElementById('arButton');
+						if (btn) btn.click();
+					} catch {}
+				}, 200);
+			}
+		} catch {}
 
 	// Export logic for toolbox popup
 	function buildExportRootFromObjects(objs){ return persistence.buildExportRootFromObjects(THREE, objs); }
@@ -1531,8 +1672,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		try {
 			const xr = navigator.xr; const xrSupported = xr && await xr.isSessionSupported('immersive-ar');
 			if (xrSupported) {
-				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'] });
+				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'], optionalFeatures: ['hand-tracking'] });
 				renderer.xr.setSession(session);
+				// start AR edit service
+				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true;
 				arPlaced = false;
 				grid.visible = false;
@@ -1542,6 +1685,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace });
 				session.addEventListener('end', () => {
 					arActive = false;
+					try { arEdit.stop(); } catch {}
 					grid.visible = true;
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
@@ -1555,102 +1699,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} catch (e) { alert('Failed to start AR: ' + (e?.message || e)); console.error(e); }
 	});
 
-	// Room Scan (beta) using WebXR hit-test to approximate room rectangle
+	// Room Scan (beta) using service API
 	document.addEventListener('sketcher:startRoomScan', async () => {
-		if (scanActive) return; // already running
 		await loadWebXRPolyfillIfNeeded();
-		const isSecure = window.isSecureContext || location.protocol === 'https:';
-		const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-		// If insecure or on iOS (WebXR AR unavailable), use manual fallback
-		if (!isSecure || isIOS) { startManualRoomScan(); return; }
-		try {
-			const xr = navigator.xr; if (!xr) throw new Error('WebXR not available');
-			const supported = await xr.isSessionSupported('immersive-ar');
-			if (!supported) { startManualRoomScan(); return; }
-			scanSession = await xr.requestSession('immersive-ar', {
-				requiredFeatures: ['local-floor', 'hit-test'],
-				optionalFeatures: ['depth-sensing', 'plane-detection'],
-				// Non-standard init dict for Chrome-based depth API (guarded at runtime)
-				depthSensing: { preferredFormat: 'luminance-alpha', usagePreference: ['cpu-optimized'] }
-			});
-			renderer.xr.setSession(scanSession);
-			scanActive = true;
-			// Hide grid during scan
-			if (grid) grid.visible = false;
-			// Build preview group in meters
-			scanGroup = new THREE.Group(); scanGroup.name = 'Room Scan Preview'; scene.add(scanGroup);
-			// Reset extents
-			scanExtents.minX = scanExtents.minZ = Infinity; scanExtents.maxX = scanExtents.maxZ = -Infinity;
-			// Spaces + hit test
-			scanViewerSpace = await scanSession.requestReferenceSpace('viewer');
-			scanLocalSpace = await scanSession.requestReferenceSpace('local-floor');
-			scanHitTestSource = await scanSession.requestHitTestSource({ space: scanViewerSpace });
-			alert('Room Scan: move device to map the floor; tap once to finish.');
-			const endScan = () => {
-				if (!scanActive) return;
-				scanActive = false;
-				try { if (scanHitTestSource && scanHitTestSource.cancel) scanHitTestSource.cancel(); } catch {}
-				scanHitTestSource = null; scanViewerSpace = null; scanLocalSpace = null;
-				// Convert preview to scene objects in feet
-				if (isFinite(scanExtents.minX) && isFinite(scanExtents.maxX) && isFinite(scanExtents.minZ) && isFinite(scanExtents.maxZ)) {
-					const widthM = Math.max(0.2, scanExtents.maxX - scanExtents.minX);
-					const depthM = Math.max(0.2, scanExtents.maxZ - scanExtents.minZ);
-					const wallH_M = 2.4;
-					// Floor
-					{
-						const thickness_ft = 0.2;
-						const geo = new THREE.BoxGeometry(widthM * SCAN_M_TO_FT, thickness_ft, depthM * SCAN_M_TO_FT);
-						const mesh = new THREE.Mesh(geo, material.clone());
-						// Align the floor top surface to world Y=0 (level 0)
-						const cx_ft = ((scanExtents.minX + scanExtents.maxX) / 2) * SCAN_M_TO_FT;
-						const cz_ft = ((scanExtents.minZ + scanExtents.maxZ) / 2) * SCAN_M_TO_FT;
-						mesh.position.set(cx_ft, -thickness_ft/2, cz_ft);
-						mesh.name = 'Scan Floor';
-						addObjectToScene(mesh);
-					}
-					// Walls (thin boxes along rectangle edges)
-					const t = 0.2; // ~0.2 ft thickness
-					const cx_ft = ((scanExtents.minX + scanExtents.maxX) / 2) * SCAN_M_TO_FT;
-					const cz_ft = ((scanExtents.minZ + scanExtents.maxZ) / 2) * SCAN_M_TO_FT;
-					const w_ft = (scanExtents.maxX - scanExtents.minX) * SCAN_M_TO_FT;
-					const d_ft = (scanExtents.maxZ - scanExtents.minZ) * SCAN_M_TO_FT;
-					const h_ft = wallH_M * SCAN_M_TO_FT;
-					const y_ft = h_ft / 2;
-					// North wall
-					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, (scanExtents.maxZ * SCAN_M_TO_FT)); mesh.name = 'Scan Wall N'; addObjectToScene(mesh); }
-					// South wall
-					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w_ft, h_ft, t), material.clone()); mesh.position.set(cx_ft, y_ft, (scanExtents.minZ * SCAN_M_TO_FT)); mesh.name = 'Scan Wall S'; addObjectToScene(mesh); }
-					// East wall
-					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set((scanExtents.maxX * SCAN_M_TO_FT), y_ft, cz_ft); mesh.name = 'Scan Wall E'; addObjectToScene(mesh); }
-					// West wall
-					{ const mesh = new THREE.Mesh(new THREE.BoxGeometry(t, h_ft, d_ft), material.clone()); mesh.position.set((scanExtents.minX * SCAN_M_TO_FT), y_ft, cz_ft); mesh.name = 'Scan Wall W'; addObjectToScene(mesh); }
-				}
-				// If we accumulated any depth points, add a point cloud in feet
-				if (depthPointsAccum && depthPointsAccum.length) {
-					const count = Math.min(depthPointsAccum.length, MAX_DEPTH_POINTS);
-					const positions = new Float32Array(count * 3);
-					for (let i = 0; i < count; i++) {
-						const p = depthPointsAccum[i];
-						positions[i*3+0] = p.x * SCAN_M_TO_FT;
-						positions[i*3+1] = p.y * SCAN_M_TO_FT;
-						positions[i*3+2] = p.z * SCAN_M_TO_FT;
-					}
-					const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-					const pts = new THREE.Points(g, new THREE.PointsMaterial({ color: 0x55ccff, size: 0.05 }));
-					pts.name = 'Scan Point Cloud';
-					addObjectToScene(pts);
-				}
-				// Cleanup preview
-				if (scanGroup) { scene.remove(scanGroup); scanGroup = null; }
-				depthPointsPreview = null; depthPointsAccum = []; depthSampleTick = 0;
-				// Show grid again
-				if (grid) grid.visible = true;
-				// End session if still running
-				try { const s = renderer.xr.getSession && renderer.xr.getSession(); if (s) s.end(); } catch {}
-			};
-			scanSession.addEventListener('end', endScan);
-			scanSession.addEventListener('select', endScan);
-		} catch (e) { alert('Failed to start Room Scan: ' + (e?.message || e)); console.error(e); }
+		roomScan.startRoomScan();
 	});
 
 	// Upload model
@@ -2296,78 +2348,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const gz = Math.round(target.z / cell) * cell;
 				grid.position.set(gx, 0, gz);
 			}
-			if (scanActive) {
-				// Accumulate floor hit-test points and update preview
-				const session = renderer.xr.getSession && renderer.xr.getSession();
-				if (session && scanHitTestSource && frame && scanLocalSpace) {
-					const results = frame.getHitTestResults(scanHitTestSource);
-					if (results && results.length) {
-						const pose = results[0].getPose(scanLocalSpace);
-						if (pose) {
-							const px = pose.transform.position.x; const pz = pose.transform.position.z;
-							scanExtents.minX = Math.min(scanExtents.minX, px);
-							scanExtents.maxX = Math.max(scanExtents.maxX, px);
-							scanExtents.minZ = Math.min(scanExtents.minZ, pz);
-							scanExtents.maxZ = Math.max(scanExtents.maxZ, pz);
-							// Update preview geometry
-							if (isFinite(scanExtents.minX) && isFinite(scanExtents.maxX) && isFinite(scanExtents.minZ) && isFinite(scanExtents.maxZ)) {
-								const w = Math.max(0.1, scanExtents.maxX - scanExtents.minX);
-								const d = Math.max(0.1, scanExtents.maxZ - scanExtents.minZ);
-								const cx = (scanExtents.minX + scanExtents.maxX) / 2;
-								const cz = (scanExtents.minZ + scanExtents.maxZ) / 2;
-								// Clear and rebuild simple preview (thin floor + low outline walls)
-								scanGroup.clear();
-								const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), new THREE.MeshBasicMaterial({ color: 0x00ff88, opacity: 0.25, transparent: true }));
-								floor.position.set(cx, 0.01, cz);
-								scanGroup.add(floor);
-								const wallH = 0.5; const t = 0.02; // low preview walls
-								const n = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); n.position.set(cx, wallH/2, scanExtents.maxZ); scanGroup.add(n);
-								const s = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, t), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); s.position.set(cx, wallH/2, scanExtents.minZ); scanGroup.add(s);
-								const e = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); e.position.set(scanExtents.maxX, wallH/2, cz); scanGroup.add(e);
-								const wMesh = new THREE.Mesh(new THREE.BoxGeometry(t, wallH, d), new THREE.MeshBasicMaterial({ color: 0x00aaff, opacity: 0.25, transparent: true })); wMesh.position.set(scanExtents.minX, wallH/2, cz); scanGroup.add(wMesh);
-							}
-						}
-					}
-					// Sample WebXR depth information if available (Chrome/Android). Guard everything.
-					try {
-						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
-						const dm = frame && frame.getDepthInformation && xrCam ? frame.getDepthInformation(xrCam) : null;
-						if (dm) {
-							if ((depthSampleTick++ % 3) === 0 && depthPointsAccum.length < MAX_DEPTH_POINTS) {
-								const width = dm.width, height = dm.height;
-								const stepX = Math.max(1, Math.floor(width / 64));
-								const stepY = Math.max(1, Math.floor(height / 64));
-								for (let y = 0; y < height && depthPointsAccum.length < MAX_DEPTH_POINTS; y += stepY) {
-									for (let x = 0; x < width && depthPointsAccum.length < MAX_DEPTH_POINTS; x += stepX) {
-										const z = dm.getDepth(x, y);
-										if (!isFinite(z) || z <= 0) continue;
-										// Project ray from camera through NDC, place a point at depth z (meters)
-										const ndcX = (x / width) * 2 - 1;
-										const ndcY = (y / height) * -2 + 1;
-										const ndc = new THREE.Vector3(ndcX, ndcY, 1);
-										ndc.unproject(camera);
-										const camPos = new THREE.Vector3(); camera.getWorldPosition(camPos);
-										const dir = ndc.sub(camPos).normalize();
-										const pWorld = camPos.clone().addScaledVector(dir, z);
-										depthPointsAccum.push(pWorld);
-									}
-								}
-								// Live point cloud preview (meters)
-								if (scanGroup) {
-									if (!depthPointsPreview) {
-										depthPointsPreview = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0x55ccff, size: 0.01 }));
-										scanGroup.add(depthPointsPreview);
-									}
-									const n = Math.min(depthPointsAccum.length, MAX_DEPTH_POINTS);
-									const arr = new Float32Array(n * 3);
-									for (let i = 0; i < n; i++) { const p = depthPointsAccum[i]; arr[i*3] = p.x; arr[i*3+1] = p.y; arr[i*3+2] = p.z; }
-									depthPointsPreview.geometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-									depthPointsPreview.geometry.computeBoundingSphere();
-								}
-							}
-						}
-					} catch {}
-				}
+			// Room Scan per-frame updates (mutually exclusive with AR placement)
+			if (roomScan && roomScan.isActive && roomScan.isActive()) {
+				roomScan.update(frame);
 			} else if (arActive) {
 				// Perform one-time placement when AR starts using hit-test
 				const session = renderer.xr.getSession && renderer.xr.getSession();
@@ -2385,11 +2368,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							}
 							const p = pose.transform.position;
 							arContent.position.set(p.x, p.y, p.z);
+							// Hand over to AR edit service for post-placement manipulation
+							try { arEdit.setTarget(arContent); } catch {}
 							arPlaced = true;
 							if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
 							xrHitTestSource = null;
 						}
 					}
+				}
+				// After placement, update AR edit interaction via service
+				if (session && arPlaced && arContent && frame) {
+					try { arEdit.update(frame, xrLocalSpace); } catch {}
 				}
 			}
 			renderer.render(scene, camera);

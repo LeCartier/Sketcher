@@ -1,10 +1,13 @@
 // Lightweight local storage using IndexedDB
 const DB_NAME = 'sketcher-db';
 // v3: add 'community' store with same schema as 'scenes'
-const DB_VERSION = 3;
+// v5: add 'sketches2d' store for 2D drawings
+const DB_VERSION = 5;
 const STORE = 'scenes';
 const ZONES = 'zones';
 const COMMUNITY = 'community';
+const SETTINGS = 'settings';
+const SKETCH2D = 'sketches2d';
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -25,6 +28,15 @@ function openDB() {
       if (!db.objectStoreNames.contains(COMMUNITY)) {
         const c = db.createObjectStore(COMMUNITY, { keyPath: 'id' });
         c.createIndex('by_updated', 'updatedAt');
+      }
+      // settings store
+      if (!db.objectStoreNames.contains(SETTINGS)) {
+        db.createObjectStore(SETTINGS, { keyPath: 'key' });
+      }
+      // 2D sketches store
+      if (!db.objectStoreNames.contains(SKETCH2D)) {
+        const s2 = db.createObjectStore(SKETCH2D, { keyPath: 'id' });
+        s2.createIndex('by_updated', 'updatedAt');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -187,6 +199,26 @@ export async function clearZones() {
   await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
 }
 
+// -------------------- Settings (generic) --------------------
+export async function setSetting(key, value) {
+  const db = await openDB();
+  const tx = db.transaction(SETTINGS, 'readwrite');
+  const store = tx.objectStore(SETTINGS);
+  await new Promise((res, rej) => { const r = store.put({ key, value }); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function getSetting(key) {
+  const db = await openDB();
+  const tx = db.transaction(SETTINGS, 'readonly');
+  const store = tx.objectStore(SETTINGS);
+  return await new Promise((res, rej) => { const r = store.get(key); r.onsuccess = () => res(r.result ? r.result.value : null); r.onerror = () => rej(r.error); });
+}
+
+// Convenience wrappers for Texture Library handle
+export async function setTextureLibraryHandle(handle) { return setSetting('textureLibHandle', handle || null); }
+export async function getTextureLibraryHandle() { return getSetting('textureLibHandle'); }
+
 // -------------------- Community API (local-only) --------------------
 async function capStoreCount(db, storeName, max = 20) {
   // Delete oldest records beyond max based on updatedAt ascending
@@ -274,4 +306,88 @@ export async function pickRandomCommunity(n = 5) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr.slice(0, Math.max(0, Math.min(n, arr.length)));
+}
+
+// -------------------- Personal 2D Sketches API --------------------
+export async function saveSketch2D({ id, name, json, thumb, posX, posY }) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readwrite');
+  const store = tx.objectStore(SKETCH2D);
+  const rec = {
+    id: id || (crypto?.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    name: name || 'Untitled Sketch',
+    json, // 2D JSON payload from app2d.toJSON()
+    updatedAt: Date.now(),
+    thumb: typeof thumb === 'string' ? thumb : undefined,
+    posX: Number.isFinite(posX) ? posX : undefined,
+    posY: Number.isFinite(posY) ? posY : undefined,
+    kind: '2d',
+  };
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+  return rec.id;
+}
+
+export async function listSketches2D() {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readonly');
+  const store = tx.objectStore(SKETCH2D);
+  const items = await new Promise((res, rej) => {
+    const out = []; const r = store.openCursor();
+    r.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else { res(out.sort((a,b)=>b.updatedAt-a.updatedAt)); } };
+    r.onerror = () => rej(r.error);
+  });
+  return items.map(s => ({ id: s.id, name: s.name, updatedAt: s.updatedAt, thumb: s.thumb, posX: s.posX, posY: s.posY, kind: '2d' }));
+}
+
+export async function getSketch2D(id) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readonly');
+  const store = tx.objectStore(SKETCH2D);
+  return await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+}
+
+export async function deleteSketch2D(id) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readwrite');
+  const store = tx.objectStore(SKETCH2D);
+  await new Promise((res, rej) => { const r = store.delete(id); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function updateSketch2DPosition(id, { posX, posY }) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readwrite');
+  const store = tx.objectStore(SKETCH2D);
+  const rec = await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+  if (!rec) return;
+  rec.posX = Number.isFinite(posX) ? posX : rec.posX;
+  rec.posY = Number.isFinite(posY) ? posY : rec.posY;
+  rec.updatedAt = Date.now();
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function updateSketch2DThumbnail(id, { thumb }) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readwrite');
+  const store = tx.objectStore(SKETCH2D);
+  const rec = await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+  if (!rec) return;
+  rec.thumb = typeof thumb === 'string' ? thumb : rec.thumb;
+  rec.updatedAt = Date.now();
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+
+export async function updateSketch2DName(id, { name }) {
+  const db = await openDB();
+  const tx = db.transaction(SKETCH2D, 'readwrite');
+  const store = tx.objectStore(SKETCH2D);
+  const rec = await new Promise((res, rej) => { const r = store.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); });
+  if (!rec) return;
+  if (typeof name === 'string' && name.trim().length) rec.name = name.trim();
+  rec.updatedAt = Date.now();
+  await new Promise((res, rej) => { const r = store.put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+  await new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
 }
