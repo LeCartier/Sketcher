@@ -1834,12 +1834,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;
 				ensureXRHud3D();
-				// Hide existing editor objects to avoid duplicates while VR export copy is shown
-				try {
-					arPrevVisibility = new Map();
-					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
-					updateVisibilityUI();
-				} catch {}
+				// Keep originals visible until AR clone is created (we'll hide after placement)
 				// Reference space (floor-aligned)
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
 				// Build content once and place 1.5m in front of the user at floor height

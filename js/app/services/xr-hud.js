@@ -27,7 +27,7 @@ export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }
 
   function ensure(){
     if (hud) return hud;
-    hud = new THREE.Group(); hud.name='XR HUD 3D';
+  hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
     buttons = (getButtons(createHudButton) || []);
     // Curved layout
     const n=buttons.length, half=(n-1)/2, radius=0.22, arcSpan=Math.min(Math.PI/6,0.6);
