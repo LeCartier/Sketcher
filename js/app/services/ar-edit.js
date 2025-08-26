@@ -147,7 +147,25 @@ export function createAREdit(THREE, scene, renderer){
       try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
       state.two = null; // reset two-hand state if switching modes
     } else if(grabbingPts.length>=2){
-      const p0=grabbingPts[0], p1=grabbingPts[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
+      // Require both hands/controllers to be currently colliding to orbit/scale
+      const colliding = (p)=>{
+        if (!targetBox || targetBox.isEmpty()) return false;
+        const r = p.radius || HAND_SPHERE_R; const cx=Math.max(targetBox.min.x, Math.min(p.x, targetBox.max.x)); const cy=Math.max(targetBox.min.y, Math.min(p.y, targetBox.max.y)); const cz=Math.max(targetBox.min.z, Math.min(p.z, targetBox.max.z)); const dx=cx-p.x, dy=cy-p.y, dz=cz-p.z; return Math.hypot(dx,dy,dz) <= (r + GRAB_NEAR_MARGIN);
+      };
+      const both = grabbingPts.filter(colliding);
+      if (both.length < 2){
+        // If exactly one is colliding, treat as one-hand translate using that point
+        if (both.length === 1){
+          const gp = both[0];
+          if(!state.one){ state.one = { start: { x: gp.x, y: gp.y, z: gp.z }, startPos: state.target.position.clone() }; }
+          const g = state.one; const dx=gp.x-g.start.x, dy=gp.y-g.start.y, dz=gp.z-g.start.z;
+          const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
+          try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
+        }
+        // Do not engage two-hand orbit/scale unless both are colliding
+        return;
+      }
+      const p0=both[0], p1=both[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
       if(!state.two){ state.two = { startMid: mid, startDist: Math.max(1e-4, d), startScale: state.target.scale.clone(), startPos: state.target.position.clone(), startVec: new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(), startQuat: state.target.quaternion.clone() }; }
       const st = state.two; const s = Math.max(0.01, Math.min(50, d / st.startDist));
