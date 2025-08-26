@@ -163,7 +163,7 @@ export async function init() {
 		THREE,
 		scene,
 		renderer,
-		get xrLocalSpace(){ return xrLocalSpace; },
+		getLocalSpace: ()=> xrLocalSpace,
 		getButtons: (createHudButton) => {
 			const bOne = createHudButton('1:1', ()=> setARScaleOne());
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
@@ -200,13 +200,15 @@ export async function init() {
 			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 			if (!session || !frame) return;
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
-			// Candidate indices for a "menu"-like press on XR standard gamepads: 3/4/5 tend to be secondary/alt/thumbstick-press
-			const CANDIDATES = [3,4,5];
+			// Candidate indices for a "menu"-like press on XR standard gamepads; include Meta Quest left Y/Menu
+			const CANDIDATES = [0,3,4,5];
 			for (const src of sources){
 				const gp = src && src.gamepad;
 				if (!gp || !gp.buttons || !gp.buttons.length) continue;
 				let pressed = false;
-				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && b.pressed) { pressed = true; break; } }
+				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
+				// Also consider a long squeeze on the left controller as a fallback gesture
+				if (!pressed && src.handedness === 'left' && gp.buttons[1]?.pressed) { pressed = true; }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 				if (pressed && !prev){
 					// Rising edge: toggle AR UI
@@ -1831,25 +1833,24 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// Prefer immersive-AR on Meta Quest if available; otherwise fall back to VR
 			if (supportsAR) {
 				// immersive AR (Quest passthrough or mobile AR)
+				// Save a restore point before entering XR
+				try { saveSessionDraftNow(); } catch {}
 				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true;
 				arPlaced = false;
 				grid.visible = false;
-				ensureXRHud3D();
-				// Keep current scene visible until AR content clone is created
-				// Setup reference spaces; hit-test only if available on platform
-				xrViewerSpace = await session.requestReferenceSpace('viewer').catch(()=>null);
+				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
+				// Setup reference spaces; align to local-floor for ground alignment
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
-				try { if (xrViewerSpace && session.requestHitTestSource) xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace }); } catch {}
+				xrViewerSpace = await session.requestReferenceSpace('viewer').catch(()=>null);
 				session.addEventListener('end', () => {
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
-					if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
 					removeXRHud3D();
 					// Restore editor object visibility
@@ -1860,14 +1861,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							updateVisibilityUI();
 						}
 					} catch {}
-					// Safety: if scene appears empty after XR, try to restore from session draft
+					// Safety: if scene appears empty or all user objects ended up hidden after XR, restore from session draft
 					try {
 						const items = getPersistableObjects();
-						if (!items || items.length === 0) {
+						const anyVisible = items && items.some(o => o && o.visible !== false);
+						if (!items || items.length === 0 || !anyVisible) {
 							const raw = sessionStorage.getItem('sketcher:sessionDraft');
 							if (raw) {
 								const { json } = JSON.parse(raw);
 								if (json) {
+									clearSceneObjects();
 									const loader = new THREE.ObjectLoader();
 									const root = loader.parse(json);
 									[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
@@ -1882,11 +1885,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				});
 			} else if (supportsVR) {
 				// Start immersive VR for headsets; use hands/controllers for manipulation
+				// Save a restore point before entering XR
+				try { saveSessionDraftNow(); } catch {}
 				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;
-				ensureXRHud3D();
+				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
 				// Keep originals visible until AR clone is created (we'll hide after placement)
 				// Reference space (floor-aligned)
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
@@ -1896,7 +1901,20 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					prepareModelForAR(root); // converts to meters and recenters to ground
 					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 					arContent = root; scene.add(arContent);
-					arContent.position.set(0, 0, -1.5);
+					// Place origin 1 foot in front of the user on the ground (local-floor y=0), using camera facing
+					try {
+						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
+						if (xrCam) {
+							const camPos = new THREE.Vector3(); const camQuat = new THREE.Quaternion();
+							xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
+							const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat);
+							const place = camPos.clone().add(forward.multiplyScalar(0.3048));
+							place.y = 0; // ground
+							arContent.position.copy(place);
+						} else {
+							arContent.position.set(0, 0, -0.3048);
+						}
+					} catch { arContent.position.set(0, 0, -0.3048); }
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
 					arPlaced = true;
@@ -1923,14 +1941,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							updateVisibilityUI();
 						}
 					} catch {}
-					// Safety: if scene appears empty after XR, try to restore from session draft
+					// Safety: if scene appears empty or all user objects ended up hidden after XR, restore from session draft
 					try {
 						const items = getPersistableObjects();
-						if (!items || items.length === 0) {
+						const anyVisible = items && items.some(o => o && o.visible !== false);
+						if (!items || items.length === 0 || !anyVisible) {
 							const raw = sessionStorage.getItem('sketcher:sessionDraft');
 							if (raw) {
 								const { json } = JSON.parse(raw);
 								if (json) {
+									clearSceneObjects();
 									const loader = new THREE.ObjectLoader();
 									const root = loader.parse(json);
 									[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
@@ -2624,39 +2644,42 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (roomScan && roomScan.isActive && roomScan.isActive()) {
 				roomScan.update(frame);
 			} else if (arActive) {
-				// Perform one-time placement when AR starts using hit-test
+				// One-time placement for AR passthrough: 1:1 meters, ground-aligned, 1 foot in front
 				const session = renderer.xr.getSession && renderer.xr.getSession();
-				if (session && xrHitTestSource && !arPlaced && frame && xrLocalSpace) {
-					const results = frame.getHitTestResults(xrHitTestSource);
-					if (results && results.length) {
-						const pose = results[0].getPose(xrLocalSpace);
-						if (pose) {
-								// Build AR content from entire scene objects (include overlay)
-								if (!arContent) {
-									const root = buildExportRootFromObjects(getARCloneSourceObjects());
-								prepareModelForAR(root);
-								if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
-								arContent = root;
-								scene.add(arContent);
-								computeArBaseMetrics(arContent);
-								// default to 1:1 on placement
-								try { arContent.scale.set(1,1,1); } catch {}
-									// Hide originals after clone is added to avoid duplicate visuals
-									try {
-										arPrevVisibility = new Map();
-										for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
-										updateVisibilityUI();
-									} catch {}
-							}
-							const p = pose.transform.position;
-							arContent.position.set(p.x, p.y, p.z);
-							// Hand over to AR edit service for post-placement manipulation
-							try { arEdit.setTarget(arContent); } catch {}
-							arPlaced = true;
-							if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
-							xrHitTestSource = null;
-						}
+				if (session && !arPlaced && frame && xrLocalSpace) {
+					if (!arContent) {
+						const root = buildExportRootFromObjects(getARCloneSourceObjects());
+						prepareModelForAR(root);
+						if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
+						arContent = root;
+						scene.add(arContent);
+						computeArBaseMetrics(arContent);
+						// Ensure 1:1 scale in meters after feet->meters conversion in prepareModelForAR
+						try { arContent.scale.set(1,1,1); } catch {}
+						// Hide originals after clone is added to avoid duplicate visuals
+						try {
+							arPrevVisibility = new Map();
+							for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
+							updateVisibilityUI();
+						} catch {}
 					}
+					// Place relative to viewer/camera: origin 1 foot forward, on local-floor
+					try {
+						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
+						if (xrCam) {
+							const camPos = new THREE.Vector3(); const camQuat = new THREE.Quaternion();
+							xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
+							const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat);
+							const place = camPos.clone().add(forward.multiplyScalar(0.3048));
+							// Snap to local-floor (y=0) for ground alignment
+							place.y = 0;
+							arContent.position.copy(place);
+						} else {
+							arContent.position.set(0, 0, -0.3048);
+						}
+					} catch { arContent.position.set(0, 0, -0.3048); }
+					try { arEdit.setTarget(arContent); } catch {}
+					arPlaced = true;
 				}
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {

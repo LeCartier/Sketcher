@@ -23,6 +23,7 @@ export function createAREdit(THREE, scene, renderer){
     gizmoLine: null,
     gizmoSpheres: [],
   smooth: 0.28, // low-pass filter factor for XR edits (0 = no smoothing, 1 = snap)
+  useCollision: true,
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
@@ -52,32 +53,77 @@ export function createAREdit(THREE, scene, renderer){
   function hapticPulse(src, strength, duration){ try { if (src && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) { src.gamepad.hapticActuators[0].pulse(strength, duration); } } catch {}
   }
 
-  function collectActivePoints(frame, localSpace){
+  const PINCH_THRESHOLD_M = 0.035;
+  const HAND_SPHERE_R = 0.045; // ~4.5cm interaction sphere
+  const CONTROLLER_SPHERE_R = 0.040; // ~4cm sphere for controller grip/pose
+  const GRAB_NEAR_MARGIN = 0.0; // meters; 0 = require true penetration for grab
+  const COLLISION_PUSH_GAIN = 0.6; // fraction of penetration to push per frame (pre-smoothing)
+
+  function isCollidingWithBox(px, py, pz, radius, box){
+    if (!box || box.isEmpty()) return false;
+    // Compute nearest point on/in box to the sphere center
+    const cx = Math.max(box.min.x, Math.min(px, box.max.x));
+    const cy = Math.max(box.min.y, Math.min(py, box.max.y));
+    const cz = Math.max(box.min.z, Math.min(pz, box.max.z));
+    const dx = cx - px, dy = cy - py, dz = cz - pz;
+    const dist = Math.hypot(dx,dy,dz);
+    return dist <= (radius + GRAB_NEAR_MARGIN);
+  }
+
+  function collectActivePoints(frame, localSpace, targetBox){
     const session = state.session || (renderer.xr && renderer.xr.getSession && renderer.xr.getSession());
     if (!session) return [];
     const out = [];
     const sources = session.inputSources ? Array.from(session.inputSources) : [];
+    const collisionActive = !!(state.useCollision && state.target && targetBox && !targetBox.isEmpty());
     for(const src of sources){
       const { gamepad, gripSpace, targetRaySpace, hand } = src;
-      let isGrabbing=false; let pos=null;
+      let isGrabbing=false; let pos=null; let pinching=false; let radius=HAND_SPHERE_R;
+      const prev = state.grabMap.get(src) || { grabbing:false };
       if(gamepad && gamepad.buttons && gamepad.buttons.length){
         const squeeze = gamepad.buttons.find((b, i)=> b && b.pressed && (i===1 || i===2));
-        if (squeeze && (gripSpace||targetRaySpace)){
+        if ((squeeze && (gripSpace||targetRaySpace))){
           const ref = gripSpace || targetRaySpace; const pose = frame.getPose(ref, localSpace);
-          if(pose){ isGrabbing=true; pos = pose.transform.position; }
+          if(pose){
+            const p = pose.transform.position; radius = CONTROLLER_SPHERE_R;
+            // Collision gate for starting/continuing grab with controller
+            if (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, radius, targetBox)){
+              isGrabbing=true; pos = p;
+            } else {
+              // Not colliding: treat as non-grabbing point for pushing
+              out.push({ x:p.x, y:p.y, z:p.z, src, grabbing:false, pinching:false, radius: CONTROLLER_SPHERE_R*0.9 });
+            }
+          }
         }
       }
-      if(!isGrabbing && hand && hand.get){
+      // Hand pinch detection (and general hand presence for collision)
+      if(hand && hand.get){
         const ti = hand.get('index-finger-tip'); const tt = hand.get('thumb-tip');
-        if (ti && tt){ const pti = frame.getJointPose ? frame.getJointPose(ti, localSpace) : null; const ptt = frame.getJointPose ? frame.getJointPose(tt, localSpace) : null; if(pti && ptt){ const dx=pti.transform.position.x-ptt.transform.position.x, dy=pti.transform.position.y-ptt.transform.position.y, dz=pti.transform.position.z-ptt.transform.position.z; const dist=Math.hypot(dx,dy,dz); if(dist<0.035){ isGrabbing=true; pos=pti.transform.position; } } }
+        const wrist = hand.get('wrist');
+        const pti = frame.getJointPose ? (ti && frame.getJointPose(ti, localSpace)) : null;
+        const ptt = frame.getJointPose ? (tt && frame.getJointPose(tt, localSpace)) : null;
+        const pw = frame.getJointPose ? (wrist && frame.getJointPose(wrist, localSpace)) : null;
+        if(pti && ptt){
+          const dx=pti.transform.position.x-ptt.transform.position.x, dy=pti.transform.position.y-ptt.transform.position.y, dz=pti.transform.position.z-ptt.transform.position.z; const dist=Math.hypot(dx,dy,dz);
+          if(dist < PINCH_THRESHOLD_M){
+            const p = pti.transform.position;
+            // Collision gate for pinch grab
+            if (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox)){
+              isGrabbing=true; pinching=true; pos = p; radius = HAND_SPHERE_R;
+            }
+          }
+        }
+        // If not grabbing, still record a hand point (wrist preferred) for collision pushing
+        if(!isGrabbing && (pw || pti)){
+          const p = (pw ? pw.transform.position : pti.transform.position);
+          out.push({ x:p.x, y:p.y, z:p.z, src, grabbing:false, pinching:false, radius: HAND_SPHERE_R });
+        }
       }
       if(isGrabbing && pos){
-        out.push({ x:pos.x, y:pos.y, z:pos.z, src });
-        const prev = state.grabMap.get(src) || { grabbing:false };
+        out.push({ x:pos.x, y:pos.y, z:pos.z, src, grabbing:true, pinching, radius });
         if (!prev.grabbing) { hapticPulse(src, 0.3, 50); }
         state.grabMap.set(src, { grabbing:true });
       } else {
-        const prev = state.grabMap.get(src);
         if (prev && prev.grabbing){ hapticPulse(src, 0.15, 30); state.grabMap.set(src, { grabbing:false }); }
       }
     }
@@ -86,17 +132,22 @@ export function createAREdit(THREE, scene, renderer){
 
   function update(frame, localSpace){
     if (!state.enabled || !state.target || !frame || !localSpace) { updateGizmo([]); return; }
-    const points = collectActivePoints(frame, localSpace);
-    updateGizmo(points);
-    if(points.length===1){
-      if(!state.one){ state.one = { start: { x: points[0].x, y: points[0].y, z: points[0].z }, startPos: state.target.position.clone() }; }
-      const g = state.one; const dx=points[0].x-g.start.x, dy=points[0].y-g.start.y, dz=points[0].z-g.start.z;
+    // Compute target bounds once for this frame in local space
+    let targetBox = null;
+    try { targetBox = new THREE.Box3().setFromObject(state.target); } catch { targetBox = null; }
+    const points = collectActivePoints(frame, localSpace, targetBox);
+    const grabbingPts = points.filter(p=>p.grabbing);
+    const nonGrabPts = points.filter(p=>!p.grabbing);
+    updateGizmo(grabbingPts);
+    if(grabbingPts.length===1){
+      if(!state.one){ state.one = { start: { x: grabbingPts[0].x, y: grabbingPts[0].y, z: grabbingPts[0].z }, startPos: state.target.position.clone() }; }
+      const g = state.one; const dx=grabbingPts[0].x-g.start.x, dy=grabbingPts[0].y-g.start.y, dz=grabbingPts[0].z-g.start.z;
       const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
       // Smooth translation to reduce jitter
       try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
       state.two = null; // reset two-hand state if switching modes
-    } else if(points.length>=2){
-      const p0=points[0], p1=points[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
+    } else if(grabbingPts.length>=2){
+      const p0=grabbingPts[0], p1=grabbingPts[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
       if(!state.two){ state.two = { startMid: mid, startDist: Math.max(1e-4, d), startScale: state.target.scale.clone(), startPos: state.target.position.clone(), startVec: new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(), startQuat: state.target.quaternion.clone() }; }
       const st = state.two; const s = Math.max(0.01, Math.min(50, d / st.startDist));
@@ -111,6 +162,36 @@ export function createAREdit(THREE, scene, renderer){
       state.one = null; // reset one-hand state
     } else {
       state.one = null; state.two = null;
+    }
+
+    // Simple collision push with non-grabbing hands
+    if (state.useCollision && nonGrabPts.length && state.target) {
+      try {
+        const box = new THREE.Box3().setFromObject(state.target);
+        if (!box.isEmpty()){
+          const tgtPos = state.target.position.clone();
+          for (const p of nonGrabPts){
+            const hx = p.x, hy = p.y, hz = p.z; const r = p.radius || HAND_SPHERE_R;
+            const cx = Math.max(box.min.x, Math.min(hx, box.max.x));
+            const cy = Math.max(box.min.y, Math.min(hy, box.max.y));
+            const cz = Math.max(box.min.z, Math.min(hz, box.max.z));
+            const dx = cx - hx, dy = cy - hy, dz = cz - hz;
+            const dist = Math.hypot(dx,dy,dz);
+            if (dist < r) {
+              // penetration vector from hand into box; push object away
+              const pen = (r - dist) || r;
+              const nx = (dist>1e-6)? (dx/dist) : 0, ny = (dist>1e-6)? (dy/dist) : 0, nz = (dist>1e-6)? (dz/dist) : 0;
+              tgtPos.x += nx * pen * COLLISION_PUSH_GAIN;
+              tgtPos.y += ny * pen * COLLISION_PUSH_GAIN;
+              tgtPos.z += nz * pen * COLLISION_PUSH_GAIN;
+            }
+          }
+          // Smoothly move towards the pushed position if different
+          if (!tgtPos.equals(state.target.position)){
+            try { state.target.position.lerp(tgtPos, state.smooth); } catch { state.target.position.copy(tgtPos); }
+          }
+        }
+      } catch {}
     }
   }
 

@@ -1,5 +1,6 @@
 // XR HUD: 3D wrist-anchored curved button bar with hover/select via rays
-export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }){
+// Note: pass getLocalSpace() to resolve the latest XR reference space each frame.
+export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons }){
   let hud = null;
   let buttons = [];
   const xrHoverBySource = new WeakMap();
@@ -18,8 +19,10 @@ export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }
   function createHudButton(label, onClick){
     const tex=makeButtonTexture(label);
     const geom=new THREE.PlaneGeometry(0.15,0.06);
-    const mat=new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: true });
+    // Render HUD always on top in AR; depthTest off avoids passthrough occlusion issues.
+    const mat=new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
     const mesh=new THREE.Mesh(geom, mat);
+    mesh.renderOrder = 10000;
     mesh.userData.__hudButton={ label, onClick, base: mat.clone(), hover: mat };
     function setLabel(next){ try { const t=makeButtonTexture(next); if (mesh.material?.map?.dispose) mesh.material.map.dispose(); mesh.material.map=t; mesh.material.needsUpdate=true; mesh.userData.__hudButton.label=next; } catch{} }
     return { mesh, onClick, setLabel };
@@ -36,7 +39,8 @@ export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }
       const x=Math.sin(theta)*radius; const z=-Math.cos(theta)*radius;
       const b = buttons[i]; b.mesh.position.set(x,0,z); b.mesh.lookAt(0,0,0); b.mesh.rotateY(Math.PI); hud.add(b.mesh);
     }
-    scene.add(hud);
+  scene.add(hud);
+  hud.visible = true;
     // XR select events
     const session = renderer.xr.getSession?.();
     const onSelectStart=(ev)=>{ const src=ev.inputSource; if (src) xrPressedSources.add(src); };
@@ -61,13 +65,14 @@ export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }
     let placed=false;
     try {
       const session = renderer.xr.getSession?.();
-      if (session && frame){
+    if (session && frame){
         const sources = session.inputSources ? Array.from(session.inputSources) : [];
         for (const src of sources){
           if (src.handedness !== 'left') continue;
           let leftPose=null;
-          if (src.gripSpace) leftPose = frame.getPose(src.gripSpace, xrLocalSpace || session.referenceSpace || null);
-          if (!leftPose && src.hand && frame.getJointPose){ const wrist = src.hand.get?.('wrist'); if (wrist) leftPose = frame.getJointPose(wrist, xrLocalSpace || session.referenceSpace || null); }
+      const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
+      if (src.gripSpace) leftPose = frame.getPose(src.gripSpace, ref);
+      if (!leftPose && src.hand && frame.getJointPose){ const wrist = src.hand.get?.('wrist'); if (wrist) leftPose = frame.getJointPose(wrist, ref); }
           if (leftPose){
             const lp=leftPose.transform.position; const lo=leftPose.transform.orientation;
             const lpos=new THREE.Vector3(lp.x,lp.y,lp.z); const lquat=new THREE.Quaternion(lo.x,lo.y,lo.z,lo.w);
@@ -87,12 +92,13 @@ export function createXRHud({ THREE, scene, renderer, xrLocalSpace, getButtons }
     // Hover via rays
     try {
       const session = renderer.xr.getSession?.();
-      if (session && frame){
+    if (session && frame){
         const sources = session.inputSources ? Array.from(session.inputSources) : [];
         const hudTargets = buttons.map(b=>b.mesh);
         for (const src of sources){
-          const raySpace = src.targetRaySpace || src.gripSpace; if (!raySpace) continue;
-          const pose = frame.getPose(raySpace, xrLocalSpace || session.referenceSpace || null); if (!pose) continue;
+      const raySpace = src.targetRaySpace || src.gripSpace; if (!raySpace) continue;
+      const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
+      const pose = frame.getPose(raySpace, ref); if (!pose) continue;
           const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
           raycaster.set(origin, dir);
           const hits=raycaster.intersectObjects(hudTargets,true);
