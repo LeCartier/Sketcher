@@ -181,6 +181,43 @@ export async function init() {
 	function ensureXRHud3D(){ const g = xrHud.ensure(); xrHud3D = xrHud.group; return g; }
 	function removeXRHud3D(){ xrHud.remove(); xrHud3D = null; xrHudButtons = []; }
 
+	// XR UI toggles via controller "menu"-like buttons
+	let __xrMenuPrevBySource = new WeakMap(); // inputSource -> boolean pressed last frame
+	function toggleXRHudVisibility(){ try { if (!xrHud3D) ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = !xrHud3D.visible; } catch {} }
+	function toggleDomUIInXR(){
+		try {
+			const s = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
+			if (!s || !s.domOverlayState) return; // only when DOM overlay is actually active
+			const editUI = document.getElementById('edit-ui');
+			if (editUI) {
+				const cur = getComputedStyle(editUI).display;
+				editUI.style.display = (cur === 'none') ? 'block' : 'none';
+			}
+		} catch {}
+	}
+	function handleXRMenuTogglePoll(frame){
+		try {
+			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
+			if (!session || !frame) return;
+			const sources = session.inputSources ? Array.from(session.inputSources) : [];
+			// Candidate indices for a "menu"-like press on XR standard gamepads: 3/4/5 tend to be secondary/alt/thumbstick-press
+			const CANDIDATES = [3,4,5];
+			for (const src of sources){
+				const gp = src && src.gamepad;
+				if (!gp || !gp.buttons || !gp.buttons.length) continue;
+				let pressed = false;
+				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && b.pressed) { pressed = true; break; } }
+				const prev = __xrMenuPrevBySource.get(src) === true;
+				if (pressed && !prev){
+					// Rising edge: toggle AR UI
+					toggleXRHudVisibility();
+					toggleDomUIInXR();
+				}
+				__xrMenuPrevBySource.set(src, pressed);
+			}
+		} catch {}
+	}
+
 	// AR editing helper (controllers or hands)
 	const arEdit = createAREdit(THREE, scene, renderer);
 	try { arEdit.setGizmoEnabled(false); } catch {}
@@ -1823,6 +1860,22 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							updateVisibilityUI();
 						}
 					} catch {}
+					// Safety: if scene appears empty after XR, try to restore from session draft
+					try {
+						const items = getPersistableObjects();
+						if (!items || items.length === 0) {
+							const raw = sessionStorage.getItem('sketcher:sessionDraft');
+							if (raw) {
+								const { json } = JSON.parse(raw);
+								if (json) {
+									const loader = new THREE.ObjectLoader();
+									const root = loader.parse(json);
+									[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+									updateCameraClipping();
+								}
+							}
+						}
+					} catch {}
 					// Return UI to Edit mode
 					modeSelect.value = 'edit';
 					modeSelect.dispatchEvent(new Event('change'));
@@ -1868,6 +1921,22 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							for (const [o, v] of arPrevVisibility.entries()) { o.visible = !!v; }
 							arPrevVisibility = null;
 							updateVisibilityUI();
+						}
+					} catch {}
+					// Safety: if scene appears empty after XR, try to restore from session draft
+					try {
+						const items = getPersistableObjects();
+						if (!items || items.length === 0) {
+							const raw = sessionStorage.getItem('sketcher:sessionDraft');
+							if (raw) {
+								const { json } = JSON.parse(raw);
+								if (json) {
+									const loader = new THREE.ObjectLoader();
+									const root = loader.parse(json);
+									[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+									updateCameraClipping();
+								}
+							}
 						}
 					} catch {}
 					// Return UI to Edit mode
@@ -2522,6 +2591,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeRenderer);
 	renderer.setAnimationLoop((t, frame) => {
 		try {
+				// XR controller menu button polling to toggle AR UI
+				handleXRMenuTogglePoll(frame);
 				// XR HUD update via service
 				xrHud.update(frame);
 				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes
