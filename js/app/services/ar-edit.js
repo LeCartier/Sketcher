@@ -16,6 +16,7 @@ export function createAREdit(THREE, scene, renderer){
     gizmo: true,
     session: null,
     target: null,
+    root: null, // when perObject is enabled, this is the root containing selectable children
     grabMap: new WeakMap(), // inputSource -> { grabbing:boolean }
     one: null, // {start:{x,y,z}, startPos:Vector3}
     two: null, // {startMid:{x,y,z}, startDist:number, startScale:Vector3, startPos:Vector3, startVec:Vector3, startQuat:Quaternion}
@@ -24,11 +25,14 @@ export function createAREdit(THREE, scene, renderer){
     gizmoSpheres: [],
   smooth: 0.28, // low-pass filter factor for XR edits (0 = no smoothing, 1 = snap)
   useCollision: true,
+  perObject: false,
+  perActive: null, // currently selected sub-object when perObject is true
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
-  function setTarget(obj){ state.target = obj || null; }
+  function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
+  function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); }
   function start(session){ state.session = session || null; }
   function stop(){ state.session = null; clearManip(); removeGizmo(); }
 
@@ -141,7 +145,8 @@ export function createAREdit(THREE, scene, renderer){
         }
       }
       if(isGrabbing && pos){
-        out.push({ x:pos.x, y:pos.y, z:pos.z, src, grabbing:true, pinching, radius, quat });
+        const justStarted = !prev.grabbing;
+        out.push({ x:pos.x, y:pos.y, z:pos.z, src, grabbing:true, pinching, radius, quat, justStarted });
         if (!prev.grabbing) { hapticPulse(src, 0.3, 50); }
         state.grabMap.set(src, { grabbing:true });
       } else {
@@ -152,11 +157,66 @@ export function createAREdit(THREE, scene, renderer){
   }
 
   function update(frame, localSpace){
-    if (!state.enabled || !state.target || !frame || !localSpace) { updateGizmo([]); return; }
-    // Compute target bounds once for this frame in local space
+    if (!state.enabled || !frame || !localSpace) { updateGizmo([]); return; }
+
+    // Determine which object is the current manipulation target
+    let effectiveTarget = state.target;
     let targetBox = null;
-    try { targetBox = new THREE.Box3().setFromObject(state.target); } catch { targetBox = null; }
+    // For per-object mode, pick/maintain a child under the grabbing point
+    if (state.perObject && state.root){
+      // Build a temporary box for collision gating using the root (coarse gate)
+      try { targetBox = new THREE.Box3().setFromObject(state.root); } catch { targetBox = null; }
+      const pointsPre = collectActivePoints(frame, localSpace, targetBox);
+      const grabbingPre = pointsPre.filter(p=>p.grabbing);
+      // When a new grab starts, try to pick a child
+      const newly = grabbingPre.find(p=>p.justStarted);
+      const stillGrabbing = grabbingPre.length > 0;
+      const pickChildAt = (px,py,pz,r)=>{
+        let best = null; let bestDist = Infinity;
+        const tmpBox = new THREE.Box3(); const tmpCenter = new THREE.Vector3();
+        const visit = (obj)=>{
+          if (!obj || obj.userData?.__helper || obj === state.root) return;
+          if (obj.visible === false) return;
+          try { tmpBox.setFromObject(obj); } catch { return; }
+          if (tmpBox.isEmpty()) return;
+          // sphere vs box test, then choose by center distance
+          const cx = Math.max(tmpBox.min.x, Math.min(px, tmpBox.max.x));
+          const cy = Math.max(tmpBox.min.y, Math.min(py, tmpBox.max.y));
+          const cz = Math.max(tmpBox.min.z, Math.min(pz, tmpBox.max.z));
+          const dx = cx - px, dy = cy - py, dz = cz - pz; const dist = Math.hypot(dx,dy,dz);
+          if (dist <= r){
+            tmpBox.getCenter(tmpCenter);
+            const cdx = tmpCenter.x - px, cdy = tmpCenter.y - py, cdz = tmpCenter.z - pz;
+            const cdist = Math.hypot(cdx,cdy,cdz);
+            if (cdist < bestDist){ bestDist = cdist; best = obj; }
+          }
+          const children = obj.children || [];
+          for (const ch of children) visit(ch);
+        };
+        visit(state.root);
+        return best;
+      };
+      if (newly){
+        const sel = pickChildAt(newly.x, newly.y, newly.z, newly.radius || HAND_SPHERE_R);
+        if (sel){ state.perActive = sel; state.one = null; state.two = null; }
+      }
+      if (!stillGrabbing){ state.perActive = null; state.one = null; state.two = null; updateGizmo([]); return; }
+      effectiveTarget = state.perActive || null;
+      if (!effectiveTarget){ updateGizmo([]); return; }
+      try { targetBox = new THREE.Box3().setFromObject(effectiveTarget); } catch { targetBox = null; }
+      // Recompute points using the specific target box for accurate collision gating
+      const points = collectActivePoints(frame, localSpace, targetBox);
+      return updateWithTarget(points, effectiveTarget, targetBox);
+    }
+
+    // Whole-scene mode: operate on the configured target as before
+    if (!effectiveTarget) { updateGizmo([]); return; }
+    try { targetBox = new THREE.Box3().setFromObject(effectiveTarget); } catch { targetBox = null; }
     const points = collectActivePoints(frame, localSpace, targetBox);
+    return updateWithTarget(points, effectiveTarget, targetBox);
+  }
+
+  function updateWithTarget(points, targetObj, targetBox){
     const grabbingPts = points.filter(p=>p.grabbing);
     const nonGrabPts = points.filter(p=>!p.grabbing);
     updateGizmo(grabbingPts);
@@ -166,8 +226,8 @@ export function createAREdit(THREE, scene, renderer){
         const handPos = new THREE.Vector3(p.x, p.y, p.z);
         const handQuat = (p.quat && p.quat.isQuaternion) ? p.quat.clone() : (p.quat ? p.quat.clone?.() : new THREE.Quaternion());
         const invH = handQuat.clone(); try { invH.invert(); } catch { invH.conjugate(); }
-        const deltaPos = state.target.position.clone().sub(handPos).applyQuaternion(invH);
-        const deltaQuat = invH.clone().multiply(state.target.quaternion.clone());
+        const deltaPos = targetObj.position.clone().sub(handPos).applyQuaternion(invH);
+        const deltaQuat = invH.clone().multiply(targetObj.quaternion.clone());
         state.one = { startHandPos: handPos, startHandQuat: handQuat, deltaPos, deltaQuat };
       }
       const g = state.one;
@@ -176,8 +236,8 @@ export function createAREdit(THREE, scene, renderer){
       const desiredQuat = handQuat.clone().multiply(g.deltaQuat);
       const forwardDelta = g.deltaPos.clone().applyQuaternion(handQuat);
       const desiredPos = handPos.clone().add(forwardDelta);
-      try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
-      try { state.target.quaternion.slerp(desiredQuat, state.smooth); } catch { state.target.quaternion.copy(desiredQuat); }
+      try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
+      try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
       state.two = null; // reset two-hand state if switching modes
     } else if(grabbingPts.length>=2){
       // Require both hands/controllers to be currently colliding to orbit/scale
@@ -190,10 +250,10 @@ export function createAREdit(THREE, scene, renderer){
         // If exactly one is colliding, treat as one-hand translate using that point
         if (both.length === 1){
           const gp = both[0];
-          if(!state.one){ state.one = { start: { x: gp.x, y: gp.y, z: gp.z }, startPos: state.target.position.clone() }; }
+          if(!state.one){ state.one = { start: { x: gp.x, y: gp.y, z: gp.z }, startPos: targetObj.position.clone() }; }
           const g = state.one; const dx=gp.x-g.start.x, dy=gp.y-g.start.y, dz=gp.z-g.start.z;
           const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
-          try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
+          try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
         }
         // Do not engage two-hand orbit/scale unless both are colliding
         return;
@@ -203,10 +263,10 @@ export function createAREdit(THREE, scene, renderer){
       if(!state.two){
         const startMid = mid.clone();
         const startDist = Math.max(1e-4, d);
-        const startScale = state.target.scale.clone();
-        const startPos = state.target.position.clone();
+        const startScale = targetObj.scale.clone();
+        const startPos = targetObj.position.clone();
         const startVec = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
-        const startQuat = state.target.quaternion.clone();
+        const startQuat = targetObj.quaternion.clone();
         const startOffset = startPos.clone().sub(startMid);
         state.two = { startMid, startDist, startScale, startPos, startVec, startQuat, startOffset };
       }
@@ -218,9 +278,9 @@ export function createAREdit(THREE, scene, renderer){
       const desiredQuat = R.clone().multiply(st.startQuat);
       const offset = st.startOffset.clone().multiplyScalar(s).applyQuaternion(R);
       const desiredPos = mid.clone().add(offset);
-      try { state.target.scale.lerp(desiredScale, state.smooth); } catch { state.target.scale.copy(desiredScale); }
-      try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
-      try { state.target.quaternion.slerp(desiredQuat, state.smooth); } catch { state.target.quaternion.copy(desiredQuat); }
+      try { targetObj.scale.lerp(desiredScale, state.smooth); } catch { targetObj.scale.copy(desiredScale); }
+      try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
+      try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
       state.one = null; // reset one-hand state
     } else {
       state.one = null; state.two = null;
@@ -257,5 +317,5 @@ export function createAREdit(THREE, scene, renderer){
     }
   }
 
-  return { setEnabled, setGizmoEnabled, setTarget, start, stop, update };
+  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, start, stop, update };
 }

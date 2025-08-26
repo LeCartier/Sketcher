@@ -4,8 +4,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // Button sizing and layout
   // Wrist circle: 7-inch circumference, buttons on the user-facing 3/4 of the circle
   const CIRCUMFERENCE_M = 7 * 0.0254; // 7 inches in meters
-  const ARC_RADIUS = CIRCUMFERENCE_M / (2 * Math.PI); // ≈ 0.02832 m
+  const ARC_RADIUS = (CIRCUMFERENCE_M / (2 * Math.PI)) * 1.10; // +10% larger ring
   const USER_ARC_HALF_ANGLE = (3 * Math.PI) / 4; // total usable span = 270°
+  // Ellipse flattening to reduce the "faceted" look at the front segment
+  const ELLIPSE_X_SCALE = 1.2; // widen left-right
+  const ELLIPSE_Z_SCALE = 0.9; // slightly reduce front-back
   const BUTTON_W = 0.028; // meters (edges touching at this radius for ~20-25° spacing)
   const BUTTON_H = 0.0115; // meters, proportionally thinner
   let hud = null;
@@ -17,9 +20,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
   let handVizMode = null; // 'default' | 'hands-only'
   // Finger poke/depress interaction
-  const PRESS_START_M = 0.006;   // start press when penetration > 6mm
-  const PRESS_RELEASE_M = 0.003; // release when penetration < 3mm (hysteresis)
-  const PRESS_MAX_M = 0.010;     // max visual depression at 10mm
+  // Scale press thresholds relative to button height for better feel with smaller tiles
+  const PRESS_START_M = Math.max(0.002, 0.40 * BUTTON_H);   // ~4.6mm for H=11.5mm
+  const PRESS_RELEASE_M = Math.max(0.001, 0.20 * BUTTON_H); // ~2.3mm
+  const PRESS_MAX_M = Math.max(0.004, 0.60 * BUTTON_H);     // ~6.9mm
   const PRESS_SMOOTH = 0.35;     // visual smoothing
   let fingerHover = null;        // hovered mesh by fingertip
 
@@ -68,8 +72,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         const g = new THREE.Group();
   const tipColor = 0x00e0ff, wristColor = 0xffffff, lineColor = 0x00c2ff;
   const sph = (r,c)=> new THREE.Mesh(new THREE.SphereGeometry(r,12,10), new THREE.MeshBasicMaterial({ color:c, depthTest:false, depthWrite:false }));
-        const tips = ['thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
-        const tipSpheres = tips.map(()=>sph(0.01, tipColor));
+  const tips = ['thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
+  const tipSpheres = tips.map(()=>sph(0.0075, tipColor));
         const wristSphere = sph(0.012, wristColor);
         const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * (tips.length + 1)), 3));
   const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
@@ -118,25 +122,71 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     if (hud) return hud;
   hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
     buttons = (getButtons(createHudButton) || []);
-    // Arc layout around wrist, tiles facing outward
-    // - Circle radius derived from 7" circumference
+    // Arc layout around wrist on an ellipse, tiles facing outward
+    // - Ellipse radii Rx, Rz derived from circular ARC_RADIUS with flatten multipliers
     // - Only use the user-facing 3/4 segment (±3π/4 around front)
-    // - Keep edges touching; if buttons don't fit, compress spacing and scale X so edges still touch visually
+    // - Keep edges touching by spacing along arc length (variable dθ); if angles exceed span, uniformly compress
     const n = buttons.length;
-    const baseStep = (n > 1) ? (BUTTON_W / ARC_RADIUS) : 0; // ideal radians between centers for edges touching
-    const maxSpan = 2 * USER_ARC_HALF_ANGLE; // allowed angular span
-    const baseSpan = (n > 1) ? (n - 1) * baseStep : 0;
-    const step = (baseSpan > maxSpan && n > 1) ? (maxSpan / (n - 1)) : baseStep;
-    const scaleX = (baseStep > 0) ? (step / baseStep) : 1; // scale X so visual widths still edge-touch along arc
-    const startTheta = -0.5 * ((n - 1) * step); // centered on front-facing direction (theta=0)
+    const Rx = ARC_RADIUS * ELLIPSE_X_SCALE;
+    const Rz = ARC_RADIUS * ELLIPSE_Z_SCALE;
+    const targetArcLen = BUTTON_W; // aim for edge-touching along curved path
+    const maxThetaHalf = USER_ARC_HALF_ANGLE;
+
+    const dThetaAt = (theta) => {
+      const a = Rx * Math.cos(theta);
+      const b = Rz * Math.sin(theta);
+      const ds_dtheta = Math.sqrt(a*a + b*b) || 1e-6;
+      return targetArcLen / ds_dtheta; // radians
+    };
+
+    const buildAngles = () => {
+      if (n <= 0) return [];
+      if (n === 1) return [0];
+      const pos = [];
+      if (n % 2 === 0){
+        // even: first step is half-step from center for symmetry
+        let d0 = dThetaAt(0) * 0.5;
+        d0 = Math.max(1e-4, d0);
+        pos.push(d0);
+        while (pos.length < n/2){
+          const last = pos[pos.length-1];
+          let d = dThetaAt(last);
+          d = Math.max(1e-4, d);
+          pos.push(last + d);
+        }
+      } else {
+        // odd: center at 0, then step outwards
+        let t = 0;
+        while (pos.length < Math.floor(n/2)){
+          let d = dThetaAt(t);
+          d = Math.max(1e-4, d);
+          t += d;
+          pos.push(t);
+        }
+      }
+      // Mirror symmetrically
+      const neg = pos.slice().reverse().map(v => -v);
+      if (n % 2 === 0){
+        return neg.concat(pos); // no center 0
+      } else {
+        return neg.concat([0], pos);
+      }
+    };
+
+    let angles = buildAngles();
+    // Fit within ±maxThetaHalf by uniform compression if needed
+    const thetaMax = angles.reduce((m, v)=> Math.max(m, Math.abs(v)), 0);
+    const compress = thetaMax > maxThetaHalf ? (maxThetaHalf / Math.max(thetaMax, 1e-6)) : 1;
+    if (compress !== 1){ angles = angles.map(v => v * compress); }
+
     for (let i = 0; i < n; i++){
-      const theta = startTheta + i * step;
-      const x = Math.sin(theta) * ARC_RADIUS;
-      const z = -Math.cos(theta) * ARC_RADIUS; // outward from wrist (front)
+      const theta = angles[i];
+      const x = Math.sin(theta) * Rx;
+      const z = -Math.cos(theta) * Rz;
       const b = buttons[i];
       b.mesh.position.set(x, 0, z);
       b.mesh.lookAt(0,0,0); b.mesh.rotateY(Math.PI);
-      if (scaleX !== 1) { b.mesh.scale.x *= scaleX; }
+      if (compress !== 1) { b.mesh.scale.x *= compress; }
       hud.add(b.mesh);
     }
   scene.add(hud);
@@ -210,8 +260,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       const leftOut=new THREE.Vector3(-1,0,0).applyQuaternion(lquat);
       const forward=new THREE.Vector3(0,0,-1).applyQuaternion(lquat);
       const up=new THREE.Vector3(0,1,0).applyQuaternion(lquat);
-            // Place HUD origin near wrist; forward offset ~ arc radius centers the ring around the wrist
-            const offset=forward.multiplyScalar(ARC_RADIUS).add(up.multiplyScalar(0.02)).add(leftOut.multiplyScalar(0.045));
+            // Place HUD origin at the wrist center so the ring wraps around the wrist (no forward/left offsets)
+            const offset=new THREE.Vector3(0,0,0); // centered; adjust here if slight clearance is needed
             const targetPos=lpos.clone().add(offset);
             hud.position.lerp(targetPos,0.4);
             const zInward=leftOut.clone().negate().normalize(); const yUp=up.clone().normalize(); let xRight=new THREE.Vector3().crossVectors(yUp,zInward); if (xRight.lengthSq()<1e-6) xRight.set(1,0,0); xRight.normalize(); const zFixed=new THREE.Vector3().crossVectors(xRight,yUp).normalize(); const m=new THREE.Matrix4().makeBasis(xRight,yUp,zFixed); const q=new THREE.Quaternion().setFromRotationMatrix(m); hud.quaternion.slerp(q,0.4);

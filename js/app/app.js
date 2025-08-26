@@ -165,16 +165,26 @@ export async function init() {
 		renderer,
 		getLocalSpace: ()=> xrLocalSpace,
 		getButtons: (createHudButton) => {
+			// Track per-object manipulation mode (default: whole scene)
+			let arPerObject = false;
 			const bOne = createHudButton('1:1', ()=> setARScaleOne());
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
+			// Toggle per-object vs whole-scene manipulation
+			const bMode = createHudButton('Objects', ()=>{
+				try {
+					arPerObject = !arPerObject;
+					arEdit.setPerObjectEnabled(arPerObject);
+					bMode.setLabel(arPerObject ? 'Scene' : 'Objects');
+				} catch {}
+			});
 			const bGizmo = createHudButton('Gizmo', ()=>{ try { arEdit.setGizmoEnabled(!(arEdit._gizmoOn = !arEdit._gizmoOn)); } catch {} });
 			const bLite = createHudButton(arSimplifyMaterials ? 'Lite On' : 'Lite Off', ()=>{
 				arSimplifyMaterials = !arSimplifyMaterials;
 				applyArMaterialModeOnContent();
 				bLite.setLabel(arSimplifyMaterials ? 'Lite On' : 'Lite Off');
 			});
-			xrHudButtons = [bOne, bFit, bReset, bGizmo, bLite];
+			xrHudButtons = [bOne, bFit, bReset, bMode, bGizmo, bLite];
 			return xrHudButtons;
 		}
 	});
