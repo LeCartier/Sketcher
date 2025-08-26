@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -26,6 +26,8 @@ export async function init() {
 			import('./session-draft.js'),
 			import('./features/primitives.js'),
 			import('./services/ar-edit.js'),
+			import('./services/xr-hud.js'),
+			import('./services/ar-materials.js'),
 		]);
 
 	// Version badge
@@ -59,7 +61,7 @@ export async function init() {
 	let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
 	camera.position.set(5,5,5); camera.lookAt(0,0,0);
 	let orthoCamera = null;
-	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true });
+	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true, alpha: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 	// Prefer VisualViewport for accurate iOS dynamic viewport sizing
 	const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
@@ -67,6 +69,7 @@ export async function init() {
 	const sizeH = vv ? Math.round(vv.height) : window.innerHeight;
 	renderer.setSize(sizeW, sizeH);
 	renderer.shadowMap.enabled = true;
+	try { renderer.shadowMap.type = THREE.PCFSoftShadowMap; } catch {}
 	document.body.appendChild(renderer.domElement);
 	// Ensure great touch/stylus behavior on tablets and iPad (no page scroll/zoom gestures on canvas)
 	try {
@@ -79,6 +82,16 @@ export async function init() {
 		renderer.domElement.addEventListener('contextmenu', e => { e.preventDefault(); });
 	} catch {}
 	renderer.xr.enabled = true;
+	// XR visual quality/perf tuning for Meta Quest
+	try {
+		renderer.physicallyCorrectLights = true;
+		if (THREE && THREE.ACESFilmicToneMapping !== undefined) renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		if (THREE && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
+	// Slight foveation improves perf on Quest; 0 = full res center, 1 = aggressive peripheral reduction
+		if (renderer.xr && typeof renderer.xr.setFoveation === 'function') renderer.xr.setFoveation(0.5);
+	// Keep default framebuffer scale factor at 1.0; raise carefully if you need sharper visuals
+	if (renderer.xr && typeof renderer.xr.setFramebufferScaleFactor === 'function') renderer.xr.setFramebufferScaleFactor(1.0);
+	} catch {}
 	let arActive = false;
 	// Room Scan is now provided by a service module
 	let arContent = null; // cloned scene content for AR
@@ -89,6 +102,84 @@ export async function init() {
 	let xrLocalSpace = null;
 	// Track grab transitions per XR input source for haptics and statefulness
 	const xrGrabState = new WeakMap();
+	// AR scale helpers and XR HUD (3D ray-interactive)
+	let xrHud3D = null; // THREE.Group
+	let xrHudButtons = []; // [{ mesh, onClick }]
+	// XR HUD service instance
+	let arOneToOne = true; // last chosen scale mode
+	let arBaseBox = null;  // Box3 in meters after prepareModelForAR
+	let arBaseDiagonal = 1; // meters
+	let arFitMaxDim = 1.6; // meters target for Fit
+	let arSimplifyMaterials = false; // AR performance mode toggle
+	function computeArBaseMetrics(root){
+		try {
+			root.updateMatrixWorld(true);
+				const box = new THREE.Box3().setFromObject(root);
+			arBaseBox = box;
+			const size = box.getSize(new THREE.Vector3());
+			arBaseDiagonal = Math.max(1e-4, Math.max(size.x, size.y, size.z));
+		} catch { arBaseBox = null; arBaseDiagonal = 1; }
+	}
+	function setARScaleOne(){
+		if (!arContent) return;
+		arOneToOne = true;
+			try { arContent.scale.set(1,1,1); } catch {}
+			if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent);
+		// Keep on floor
+		try {
+			if (arBaseBox) {
+				const y = -arBaseBox.min.y;
+				arContent.position.y += y; // nudge to rest on floor
+			} else {
+				arContent.position.y = 0;
+			}
+		} catch {}
+	}
+	function setARScaleFit(){
+		if (!arContent) return;
+		arOneToOne = false;
+		const box = new THREE.Box3().setFromObject(arContent);
+		const size = box.getSize(new THREE.Vector3());
+		const maxDim = Math.max(1e-4, Math.max(size.x, size.y, size.z));
+		// scale so the max dimension becomes arFitMaxDim
+		const s = Math.max(0.01, Math.min(100, arFitMaxDim / maxDim));
+		const desired = new THREE.Vector3().setScalar(s);
+		try { arContent.scale.copy(desired); } catch {}
+	}
+	function resetARTransform(){
+		if (!arContent) return;
+		setARScaleOne();
+		// Place 1.5m in front again, on floor
+		try { arContent.position.set(0, 0, -1.5); } catch {}
+		try { arContent.quaternion.identity(); } catch {}
+			applyArMaterialModeOnContent();
+	}
+	function applyArMaterialModeOnContent(){
+		if (!arContent) return;
+		if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent); else restoreMaterialsForARInPlace(THREE, arContent);
+	}
+	// XR HUD: build via service
+	const xrHud = createXRHud({
+		THREE,
+		scene,
+		renderer,
+		get xrLocalSpace(){ return xrLocalSpace; },
+		getButtons: (createHudButton) => {
+			const bOne = createHudButton('1:1', ()=> setARScaleOne());
+			const bFit = createHudButton('Fit', ()=> setARScaleFit());
+			const bReset = createHudButton('Reset', ()=> resetARTransform());
+			const bGizmo = createHudButton('Gizmo', ()=>{ try { arEdit.setGizmoEnabled(!(arEdit._gizmoOn = !arEdit._gizmoOn)); } catch {} });
+			const bLite = createHudButton(arSimplifyMaterials ? 'Lite On' : 'Lite Off', ()=>{
+				arSimplifyMaterials = !arSimplifyMaterials;
+				applyArMaterialModeOnContent();
+				bLite.setLabel(arSimplifyMaterials ? 'Lite On' : 'Lite Off');
+			});
+			xrHudButtons = [bOne, bFit, bReset, bGizmo, bLite];
+			return xrHudButtons;
+		}
+	});
+	function ensureXRHud3D(){ const g = xrHud.ensure(); xrHud3D = xrHud.group; return g; }
+	function removeXRHud3D(){ xrHud.remove(); xrHud3D = null; xrHudButtons = []; }
 
 	// AR editing helper (controllers or hands)
 	const arEdit = createAREdit(THREE, scene, renderer);
@@ -1681,7 +1772,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Export logic for toolbox popup
 	function buildExportRootFromObjects(objs){ return persistence.buildExportRootFromObjects(THREE, objs); }
 	function prepareModelForAR(root){ try { arExport.prepareModelForAR(THREE, root); } catch {} }
-	async function openQuickLookUSDZ(){ const source=(selectedObjects && selectedObjects.length)?selectedObjects:objects; if(!source||!source.length){ alert('Nothing to show in AR. Create or import an object first.'); return; } const root=buildExportRootFromObjects(source); prepareModelForAR(root); try { const { USDZExporter } = await import('https://unpkg.com/three@0.155.0/examples/jsm/exporters/USDZExporter.js'); const exporter=new USDZExporter(); const arraybuffer=await exporter.parse(root); const blob=new Blob([arraybuffer],{type:'model/vnd.usdz+zip'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.setAttribute('rel','ar'); a.setAttribute('href',url); document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },30000); } catch(e){ alert('Unable to generate USDZ for AR: ' + (e?.message || e)); console.error(e); } }
+	function prepareModelForUSDZ(root){ try { (arExport.prepareModelForUSDZ||arExport.prepareModelForAR)(THREE, root); } catch {} }
+	async function openQuickLookUSDZ(){ const source=(selectedObjects && selectedObjects.length)?selectedObjects:objects; if(!source||!source.length){ alert('Nothing to show in AR. Create or import an object first.'); return; } const root=buildExportRootFromObjects(source); prepareModelForUSDZ(root); try { const { USDZExporter } = await import('https://unpkg.com/three@0.155.0/examples/jsm/exporters/USDZExporter.js'); const exporter=new USDZExporter(); const arraybuffer=await exporter.parse(root); const blob=new Blob([arraybuffer],{type:'model/vnd.usdz+zip'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.setAttribute('rel','ar'); a.setAttribute('href',url); document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },30000); } catch(e){ alert('Unable to generate USDZ for AR: ' + (e?.message || e)); console.error(e); } }
 
 	arButton.addEventListener('click', async () => {
 		await loadWebXRPolyfillIfNeeded();
@@ -1693,36 +1785,35 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const supportsVR = xr && await xr.isSessionSupported('immersive-vr');
 			const supportsAR = xr && await xr.isSessionSupported('immersive-ar');
 
-			if (supportsVR) {
-				// Start immersive VR for headsets; use hands/controllers for manipulation
-				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
+			// Prefer immersive-AR on Meta Quest if available; otherwise fall back to VR
+			if (supportsAR) {
+				// immersive AR (Quest passthrough or mobile AR)
+				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
-				arActive = true; arPlaced = false; grid.visible = false;
-				// Hide existing editor objects to avoid duplicates while VR export copy is shown
+				arActive = true;
+				arPlaced = false;
+				grid.visible = false;
+				ensureXRHud3D();
+				// Hide existing editor objects to avoid duplicates while AR export copy is shown
 				try {
 					arPrevVisibility = new Map();
 					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
 					updateVisibilityUI();
 				} catch {}
-				// Reference space (floor-aligned)
+				// Setup reference spaces; hit-test only if available on platform
+				xrViewerSpace = await session.requestReferenceSpace('viewer').catch(()=>null);
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
-				// Build content once and place 1.5m in front of the user at floor height
-				try {
-					const root = buildExportRootFromObjects(objects);
-					prepareModelForAR(root); // converts to meters and recenters to ground
-					arContent = root; scene.add(arContent);
-					arContent.position.set(0, 0, -1.5);
-					try { arEdit.setTarget(arContent); } catch {}
-					arPlaced = true;
-				} catch {}
+				try { if (xrViewerSpace && session.requestHitTestSource) xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace }); } catch {}
 				session.addEventListener('end', () => {
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
+					if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
+					removeXRHud3D();
 					// Restore editor object visibility
 					try {
 						if (arPrevVisibility) {
@@ -1735,33 +1826,40 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					modeSelect.value = 'edit';
 					modeSelect.dispatchEvent(new Event('change'));
 				});
-			} else if (supportsAR) {
-				// Fall back to immersive AR on mobile with hit-test placement
-				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test', 'local-floor'], optionalFeatures: ['hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
+			} else if (supportsVR) {
+				// Start immersive VR for headsets; use hands/controllers for manipulation
+				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
-				// start AR edit service
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
-				arActive = true;
-				arPlaced = false;
-				grid.visible = false;
-				// Hide existing editor objects to avoid duplicates while AR export copy is shown
+				arActive = true; arPlaced = false; grid.visible = false;
+				ensureXRHud3D();
+				// Hide existing editor objects to avoid duplicates while VR export copy is shown
 				try {
 					arPrevVisibility = new Map();
 					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
 					updateVisibilityUI();
 				} catch {}
-				// Setup hit test source and reference spaces for initial placement
-				xrViewerSpace = await session.requestReferenceSpace('viewer');
+				// Reference space (floor-aligned)
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
-				xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace });
+				// Build content once and place 1.5m in front of the user at floor height
+				try {
+					const root = buildExportRootFromObjects(objects);
+					prepareModelForAR(root); // converts to meters and recenters to ground
+					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
+					arContent = root; scene.add(arContent);
+					arContent.position.set(0, 0, -1.5);
+					computeArBaseMetrics(arContent);
+					try { arEdit.setTarget(arContent); } catch {}
+					arPlaced = true;
+				} catch {}
 				session.addEventListener('end', () => {
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
-					if (xrHitTestSource && xrHitTestSource.cancel) { try { xrHitTestSource.cancel(); } catch {} }
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
+					removeXRHud3D();
 					// Restore editor object visibility
 					try {
 						if (arPrevVisibility) {
@@ -2378,8 +2476,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			}
 		}
 	}
-	// Delete
-	window.addEventListener('keydown',e=>{ if(mode==='edit'&&(e.key==='Delete'||e.key==='Backspace')){ const toDelete = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []); toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); }); selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow(); } });
+	// Delete (prevent deleting the 2D Overlay or any of its children)
+	window.addEventListener('keydown', e => {
+		if (mode === 'edit' && (e.key === 'Delete' || e.key === 'Backspace')) {
+			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
+			const toDelete = toDeleteRaw.filter(o => !__isOverlayOrChild(o));
+			if (!toDelete.length) return;
+			toDelete.forEach(sel => { scene.remove(sel); const idx = objects.indexOf(sel); if (idx > -1) objects.splice(idx, 1); });
+			selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
+		}
+	});
 
 	// Keep outlines syncing
 	transformControls.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
@@ -2414,6 +2520,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeRenderer);
 	renderer.setAnimationLoop((t, frame) => {
 		try {
+				// XR HUD update via service
+				xrHud.update(frame);
 				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes
 				if (handlesGroup && lastHandleTarget && selectedObjects.length === 1 && selectedObjects[0] === lastHandleTarget) {
 					lastHandleTarget.updateMatrixWorld(true);
@@ -2454,8 +2562,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							if (!arContent) {
 								const root = buildExportRootFromObjects(objects);
 								prepareModelForAR(root);
+								if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 								arContent = root;
 								scene.add(arContent);
+								computeArBaseMetrics(arContent);
+								// default to 1:1 on placement
+								try { arContent.scale.set(1,1,1); } catch {}
 							}
 							const p = pose.transform.position;
 							arContent.position.set(p.x, p.y, p.z);

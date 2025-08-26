@@ -22,6 +22,7 @@ export function createAREdit(THREE, scene, renderer){
     gizmoGroup: null,
     gizmoLine: null,
     gizmoSpheres: [],
+  smooth: 0.28, // low-pass filter factor for XR edits (0 = no smoothing, 1 = snap)
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
@@ -90,18 +91,22 @@ export function createAREdit(THREE, scene, renderer){
     if(points.length===1){
       if(!state.one){ state.one = { start: { x: points[0].x, y: points[0].y, z: points[0].z }, startPos: state.target.position.clone() }; }
       const g = state.one; const dx=points[0].x-g.start.x, dy=points[0].y-g.start.y, dz=points[0].z-g.start.z;
-      state.target.position.set(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
+      const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
+      // Smooth translation to reduce jitter
+      try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
       state.two = null; // reset two-hand state if switching modes
     } else if(points.length>=2){
       const p0=points[0], p1=points[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
       if(!state.two){ state.two = { startMid: mid, startDist: Math.max(1e-4, d), startScale: state.target.scale.clone(), startPos: state.target.position.clone(), startVec: new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(), startQuat: state.target.quaternion.clone() }; }
       const st = state.two; const s = Math.max(0.01, Math.min(50, d / st.startDist));
-      state.target.scale.set(st.startScale.x*s, st.startScale.y*s, st.startScale.z*s);
-      state.target.position.set(st.startPos.x + (mid.x-st.startMid.x), st.startPos.y + (mid.y-st.startMid.y), st.startPos.z + (mid.z-st.startMid.z));
+      const desiredScale = new THREE.Vector3(st.startScale.x*s, st.startScale.y*s, st.startScale.z*s);
+      const desiredPos = new THREE.Vector3(st.startPos.x + (mid.x-st.startMid.x), st.startPos.y + (mid.y-st.startMid.y), st.startPos.z + (mid.z-st.startMid.z));
+      try { state.target.scale.lerp(desiredScale, state.smooth); } catch { state.target.scale.copy(desiredScale); }
+      try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
       try {
         const v0 = st.startVec.clone(); const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(); v0.y=0; v1.y=0;
-        if (v0.lengthSq()>1e-6 && v1.lengthSq()>1e-6){ v0.normalize(); v1.normalize(); const angle = Math.atan2(v0.clone().cross(v1).y, v0.dot(v1)); if (Math.abs(angle)>0.02){ const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), angle); state.target.quaternion.copy(st.startQuat).multiply(q); } }
+        if (v0.lengthSq()>1e-6 && v1.lengthSq()>1e-6){ v0.normalize(); v1.normalize(); const angle = Math.atan2(v0.clone().cross(v1).y, v0.dot(v1)); if (Math.abs(angle)>0.02){ const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), angle); const desiredQ = st.startQuat.clone().multiply(q); state.target.quaternion.slerp(desiredQ, state.smooth); } }
       } catch {}
       state.one = null; // reset one-hand state
     } else {

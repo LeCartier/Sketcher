@@ -6,6 +6,10 @@ export function hitTestObject(o, p, radius){
       for(let i=1;i<o.pts.length;i++){
         if(distToSegment(p, o.pts[i-1], o.pts[i]) <= Math.max(radius, o.thickness/2)) return {hit:true, seg:i-1};
       }
+      // If closed, also test the closing edge from last to first
+      if(o.closed && o.pts.length>2){
+        if(distToSegment(p, o.pts[o.pts.length-1], o.pts[0]) <= Math.max(radius, o.thickness/2)) return {hit:true, seg:o.pts.length-1};
+      }
       return {hit:false};
     }
     case 'line': { const d = distToSegment(p, o.a, o.b); return { hit: d <= Math.max(radius, o.thickness/2) }; }

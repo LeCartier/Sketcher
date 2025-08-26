@@ -39,7 +39,8 @@ export function pickSelectionHandleAt(localPt, view, objects, selection, worldTo
   const o = objects[selection.index]; if(!o) return null; const bb = getObjectBBox(o); const s = view.scale * view.pxPerFt; const pad = 6/s; const bbw = { x: bb.x - pad, y: bb.y - pad, w: bb.w + pad*2, h: bb.h + pad*2 };
   const hs = selectionHandlesScreen(view, bbw, worldToScreen);
   const d = Math.hypot(localPt.x - hs.rotate.x, localPt.y - hs.rotate.y);
-  if(d <= 8) return 'rotate';
+  // Make rotate easier to grab across DPIs/devices
+  if(d <= 14) return 'rotate';
   const names=['nw','n','ne','e','se','s','sw','w'];
   for(let i=0;i<hs.points.length;i++){
     const p = hs.points[i]; if(localPt.x >= p.x-6 && localPt.x <= p.x+6 && localPt.y >= p.y-6 && localPt.y <= p.y+6) return names[i];
@@ -94,13 +95,43 @@ export function scaleObject(o0, bbox0, handle, world){
 
 export function rotateObject(o0, center, da){
   const o = deepCopyObject(o0);
-  function rot(p){ const dx=p.x-center.x, dy=p.y-center.y; const c=Math.cos(da), s=Math.sin(da); return { x: center.x + dx*c - dy*s, y: center.y + dx*s + dy*c }; }
+  const c = Math.cos(da), s = Math.sin(da);
+  const rot = (p)=>{ const dx=p.x-center.x, dy=p.y-center.y; return { x: center.x + dx*c - dy*s, y: center.y + dx*s + dy*c }; };
   switch(o.type){
-    case 'path': o.pts = o.pts.map(rot); break;
-    case 'line': o.a=rot(o.a); o.b=rot(o.b); break;
-    case 'rect': o.a=rot(o.a); o.b=rot(o.b); break;
-    case 'ellipse': o.a=rot(o.a); o.b=rot(o.b); break;
-    case 'text': o.p=rot(o.p); break;
+    case 'path': {
+      o.pts = o.pts.map(rot); return o;
+    }
+    case 'line': {
+      o.a = rot(o.a); o.b = rot(o.b); return o;
+    }
+    case 'rect': {
+      // Convert to a closed path with 4 rotated corners so visual rotation is preserved
+      const x1 = Math.min(o.a.x, o.b.x), y1 = Math.min(o.a.y, o.b.y);
+      const x2 = Math.max(o.a.x, o.b.x), y2 = Math.max(o.a.y, o.b.y);
+      const corners = [
+        { x: x1, y: y1 }, // tl
+        { x: x2, y: y1 }, // tr
+        { x: x2, y: y2 }, // br
+        { x: x1, y: y2 }  // bl
+      ].map(rot);
+      return { type:'path', pts: corners, closed: true, stroke: o.stroke, fill: o.fill, thickness: o.thickness };
+    }
+    case 'ellipse': {
+      // Approximate rotated ellipse as a closed polyline
+      const cx = (o.a.x + o.b.x) / 2, cy = (o.a.y + o.b.y) / 2; const rx = Math.abs(o.a.x - o.b.x) / 2, ry = Math.abs(o.a.y - o.b.y) / 2;
+      const N = 48; const pts = [];
+      for(let i=0;i<N;i++){
+        const t = (i / N) * Math.PI * 2;
+        const px = cx + rx * Math.cos(t);
+        const py = cy + ry * Math.sin(t);
+        pts.push(rot({ x: px, y: py }));
+      }
+      return { type:'path', pts, closed: true, stroke: o.stroke, fill: o.fill, thickness: o.thickness };
+    }
+    case 'text': {
+      // Rotate anchor only; text glyphs remain screen-aligned by design
+      o.p = rot(o.p); return o;
+    }
   }
   return o;
 }
