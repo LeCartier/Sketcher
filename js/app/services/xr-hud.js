@@ -1,6 +1,13 @@
 // XR HUD: 3D wrist-anchored curved button bar with hover/select via rays
 // Note: pass getLocalSpace() to resolve the latest XR reference space each frame.
 export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons }){
+  // Button sizing and layout
+  // Wrist circle: 7-inch circumference, buttons on the user-facing 3/4 of the circle
+  const CIRCUMFERENCE_M = 7 * 0.0254; // 7 inches in meters
+  const ARC_RADIUS = CIRCUMFERENCE_M / (2 * Math.PI); // ≈ 0.02832 m
+  const USER_ARC_HALF_ANGLE = (3 * Math.PI) / 4; // total usable span = 270°
+  const BUTTON_W = 0.028; // meters (edges touching at this radius for ~20-25° spacing)
+  const BUTTON_H = 0.0115; // meters, proportionally thinner
   let hud = null;
   let buttons = [];
   const xrHoverBySource = new WeakMap();
@@ -8,6 +15,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const raycaster = new THREE.Raycaster();
   // Simple viz for hands and right-controller ray
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
+  let handVizMode = null; // 'default' | 'hands-only'
   // Finger poke/depress interaction
   const PRESS_START_M = 0.006;   // start press when penetration > 6mm
   const PRESS_RELEASE_M = 0.003; // release when penetration < 3mm (hysteresis)
@@ -42,7 +50,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
 
   function createHudButton(label, onClick){
     const tex=makeButtonTexture(label);
-    const geom=new THREE.PlaneGeometry(0.15,0.06);
+  const geom=new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     // Render HUD always on top in AR; depthTest off avoids passthrough occlusion issues.
     const mat=new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
     const mesh=new THREE.Mesh(geom, mat);
@@ -58,15 +66,15 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       handVizR = new THREE.Group(); handVizR.name = 'XR Right Hand Viz'; handVizR.userData.__helper = true;
       const mk = () => {
         const g = new THREE.Group();
-        const tipColor = 0x00e0ff, wristColor = 0xffffff, lineColor = 0x00c2ff;
-        const sph = (r,c)=> new THREE.Mesh(new THREE.SphereGeometry(r,12,10), new THREE.MeshBasicMaterial({ color:c, depthTest:false, depthWrite:false }));
+  const tipColor = 0x00e0ff, wristColor = 0xffffff, lineColor = 0x00c2ff;
+  const sph = (r,c)=> new THREE.Mesh(new THREE.SphereGeometry(r,12,10), new THREE.MeshBasicMaterial({ color:c, depthTest:false, depthWrite:false }));
         const tips = ['thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
         const tipSpheres = tips.map(()=>sph(0.01, tipColor));
         const wristSphere = sph(0.012, wristColor);
         const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * (tips.length + 1)), 3));
-        const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
+  const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
         g.add(wristSphere, line, ...tipSpheres);
-        g.userData.__viz = { tips, tipSpheres, wristSphere, line };
+  g.userData.__viz = { tips, tipSpheres, wristSphere, line, base:{ tipColor, wristColor, lineColor } };
         g.visible = false; return g;
       };
       handVizL.add(mk()); handVizR.add(mk());
@@ -82,16 +90,54 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
   }
 
+  function setHandVizPalette(mode){
+    if (handVizMode === mode) return;
+    handVizMode = mode;
+    const apply = (group) => {
+      const child = group && group.children && group.children[0]; if (!child) return;
+      const vz = child.userData.__viz; if (!vz) return;
+      const tips = vz.tipSpheres || []; const wrist = vz.wristSphere; const line = vz.line;
+      if (mode === 'hands-only'){
+        // Force a distinct blue palette in hands-only mode
+        const tipBlue = 0x1ea0ff; const lineBlue = 0x1ea0ff; const wristBlue = 0x8ac9ff;
+        for (const t of tips){ if (t?.material){ t.material.color.setHex(tipBlue); t.material.needsUpdate = true; } }
+        if (wrist?.material){ wrist.material.color.setHex(wristBlue); wrist.material.needsUpdate = true; }
+        if (line?.material){ line.material.color.setHex(lineBlue); line.material.opacity = 0.95; line.material.needsUpdate = true; }
+      } else {
+        // Revert to base palette
+        const base = vz.base || { tipColor:0x00e0ff, wristColor:0xffffff, lineColor:0x00c2ff };
+        for (const t of tips){ if (t?.material){ t.material.color.setHex(base.tipColor); t.material.needsUpdate = true; } }
+        if (wrist?.material){ wrist.material.color.setHex(base.wristColor); wrist.material.needsUpdate = true; }
+        if (line?.material){ line.material.color.setHex(base.lineColor); line.material.opacity = 0.9; line.material.needsUpdate = true; }
+      }
+    };
+    apply(handVizL); apply(handVizR);
+  }
+
   function ensure(){
     if (hud) return hud;
   hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
     buttons = (getButtons(createHudButton) || []);
-    // Linear layout (no overlap): left-to-right at fixed forward offset
-    const n=buttons.length, half=(n-1)/2;
-    const buttonW=0.15, gap=0.035, spacing=buttonW+gap, zForward = -0.08;
-    for(let i=0;i<n;i++){
-      const x = (i - half) * spacing; const z = zForward;
-      const b = buttons[i]; b.mesh.position.set(x,0,z); b.mesh.lookAt(0,0,0); hud.add(b.mesh);
+    // Arc layout around wrist, tiles facing outward
+    // - Circle radius derived from 7" circumference
+    // - Only use the user-facing 3/4 segment (±3π/4 around front)
+    // - Keep edges touching; if buttons don't fit, compress spacing and scale X so edges still touch visually
+    const n = buttons.length;
+    const baseStep = (n > 1) ? (BUTTON_W / ARC_RADIUS) : 0; // ideal radians between centers for edges touching
+    const maxSpan = 2 * USER_ARC_HALF_ANGLE; // allowed angular span
+    const baseSpan = (n > 1) ? (n - 1) * baseStep : 0;
+    const step = (baseSpan > maxSpan && n > 1) ? (maxSpan / (n - 1)) : baseStep;
+    const scaleX = (baseStep > 0) ? (step / baseStep) : 1; // scale X so visual widths still edge-touch along arc
+    const startTheta = -0.5 * ((n - 1) * step); // centered on front-facing direction (theta=0)
+    for (let i = 0; i < n; i++){
+      const theta = startTheta + i * step;
+      const x = Math.sin(theta) * ARC_RADIUS;
+      const z = -Math.cos(theta) * ARC_RADIUS; // outward from wrist (front)
+      const b = buttons[i];
+      b.mesh.position.set(x, 0, z);
+      b.mesh.lookAt(0,0,0); b.mesh.rotateY(Math.PI);
+      if (scaleX !== 1) { b.mesh.scale.x *= scaleX; }
+      hud.add(b.mesh);
     }
   scene.add(hud);
   hud.visible = true;
@@ -164,8 +210,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       const leftOut=new THREE.Vector3(-1,0,0).applyQuaternion(lquat);
       const forward=new THREE.Vector3(0,0,-1).applyQuaternion(lquat);
       const up=new THREE.Vector3(0,1,0).applyQuaternion(lquat);
-      // Closer to wrist: reduce offsets
-      const offset=forward.multiplyScalar(0.055).add(up.multiplyScalar(0.02)).add(leftOut.multiplyScalar(0.045));
+            // Place HUD origin near wrist; forward offset ~ arc radius centers the ring around the wrist
+            const offset=forward.multiplyScalar(ARC_RADIUS).add(up.multiplyScalar(0.02)).add(leftOut.multiplyScalar(0.045));
             const targetPos=lpos.clone().add(offset);
             hud.position.lerp(targetPos,0.4);
             const zInward=leftOut.clone().negate().normalize(); const yUp=up.clone().normalize(); let xRight=new THREE.Vector3().crossVectors(yUp,zInward); if (xRight.lengthSq()<1e-6) xRight.set(1,0,0); xRight.normalize(); const zFixed=new THREE.Vector3().crossVectors(xRight,yUp).normalize(); const m=new THREE.Matrix4().makeBasis(xRight,yUp,zFixed); const q=new THREE.Quaternion().setFromRotationMatrix(m); hud.quaternion.slerp(q,0.4);
@@ -182,7 +228,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         const sources = session.inputSources ? Array.from(session.inputSources) : [];
         const hudTargets = buttons.map(b=>b.mesh);
         const hovered = new Set();
-        for (const src of sources){
+        let sawRightController = false;
+  let anyController = false; let anyHand = false;
+  for (const src of sources){
       const raySpace = src.targetRaySpace || src.gripSpace; if (!raySpace) continue;
       const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
       const pose = frame.getPose(raySpace, ref); if (!pose) continue;
@@ -194,7 +242,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           if (top) hovered.add(top);
 
           // Visualize right-controller pointer ray
-          if (src.handedness === 'right'){
+          if (src.handedness === 'right' && src.gamepad && !src.hand){
+            sawRightController = true;
+            anyController = true;
             if (rightRay && rightRayTip){
               const posAttr = rightRay.geometry.attributes.position;
               posAttr.setXYZ(0, origin.x, origin.y, origin.z);
@@ -204,7 +254,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               rightRayTip.position.copy(tip); rightRayTip.visible = true;
             }
           }
+          if (src.hand) anyHand = true;
         }
+        if (rightRay && rightRayTip && !sawRightController){ rightRay.visible = false; rightRayTip.visible = false; }
+        // Switch palette based on modality: blue when hands-only
+        if (anyHand && !anyController) setHandVizPalette('hands-only'); else setHandVizPalette('default');
 
         // Simple hand outlines: wrist + fingertips per hand
         try {
@@ -214,7 +268,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             const vz = child.userData.__viz; if (!vz) return;
             const wristJ = src.hand?.get?.('wrist'); const wrist = wristJ ? frame.getJointPose(wristJ, ref) : null;
             const tips = vz.tips.map(name => { const j = src.hand?.get?.(name); return j ? frame.getJointPose(j, ref) : null; });
-            if (!wrist || tips.every(t=>!t)) { group.visible=false; return; }
+            if (!wrist || tips.every(t=>!t)) { if (child.visible) child.visible=false; return; }
             const wpos = wrist.transform.position; vz.wristSphere.position.set(wpos.x, wpos.y, wpos.z);
             const posAttr = vz.line.geometry.attributes.position; let idx=0;
             posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
@@ -228,7 +282,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
                 vz.tipSpheres[i].position.copy(vz.wristSphere.position);
               }
             }
-            posAttr.needsUpdate = true; group.visible = true;
+            posAttr.needsUpdate = true; child.visible = true;
           };
           for (const src of sources){ if (src.hand && src.handedness==='left') updateOne(src, handVizL); if (src.hand && src.handedness==='right') updateOne(src, handVizR); }
         } catch {}
@@ -245,14 +299,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           }
           fingerHover = null;
           // Evaluate hover and press per button
-          for (const b of buttons){
+      for (const b of buttons){
             const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
             // default target depth is 0 (released)
             let targetDepth = 0; let within = false; let pressedNow = st.pressed;
             if (idxPos){
               // bounds check in local XY
               const lp = m.worldToLocal(new THREE.Vector3(idxPos.x, idxPos.y, idxPos.z));
-              const halfW = 0.15/2, halfH = 0.06/2;
+        const halfW = BUTTON_W/2, halfH = BUTTON_H/2;
               if (Math.abs(lp.x) <= halfW && Math.abs(lp.y) <= halfH){
                 within = true;
                 // penetration along world normal

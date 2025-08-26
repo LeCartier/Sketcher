@@ -57,7 +57,7 @@ export function createAREdit(THREE, scene, renderer){
   const HAND_SPHERE_R = 0.045; // ~4.5cm interaction sphere
   const CONTROLLER_SPHERE_R = 0.040; // ~4cm sphere for controller grip/pose
   const GRAB_NEAR_MARGIN = 0.0; // meters; 0 = require true penetration for grab
-  const COLLISION_PUSH_GAIN = 0.6; // fraction of penetration to push per frame (pre-smoothing)
+  const COLLISION_PUSH_GAIN = 0.0; // disable passive push; only interact when grabbing
 
   function isCollidingWithBox(px, py, pz, radius, box){
     if (!box || box.isEmpty()) return false;
@@ -78,17 +78,17 @@ export function createAREdit(THREE, scene, renderer){
     const collisionActive = !!(state.useCollision && state.target && targetBox && !targetBox.isEmpty());
     for(const src of sources){
       const { gamepad, gripSpace, targetRaySpace, hand } = src;
-      let isGrabbing=false; let pos=null; let pinching=false; let radius=HAND_SPHERE_R;
+      let isGrabbing=false; let pos=null; let quat=null; let pinching=false; let radius=HAND_SPHERE_R;
       const prev = state.grabMap.get(src) || { grabbing:false };
       if(gamepad && gamepad.buttons && gamepad.buttons.length){
         const squeeze = gamepad.buttons.find((b, i)=> b && b.pressed && (i===1 || i===2));
         if ((squeeze && (gripSpace||targetRaySpace))){
           const ref = gripSpace || targetRaySpace; const pose = frame.getPose(ref, localSpace);
           if(pose){
-            const p = pose.transform.position; radius = CONTROLLER_SPHERE_R;
+            const p = pose.transform.position; const o = pose.transform.orientation; radius = CONTROLLER_SPHERE_R;
             // Collision gate for starting/continuing grab with controller
             if (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, radius, targetBox)){
-              isGrabbing=true; pos = p;
+              isGrabbing=true; pos = p; quat = new THREE.Quaternion(o.x, o.y, o.z, o.w);
             } else {
               // Not colliding: treat as non-grabbing point for pushing
               out.push({ x:p.x, y:p.y, z:p.z, src, grabbing:false, pinching:false, radius: CONTROLLER_SPHERE_R*0.9 });
@@ -110,6 +110,27 @@ export function createAREdit(THREE, scene, renderer){
             // Collision gate for pinch grab
             if (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox)){
               isGrabbing=true; pinching=true; pos = p; radius = HAND_SPHERE_R;
+              // Build an approximate hand orientation for 6DoF hold: use wrist->index and wrist->thumb as axes
+              try {
+                let q = null;
+                if (pw && pw.transform && pw.transform.orientation){
+                  // Prefer the wrist joint orientation if present
+                  const o = pw.transform.orientation; q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+                }
+                if ((!q || q.lengthSq()===0) && pw && pti && ptt){
+                  const wpos = pw.transform.position;
+                  const ipos = pti.transform.position;
+                  const tpos = ptt.transform.position;
+                  const z = new THREE.Vector3(ipos.x - wpos.x, ipos.y - wpos.y, ipos.z - wpos.z).normalize();
+                  const x = new THREE.Vector3(tpos.x - wpos.x, tpos.y - wpos.y, tpos.z - wpos.z).normalize();
+                  let y = new THREE.Vector3().crossVectors(z, x).normalize();
+                  // Re-orthogonalize x
+                  const x2 = new THREE.Vector3().crossVectors(y, z).normalize();
+                  const m = new THREE.Matrix4().makeBasis(x2, y, z);
+                  q = new THREE.Quaternion().setFromRotationMatrix(m);
+                }
+                if (q) quat = q;
+              } catch {}
             }
           }
         }
@@ -120,7 +141,7 @@ export function createAREdit(THREE, scene, renderer){
         }
       }
       if(isGrabbing && pos){
-        out.push({ x:pos.x, y:pos.y, z:pos.z, src, grabbing:true, pinching, radius });
+        out.push({ x:pos.x, y:pos.y, z:pos.z, src, grabbing:true, pinching, radius, quat });
         if (!prev.grabbing) { hapticPulse(src, 0.3, 50); }
         state.grabMap.set(src, { grabbing:true });
       } else {
@@ -140,11 +161,23 @@ export function createAREdit(THREE, scene, renderer){
     const nonGrabPts = points.filter(p=>!p.grabbing);
     updateGizmo(grabbingPts);
     if(grabbingPts.length===1){
-      if(!state.one){ state.one = { start: { x: grabbingPts[0].x, y: grabbingPts[0].y, z: grabbingPts[0].z }, startPos: state.target.position.clone() }; }
-      const g = state.one; const dx=grabbingPts[0].x-g.start.x, dy=grabbingPts[0].y-g.start.y, dz=grabbingPts[0].z-g.start.z;
-      const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
-      // Smooth translation to reduce jitter
+      const p = grabbingPts[0];
+      if(!state.one){
+        const handPos = new THREE.Vector3(p.x, p.y, p.z);
+        const handQuat = (p.quat && p.quat.isQuaternion) ? p.quat.clone() : (p.quat ? p.quat.clone?.() : new THREE.Quaternion());
+        const invH = handQuat.clone(); try { invH.invert(); } catch { invH.conjugate(); }
+        const deltaPos = state.target.position.clone().sub(handPos).applyQuaternion(invH);
+        const deltaQuat = invH.clone().multiply(state.target.quaternion.clone());
+        state.one = { startHandPos: handPos, startHandQuat: handQuat, deltaPos, deltaQuat };
+      }
+      const g = state.one;
+      const handPos = new THREE.Vector3(p.x, p.y, p.z);
+      const handQuat = (p.quat && p.quat.isQuaternion) ? p.quat.clone() : (p.quat ? p.quat.clone?.() : new THREE.Quaternion());
+      const desiredQuat = handQuat.clone().multiply(g.deltaQuat);
+      const forwardDelta = g.deltaPos.clone().applyQuaternion(handQuat);
+      const desiredPos = handPos.clone().add(forwardDelta);
       try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
+      try { state.target.quaternion.slerp(desiredQuat, state.smooth); } catch { state.target.quaternion.copy(desiredQuat); }
       state.two = null; // reset two-hand state if switching modes
     } else if(grabbingPts.length>=2){
       // Require both hands/controllers to be currently colliding to orbit/scale
@@ -165,25 +198,36 @@ export function createAREdit(THREE, scene, renderer){
         // Do not engage two-hand orbit/scale unless both are colliding
         return;
       }
-      const p0=both[0], p1=both[1]; const mid={ x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2, z:(p0.z+p1.z)/2 };
+      const p0=both[0], p1=both[1]; const mid=new THREE.Vector3((p0.x+p1.x)/2, (p0.y+p1.y)/2, (p0.z+p1.z)/2);
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
-      if(!state.two){ state.two = { startMid: mid, startDist: Math.max(1e-4, d), startScale: state.target.scale.clone(), startPos: state.target.position.clone(), startVec: new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(), startQuat: state.target.quaternion.clone() }; }
+      if(!state.two){
+        const startMid = mid.clone();
+        const startDist = Math.max(1e-4, d);
+        const startScale = state.target.scale.clone();
+        const startPos = state.target.position.clone();
+        const startVec = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
+        const startQuat = state.target.quaternion.clone();
+        const startOffset = startPos.clone().sub(startMid);
+        state.two = { startMid, startDist, startScale, startPos, startVec, startQuat, startOffset };
+      }
       const st = state.two; const s = Math.max(0.01, Math.min(50, d / st.startDist));
       const desiredScale = new THREE.Vector3(st.startScale.x*s, st.startScale.y*s, st.startScale.z*s);
-      const desiredPos = new THREE.Vector3(st.startPos.x + (mid.x-st.startMid.x), st.startPos.y + (mid.y-st.startMid.y), st.startPos.z + (mid.z-st.startMid.z));
+      const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
+      let R = new THREE.Quaternion();
+      try { R = new THREE.Quaternion().setFromUnitVectors(st.startVec.clone().normalize(), v1.clone().normalize()); } catch { R.identity?.(); }
+      const desiredQuat = R.clone().multiply(st.startQuat);
+      const offset = st.startOffset.clone().multiplyScalar(s).applyQuaternion(R);
+      const desiredPos = mid.clone().add(offset);
       try { state.target.scale.lerp(desiredScale, state.smooth); } catch { state.target.scale.copy(desiredScale); }
       try { state.target.position.lerp(desiredPos, state.smooth); } catch { state.target.position.copy(desiredPos); }
-      try {
-        const v0 = st.startVec.clone(); const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize(); v0.y=0; v1.y=0;
-        if (v0.lengthSq()>1e-6 && v1.lengthSq()>1e-6){ v0.normalize(); v1.normalize(); const angle = Math.atan2(v0.clone().cross(v1).y, v0.dot(v1)); if (Math.abs(angle)>0.02){ const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), angle); const desiredQ = st.startQuat.clone().multiply(q); state.target.quaternion.slerp(desiredQ, state.smooth); } }
-      } catch {}
+      try { state.target.quaternion.slerp(desiredQuat, state.smooth); } catch { state.target.quaternion.copy(desiredQuat); }
       state.one = null; // reset one-hand state
     } else {
       state.one = null; state.two = null;
     }
 
-    // Simple collision push with non-grabbing hands
-    if (state.useCollision && nonGrabPts.length && state.target) {
+  // Passive push disabled; object only responds when grabbing
+  if (false && state.useCollision && nonGrabPts.length && state.target) {
       try {
         const box = new THREE.Box3().setFromObject(state.target);
         if (!box.isEmpty()){
