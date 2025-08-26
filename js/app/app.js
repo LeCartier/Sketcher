@@ -681,6 +681,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 		return list;
 	}
+	// AR clone source should include overlay even though it's marked helper, so it appears in AR
+	function getARCloneSourceObjects(){
+		const list = getPersistableObjects().slice();
+		try { const ov = scene.getObjectByName('2D Overlay'); if (ov && !list.includes(ov)) list.push(ov); } catch {}
+		return list;
+	}
 	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
 
 	// Expose a safe global accessor for current scene JSON (used by share-to-community flow)
@@ -1795,12 +1801,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				arPlaced = false;
 				grid.visible = false;
 				ensureXRHud3D();
-				// Hide existing editor objects to avoid duplicates while AR export copy is shown
-				try {
-					arPrevVisibility = new Map();
-					for (const o of getPersistableObjects()) { arPrevVisibility.set(o, !!o.visible); o.visible = false; }
-					updateVisibilityUI();
-				} catch {}
+				// Keep current scene visible until AR content clone is created
 				// Setup reference spaces; hit-test only if available on platform
 				xrViewerSpace = await session.requestReferenceSpace('viewer').catch(()=>null);
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
@@ -1843,7 +1844,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
 				// Build content once and place 1.5m in front of the user at floor height
 				try {
-					const root = buildExportRootFromObjects(objects);
+					const root = buildExportRootFromObjects(getARCloneSourceObjects());
 					prepareModelForAR(root); // converts to meters and recenters to ground
 					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 					arContent = root; scene.add(arContent);
@@ -1851,6 +1852,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
 					arPlaced = true;
+					// Now hide originals to avoid duplicate visuals
+					try {
+						arPrevVisibility = new Map();
+						for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
+						updateVisibilityUI();
+					} catch {}
 				} catch {}
 				session.addEventListener('end', () => {
 					arActive = false;
@@ -2558,9 +2565,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (results && results.length) {
 						const pose = results[0].getPose(xrLocalSpace);
 						if (pose) {
-							// Build AR content from entire scene objects
-							if (!arContent) {
-								const root = buildExportRootFromObjects(objects);
+								// Build AR content from entire scene objects (include overlay)
+								if (!arContent) {
+									const root = buildExportRootFromObjects(getARCloneSourceObjects());
 								prepareModelForAR(root);
 								if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 								arContent = root;
@@ -2568,6 +2575,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 								computeArBaseMetrics(arContent);
 								// default to 1:1 on placement
 								try { arContent.scale.set(1,1,1); } catch {}
+									// Hide originals after clone is added to avoid duplicate visuals
+									try {
+										arPrevVisibility = new Map();
+										for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
+										updateVisibilityUI();
+									} catch {}
 							}
 							const p = pose.transform.position;
 							arContent.position.set(p.x, p.y, p.z);
