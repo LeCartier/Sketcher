@@ -178,13 +178,48 @@ export async function init() {
 					bMode.setLabel(arPerObject ? 'Scene' : 'Objects');
 				} catch {}
 			});
+			// Lock ground: snap AR content ground to XR local-floor (translate up, yaw align, optional scale within constraints)
+			const bLock = createHudButton('Lock Ground', ()=>{
+				try {
+					if (!arContent) return;
+					// Compute content box in meters and snap min.y to 0
+					arContent.updateMatrixWorld(true);
+					const box = new THREE.Box3().setFromObject(arContent);
+					if (!box.isEmpty()){
+						const dy = -box.min.y;
+						arContent.position.y += dy;
+					}
+					// Align yaw to camera forward projected on XZ, keep facing user
+					const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
+					if (xrCam){
+						const cq = new THREE.Quaternion(); xrCam.getWorldQuaternion(cq);
+						const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(cq); fwd.y = 0; if (fwd.lengthSq()>1e-6) fwd.normalize(); else fwd.set(0,0,-1);
+						const yaw = Math.atan2(fwd.x, fwd.z);
+						const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+						// Keep object’s current pitch/roll; replace yaw
+						const e = new THREE.Euler(); e.setFromQuaternion(arContent.quaternion, 'YXZ'); e.y = yaw; arContent.quaternion.setFromEuler(e);
+					}
+					// Optional: scale to keep on-ground object within reasonable bounds
+					try {
+						const b2 = new THREE.Box3().setFromObject(arContent);
+						const size = b2.getSize(new THREE.Vector3());
+						const maxDim = Math.max(size.x, size.y, size.z);
+						const targetMax = Math.min(2.5, Math.max(0.25, arFitMaxDim));
+						const s = THREE.MathUtils.clamp(targetMax / Math.max(1e-4, maxDim), 0.2, 5);
+						arContent.scale.multiplyScalar(s);
+					} catch {}
+					// Recompute metrics/material mode consistency
+					computeArBaseMetrics(arContent);
+					applyArMaterialModeOnContent();
+				} catch {}
+			});
 			const bGizmo = createHudButton('Gizmo', ()=>{ try { arEdit.setGizmoEnabled(!(arEdit._gizmoOn = !arEdit._gizmoOn)); } catch {} });
 			const bLite = createHudButton(arSimplifyMaterials ? 'Lite On' : 'Lite Off', ()=>{
 				arSimplifyMaterials = !arSimplifyMaterials;
 				applyArMaterialModeOnContent();
 				bLite.setLabel(arSimplifyMaterials ? 'Lite On' : 'Lite Off');
 			});
-			xrHudButtons = [bOne, bFit, bReset, bMode, bGizmo, bLite];
+			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bGizmo, bLite];
 			return xrHudButtons;
 		}
 	});
@@ -217,13 +252,18 @@ export async function init() {
 				if (!gp || !gp.buttons || !gp.buttons.length) continue;
 				let pressed = false;
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
-				// Also consider a long squeeze on the left controller as a fallback gesture
-				if (!pressed && src.handedness === 'left' && gp.buttons[1]?.pressed) { pressed = true; }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 				if (pressed && !prev){
-					// Rising edge: toggle AR UI
-					toggleXRHudVisibility();
-					toggleDomUIInXR();
+					// Rising edge: show HUD anchored to controller if this source has a space; otherwise palm
+					try {
+						ensureXRHud3D();
+						if (xrHud3D) {
+							const space = src.gripSpace || src.targetRaySpace || null;
+							if (space) { xrHud.setAnchor({ type: 'controller', space, handedness: src.handedness||'left' }); }
+							else { xrHud.setAnchor({ type: 'palm', handedness: 'left' }); }
+							xrHud3D.visible = true; xrHud3D.userData.__autoHidden = false;
+						}
+					} catch {}
 				}
 				__xrMenuPrevBySource.set(src, pressed);
 			}

@@ -1,16 +1,13 @@
 // XR HUD: 3D wrist-anchored curved button bar with hover/select via rays
 // Note: pass getLocalSpace() to resolve the latest XR reference space each frame.
 export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons }){
-  // Button sizing and layout
-  // Wrist circle: 7-inch circumference, buttons on the user-facing 3/4 of the circle
-  const CIRCUMFERENCE_M = 7 * 0.0254; // 7 inches in meters
-  const ARC_RADIUS = (CIRCUMFERENCE_M / (2 * Math.PI)) * 1.10; // +10% larger ring
-  const USER_ARC_HALF_ANGLE = (3 * Math.PI) / 4; // total usable span = 270°
-  // Ellipse flattening to reduce the "faceted" look at the front segment
-  const ELLIPSE_X_SCALE = 1.2; // widen left-right
-  const ELLIPSE_Z_SCALE = 0.9; // slightly reduce front-back
-  const BUTTON_W = 0.028; // meters (edges touching at this radius for ~20-25° spacing)
-  const BUTTON_H = 0.0115; // meters, proportionally thinner
+  // Button sizing and layout for palm grid
+  const BUTTON_W = 0.028; // meters
+  const BUTTON_H = 0.0115; // meters
+  const GRID_GAP_X = 0.006; // 6mm horizontal gap
+  const GRID_GAP_Y = 0.006; // 6mm vertical gap
+  const PALM_OFFSET = 0.018; // 18mm above palm plane to avoid z-fighting with hand
+  const PINCH_THRESHOLD_M = 0.035; // consistent with AR edit
   let hud = null;
   let buttons = [];
   const xrHoverBySource = new WeakMap();
@@ -26,6 +23,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const PRESS_MAX_M = Math.max(0.004, 0.60 * BUTTON_H);     // ~6.9mm
   const PRESS_SMOOTH = 0.35;     // visual smoothing
   let fingerHover = null;        // hovered mesh by fingertip
+  // Visibility suppression when left hand not open or grabbing occurs
+  let prevVisible = false;
+  // Anchor control: 'palm' (left hand) or 'controller' with a reference space
+  let anchor = { type: 'palm', space: null, handedness: 'left' };
+  function setAnchor(next){
+    try { anchor = Object.assign({ type: 'palm', space: null, handedness: 'left' }, next||{}); } catch { anchor = { type: 'palm', space: null, handedness: 'left' }; }
+  }
 
   function ensurePressState(m){
     if (!m.userData.__press) {
@@ -120,105 +124,29 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
 
   function ensure(){
     if (hud) return hud;
-  hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
+    hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
     buttons = (getButtons(createHudButton) || []);
-    // Arc layout around wrist on an ellipse, tiles facing outward
-    // - Ellipse radii Rx, Rz derived from circular ARC_RADIUS with flatten multipliers
-    // - Only use the user-facing 3/4 segment (±3π/4 around front)
-    // - Keep edges touching by spacing along arc length (variable dθ); if angles exceed span, uniformly compress
+    // Build a grid layout (2-3 columns depending on count)
     const n = buttons.length;
-    const Rx = ARC_RADIUS * ELLIPSE_X_SCALE;
-    const Rz = ARC_RADIUS * ELLIPSE_Z_SCALE;
-    const targetArcLen = BUTTON_W; // aim for edge-touching along curved path
-    const maxThetaHalf = USER_ARC_HALF_ANGLE;
-
-    const dThetaAt = (theta) => {
-      const a = Rx * Math.cos(theta);
-      const b = Rz * Math.sin(theta);
-      const ds_dtheta = Math.sqrt(a*a + b*b) || 1e-6;
-      return targetArcLen / ds_dtheta; // radians
-    };
-
-    const buildAngles = () => {
-      if (n <= 0) return [];
-      if (n === 1) return [0];
-      const pos = [];
-      if (n % 2 === 0){
-        // even: first step is half-step from center for symmetry
-        let d0 = dThetaAt(0) * 0.5;
-        d0 = Math.max(1e-4, d0);
-        pos.push(d0);
-        while (pos.length < n/2){
-          const last = pos[pos.length-1];
-          let d = dThetaAt(last);
-          d = Math.max(1e-4, d);
-          pos.push(last + d);
-        }
-      } else {
-        // odd: center at 0, then step outwards
-        let t = 0;
-        while (pos.length < Math.floor(n/2)){
-          let d = dThetaAt(t);
-          d = Math.max(1e-4, d);
-          t += d;
-          pos.push(t);
-        }
-      }
-      // Mirror symmetrically
-      const neg = pos.slice().reverse().map(v => -v);
-      if (n % 2 === 0){
-        return neg.concat(pos); // no center 0
-      } else {
-        return neg.concat([0], pos);
-      }
-    };
-
-    let angles = buildAngles();
-    // Fit within ±maxThetaHalf by uniform compression if needed
-    const thetaMax = angles.reduce((m, v)=> Math.max(m, Math.abs(v)), 0);
-    const compress = thetaMax > maxThetaHalf ? (maxThetaHalf / Math.max(thetaMax, 1e-6)) : 1;
-    if (compress !== 1){ angles = angles.map(v => v * compress); }
-
+    const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(n||1))));
+    const rows = Math.max(1, Math.ceil(n / cols));
+    const totalW = cols * BUTTON_W + (cols - 1) * GRID_GAP_X;
+    const totalH = rows * BUTTON_H + (rows - 1) * GRID_GAP_Y;
     for (let i = 0; i < n; i++){
-      const theta = angles[i];
-      const x = Math.sin(theta) * Rx;
-      const z = -Math.cos(theta) * Rz;
+      const r = Math.floor(i / cols);
+      const c = i % cols;
+      const x = -totalW/2 + c * (BUTTON_W + GRID_GAP_X) + BUTTON_W/2;
+      const y = totalH/2 - r * (BUTTON_H + GRID_GAP_Y) - BUTTON_H/2;
       const b = buttons[i];
-      b.mesh.position.set(x, 0, z);
-      b.mesh.lookAt(0,0,0); b.mesh.rotateY(Math.PI);
-      if (compress !== 1) { b.mesh.scale.x *= compress; }
+      b.mesh.position.set(x, y, 0);
+      // Face +Z in local space; group orientation will face outward from left palm
       hud.add(b.mesh);
     }
-  scene.add(hud);
-  hud.visible = true;
+    scene.add(hud);
+    hud.visible = true;
+    prevVisible = true;
     ensureHandViz();
-    // XR select events
-    const session = renderer.xr.getSession?.();
-    const onSelectStart=(ev)=>{ const src=ev.inputSource; if (src) xrPressedSources.add(src); };
-    const onSelectEnd=(ev)=>{
-      const src=ev.inputSource; if (!src) return; xrPressedSources.delete(src);
-      // Prefer a fresh raycast using the event frame, so clicks don't depend on last render update
-      let target=null;
-      try {
-        const frame = ev.frame; const space = src.targetRaySpace || src.gripSpace; const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
-        if (frame && space && ref) {
-          const pose = frame.getPose(space, ref);
-          if (pose) {
-            const p=pose.transform.position, o=pose.transform.orientation;
-            const origin=new THREE.Vector3(p.x,p.y,p.z);
-            const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
-            const hudTargets = buttons.map(b=>b.mesh);
-            raycaster.set(origin, dir);
-            const hits=raycaster.intersectObjects(hudTargets,true);
-            if (hits && hits.length) target = hits[0].object;
-          }
-        }
-      } catch {}
-      if (!target) target = xrHoverBySource.get(src);
-      const handler = target?.userData?.__hudButton?.onClick;
-      if (typeof handler === 'function') { try { handler(); } catch{} }
-    };
-    try { if (session) { session.addEventListener('selectstart', onSelectStart); session.addEventListener('selectend', onSelectEnd); hud.userData.__listeners = { onSelectStart, onSelectEnd, session }; } } catch {}
+    // Disable controller select activation for palm UI; right index finger poke only
     return hud;
   }
 
@@ -243,67 +171,136 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const xrCam = renderer.xr.getCamera?.();
     let camWorldPos=null, camWorldQuat=null;
     if (xrCam){ camWorldPos=new THREE.Vector3(); xrCam.getWorldPosition(camWorldPos); camWorldQuat=new THREE.Quaternion(); xrCam.getWorldQuaternion(camWorldQuat); }
-    let placed=false;
+  let placed=false;
+    let leftHandOpen = false;
+    let anyGrabOrSqueeze = false;
+    let sawRightController = false;
   try {
       const session = renderer.xr.getSession?.();
     if (session && frame){
         const sources = session.inputSources ? Array.from(session.inputSources) : [];
+        // Palm anchoring and state checks
+        const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
+        let leftWristPose=null, leftIdxPose=null, leftThumbPose=null;
         for (const src of sources){
-          if (src.handedness !== 'left') continue;
-          let leftPose=null;
-      const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
-      if (src.gripSpace) leftPose = frame.getPose(src.gripSpace, ref);
-      if (!leftPose && src.hand && frame.getJointPose){ const wrist = src.hand.get?.('wrist'); if (wrist) leftPose = frame.getJointPose(wrist, ref); }
-          if (leftPose){
-            const lp=leftPose.transform.position; const lo=leftPose.transform.orientation;
-            const lpos=new THREE.Vector3(lp.x,lp.y,lp.z); const lquat=new THREE.Quaternion(lo.x,lo.y,lo.z,lo.w);
-      const leftOut=new THREE.Vector3(-1,0,0).applyQuaternion(lquat);
-      const forward=new THREE.Vector3(0,0,-1).applyQuaternion(lquat);
-      const up=new THREE.Vector3(0,1,0).applyQuaternion(lquat);
-            // Place HUD origin at the wrist center so the ring wraps around the wrist (no forward/left offsets)
-            const offset=new THREE.Vector3(0,0,0); // centered; adjust here if slight clearance is needed
-            const targetPos=lpos.clone().add(offset);
-            hud.position.lerp(targetPos,0.4);
-            const zInward=leftOut.clone().negate().normalize(); const yUp=up.clone().normalize(); let xRight=new THREE.Vector3().crossVectors(yUp,zInward); if (xRight.lengthSq()<1e-6) xRight.set(1,0,0); xRight.normalize(); const zFixed=new THREE.Vector3().crossVectors(xRight,yUp).normalize(); const m=new THREE.Matrix4().makeBasis(xRight,yUp,zFixed); const q=new THREE.Quaternion().setFromRotationMatrix(m); hud.quaternion.slerp(q,0.4);
-            placed=true; break;
+          // Track any squeeze on controllers to hide menu
+          if (src.gamepad && src.gamepad.buttons){ if (src.gamepad.buttons[1]?.pressed || src.gamepad.buttons[2]?.pressed) anyGrabOrSqueeze = true; }
+          if (src.handedness === 'right' && src.gamepad && !src.hand){ sawRightController = true; }
+          if (src.handedness !== 'left' || !src.hand) continue;
+          const hand = src.hand;
+          const wrist = hand.get?.('wrist');
+          const idx = hand.get?.('index-finger-tip');
+          const th = hand.get?.('thumb-tip');
+          leftWristPose = wrist && frame.getJointPose ? frame.getJointPose(wrist, ref) : leftWristPose;
+          leftIdxPose = idx && frame.getJointPose ? frame.getJointPose(idx, ref) : leftIdxPose;
+          leftThumbPose = th && frame.getJointPose ? frame.getJointPose(th, ref) : leftThumbPose;
+        }
+        if (anchor.type === 'controller' && anchor.space){
+          // Anchor to controller space: position above the controller and face user/camera
+          const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
+          const pose = frame.getPose(anchor.space, ref);
+          if (pose){
+            const p = pose.transform.position; const o = pose.transform.orientation;
+            const base = new THREE.Vector3(p.x, p.y, p.z);
+            const qCtl = new THREE.Quaternion(o.x,o.y,o.z,o.w);
+            const upCtl = new THREE.Vector3(0,1,0).applyQuaternion(qCtl);
+            const forwardCtl = new THREE.Vector3(0,0,-1).applyQuaternion(qCtl);
+            const pos = base.clone().add(upCtl.multiplyScalar(0.08)).add(forwardCtl.multiplyScalar(0.05));
+            hud.position.lerp(pos, 0.35);
+            // Face the user/camera primarily
+            if (xrCam){
+              const toCam = new THREE.Vector3().subVectors(camWorldPos, pos).normalize();
+              // Build basis: x = right, y = up (world), z = forward to camera
+              const z = toCam.clone();
+              const y = new THREE.Vector3(0,1,0);
+              let x = new THREE.Vector3().crossVectors(y, z); if (x.lengthSq()<1e-6) x.set(1,0,0); x.normalize();
+              const zFixed = new THREE.Vector3().crossVectors(x, y).normalize();
+              const m = new THREE.Matrix4().makeBasis(x, y, zFixed);
+              const q = new THREE.Quaternion().setFromRotationMatrix(m);
+              hud.quaternion.slerp(q, 0.35);
+            } else {
+              hud.quaternion.slerp(qCtl, 0.35);
+            }
+            placed = true;
           }
+        } else if (leftWristPose){
+          // Derive palm plane orientation from wrist->index and wrist->thumb
+          const wp = leftWristPose.transform.position;
+          const w = new THREE.Vector3(wp.x, wp.y, wp.z);
+          const ip = leftIdxPose?.transform?.position; const tp = leftThumbPose?.transform?.position;
+          let vIndex = null, vThumb = null;
+          if (ip) vIndex = new THREE.Vector3(ip.x-w.x, ip.y-w.y, ip.z-w.z);
+          if (tp) vThumb = new THREE.Vector3(tp.x-w.x, tp.y-w.y, tp.z-w.z);
+          let z = new THREE.Vector3(0,0,1); // palm normal
+          if (vIndex && vThumb){ z = new THREE.Vector3().crossVectors(vIndex, vThumb); if (z.lengthSq() < 1e-6) z.set(0,0,1); z.normalize(); }
+          // x along index direction projected on palm plane
+          let xAxis = vIndex ? vIndex.clone() : new THREE.Vector3(1,0,0);
+          // remove normal component
+          const proj = z.clone().multiplyScalar(xAxis.dot(z)); xAxis.sub(proj);
+          if (xAxis.lengthSq() < 1e-6) xAxis.set(1,0,0); xAxis.normalize();
+          const yAxis = new THREE.Vector3().crossVectors(z, xAxis).normalize();
+          const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, z);
+          const q = new THREE.Quaternion().setFromRotationMatrix(m);
+          const targetPos = w.clone().add(z.clone().multiplyScalar(PALM_OFFSET));
+          hud.position.lerp(targetPos, 0.35);
+          hud.quaternion.slerp(q, 0.35);
+          placed = true;
+        }
+        // Determine left-hand open (not pinching)
+        if (leftIdxPose && leftThumbPose){
+          const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
+          const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+          leftHandOpen = d >= PINCH_THRESHOLD_M;
+          if (!leftHandOpen) anyGrabOrSqueeze = true; // treat pinch as grab condition
         }
       }
     } catch {}
-    if (!placed && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.6)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
-    // Hover via rays
+    if (!placed && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
+    // Enforce visibility rules: menu shows when toggled AND no grab/squeeze; if palm-anchored, also require left hand open
+    try {
+      const palmReq = (anchor.type === 'palm');
+      const allowShow = (!anyGrabOrSqueeze) && (!palmReq || leftHandOpen);
+      const mustHide = (anyGrabOrSqueeze) || (palmReq && !leftHandOpen);
+      if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; }
+      else if (!hud.visible && allowShow && hud.userData.__autoHidden) { hud.visible = true; hud.userData.__autoHidden = false; }
+    } catch {}
+    // Hover via rays (visualize only; do not click via controller). We can still show right controller ray, but ignore for clicking.
     try {
       const session = renderer.xr.getSession?.();
     if (session && frame){
         const sources = session.inputSources ? Array.from(session.inputSources) : [];
         const hudTargets = buttons.map(b=>b.mesh);
         const hovered = new Set();
-        let sawRightController = false;
-  let anyController = false; let anyHand = false;
+        let anyController = false; let anyHand = false;
   for (const src of sources){
-      const raySpace = src.targetRaySpace || src.gripSpace; if (!raySpace) continue;
       const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
-      const pose = frame.getPose(raySpace, ref); if (!pose) continue;
+      // Don't use controller rays for activation; optional hover visualization only
+      const raySpace = src.targetRaySpace || src.gripSpace; if (raySpace){
+        const pose = frame.getPose(raySpace, ref); if (pose){
           const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
           raycaster.set(origin, dir);
           const hits=raycaster.intersectObjects(hudTargets,true);
           const top = hits && hits.length ? hits[0].object : null;
           xrHoverBySource.set(src, top);
           if (top) hovered.add(top);
-
-          // Visualize right-controller pointer ray
-          if (src.handedness === 'right' && src.gamepad && !src.hand){
-            sawRightController = true;
-            anyController = true;
-            if (rightRay && rightRayTip){
-              const posAttr = rightRay.geometry.attributes.position;
-              posAttr.setXYZ(0, origin.x, origin.y, origin.z);
-              const tip = origin.clone().add(dir.clone().multiplyScalar(1.5));
-              posAttr.setXYZ(1, tip.x, tip.y, tip.z);
-              posAttr.needsUpdate = true; rightRay.visible = true;
-              rightRayTip.position.copy(tip); rightRayTip.visible = true;
-            }
+        }
+      }
+      // Visualize right-controller pointer ray but don't enable clicking with it
+      if (src.handedness === 'right' && src.gamepad && !src.hand){
+        sawRightController = true; anyController = true;
+        if (rightRay && rightRayTip){
+          const pose = raySpace ? frame.getPose(raySpace, ref) : null;
+          if (pose){
+            const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
+            const posAttr = rightRay.geometry.attributes.position;
+            posAttr.setXYZ(0, origin.x, origin.y, origin.z);
+            const tip = origin.clone().add(dir.clone().multiplyScalar(1.5));
+            posAttr.setXYZ(1, tip.x, tip.y, tip.z);
+            posAttr.needsUpdate = true; rightRay.visible = true;
+            rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }
+        }
+      }
           if (src.hand) anyHand = true;
         }
         if (rightRay && rightRayTip && !sawRightController){ rightRay.visible = false; rightRayTip.visible = false; }
@@ -337,7 +334,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           for (const src of sources){ if (src.hand && src.handedness==='left') updateOne(src, handVizL); if (src.hand && src.handedness==='right') updateOne(src, handVizR); }
         } catch {}
 
-        // Right index finger hover + poke-to-click (depress animation)
+  // Right index finger hover + poke-to-click (depress animation). Only this triggers clicks.
         try {
           const rightHand = sources.find(s => s.hand && s.handedness === 'right');
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
@@ -391,5 +388,5 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     } catch {}
   }
 
-  return { ensure, remove, update, get group(){ return hud; }, get buttons(){ return buttons; } };
+  return { ensure, remove, update, setAnchor, get group(){ return hud; }, get buttons(){ return buttons; } };
 }
