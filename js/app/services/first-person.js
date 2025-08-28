@@ -473,6 +473,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   }
   function __discRoot(o){ try { while(o && !(o.userData && o.userData.__teleportDisc)) o = o.parent; return o || null; } catch { return null; } }
   function tryHoverHighlightAtClient(clientX, clientY){
+  // Suppress teleport UI when XR HUD is visible
+  if (typeof window.__xrHudVisible === 'boolean' && window.__xrHudVisible) return;
     if (!window.__teleport) return;
     const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return;
     setPointerFromClient(clientX, clientY);
@@ -482,6 +484,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     if (ih && ih.length){ const d = __discRoot(ih[0].object); if (d) try { window.__teleport.highlightTeleportDisc(d, true); } catch{} }
   }
   function tryTeleportAtClient(clientX, clientY){
+  // Suppress teleport while HUD is visible
+  if (typeof window.__xrHudVisible === 'boolean' && window.__xrHudVisible) return false;
     if (!window.__teleport) return false;
     const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return false;
     setPointerFromClient(clientX, clientY);

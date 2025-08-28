@@ -80,13 +80,16 @@ export function createAREdit(THREE, scene, renderer){
     const out = [];
     const sources = session.inputSources ? Array.from(session.inputSources) : [];
     const collisionActive = !!(state.useCollision && state.target && targetBox && !targetBox.isEmpty());
+  const hudUp = !!(typeof window!=='undefined' && window.__xrHudVisible);
   for(const src of sources){
       const { gamepad, gripSpace, targetRaySpace, hand } = src;
       let isGrabbing=false; let pos=null; let quat=null; let pinching=false; let radius=HAND_SPHERE_R;
       const prev = state.grabMap.get(src) || { grabbing:false };
       if(gamepad && gamepad.buttons && gamepad.buttons.length){
         const squeeze = gamepad.buttons.find((b, i)=> b && b.pressed && (i===1 || i===2));
-        if ((squeeze && (gripSpace||targetRaySpace))){
+        // While HUD is up, block right-controller grabs
+        const isRight = (src.handedness||'') === 'right';
+        if ((squeeze && (gripSpace||targetRaySpace)) && !(hudUp && isRight)){
           const ref = gripSpace || targetRaySpace; const pose = frame.getPose(ref, localSpace);
           if(pose){
             const p = pose.transform.position; const o = pose.transform.orientation; radius = CONTROLLER_SPHERE_R;
@@ -119,12 +122,15 @@ export function createAREdit(THREE, scene, renderer){
             if (z.lengthSq() > 1e-8){ z.normalize(); palmDown = (z.y <= -0.15); } // palm facing downward enough
           }
         } catch {}
-        if(pti && ptt){
+    if(pti && ptt){
           const dx=pti.transform.position.x-ptt.transform.position.x, dy=pti.transform.position.y-ptt.transform.position.y, dz=pti.transform.position.z-ptt.transform.position.z; const dist=Math.hypot(dx,dy,dz);
           if(dist < PINCH_THRESHOLD_M){
             const p = pti.transform.position;
             // Collision gate for pinch grab, plus palm-down requirement
-            if (palmDown && (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox))){
+      // While HUD is up, block right-hand pinches; left hand allowed when no HUD
+      const isRight = (src.handedness||'') === 'right';
+      const hudBlocked = hudUp && isRight;
+      if (!hudBlocked && palmDown && (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox))){
               isGrabbing=true; pinching=true; pos = p; radius = HAND_SPHERE_R;
               // Build an approximate hand orientation for 6DoF hold: use wrist->index and wrist->thumb as axes
               try {

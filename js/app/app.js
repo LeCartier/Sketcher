@@ -189,8 +189,18 @@ export async function init() {
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
 			let handStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
-			const bOne = createHudButton('1:1', ()=> setARScaleOne());
-			const bFit = createHudButton('Fit', ()=> setARScaleFit());
+			const bOne = createHudButton(arOneToOne ? '1:1 On' : '1:1 Off', ()=>{
+				// Toggle between 1:1 and Fit
+				try {
+					if (arOneToOne) { setARScaleFit(); } else { setARScaleOne(); }
+					// setARScaleOne/setARScaleFit update arOneToOne internally
+					bOne.setLabel(arOneToOne ? '1:1 On' : '1:1 Off');
+				} catch {}
+			});
+			const bFit = createHudButton('Fit', ()=>{
+				setARScaleFit();
+				try { bOne.setLabel('1:1 Off'); } catch {}
+			});
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
 			// Toggle per-object vs whole-scene manipulation
 			const bMode = createHudButton('Objects', ()=>{
@@ -321,18 +331,18 @@ export async function init() {
 			for (const src of sources){
 				const gp = src && src.gamepad;
 				if (!gp || !gp.buttons || !gp.buttons.length) continue;
+				// Only respond to left-hand controller
+				if ((src.handedness||'') !== 'left') { __xrMenuPrevBySource.set(src, false); continue; }
 				let pressed = false;
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 				if (pressed && !prev){
-					// Rising edge: show HUD anchored to controller if this source has a space; otherwise palm
+					// Rising edge: show HUD anchored to left palm only
 					try {
 						ensureXRHud3D();
 						if (xrHud3D) {
-							const space = src.gripSpace || src.targetRaySpace || null;
-							if (space) { xrHud.setAnchor({ type: 'controller', space, handedness: src.handedness||'left' }); }
-							else { xrHud.setAnchor({ type: 'palm', handedness: 'left' }); }
-							xrHud3D.userData.__menuShown = true; xrHud3D.visible = true; xrHud3D.userData.__autoHidden = false; try { xrHud.resetPressStates?.(); } catch {}
+							xrHud.setAnchor({ type: 'palm', handedness: 'left' });
+							xrHud3D.userData.__menuShown = true; xrHud3D.userData.__autoHidden = false; try { xrHud.resetPressStates?.(); } catch {}
 						}
 					} catch {}
 				}
@@ -3026,8 +3036,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
 							const prev = window.__xrTriggerPrev.get(src) === true;
 							if (pressed && !prev){
-								// Skip teleport if HUD is being hovered by controller
-								if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrTriggerPrev.set(src, pressed); return; }
+								// Skip teleport if HUD is visible or being hovered by controller
+								if ((typeof window.__xrHudVisible === 'boolean' && window.__xrHudVisible) || (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover)) { window.__xrTriggerPrev.set(src, pressed); return; }
 								const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
 								if (pose){
 									const p = pose.transform.position; const o = pose.transform.orientation;
@@ -3078,13 +3088,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				if (session && !arPlaced && frame && xrLocalSpace) {
 					if (!arContent) {
 						const root = buildExportRootFromObjects(getARCloneSourceObjects());
+						// Convert cloned content to meters and recenter to ground
 						prepareModelForAR(root);
 						if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
-						arContent = root;
+						// Wrap in a container so runtime scaling (1:1/Fit) doesn't fight the meter conversion
+						const container = new THREE.Group();
+						container.name = '__ARContentContainer';
+						container.add(root);
+						arContent = container;
 						scene.add(arContent);
 						computeArBaseMetrics(arContent);
-						// Ensure 1:1 scale in meters after feet->meters conversion in prepareModelForAR
-						try { arContent.scale.set(1,1,1); } catch {}
 						// Hide originals after clone is added to avoid duplicate visuals
 						try {
 							arPrevVisibility = new Map();
