@@ -281,6 +281,8 @@ export async function init() {
 		const toolbox = document.getElementById('toolbox');
 		if (toolbox){ __fpPrevToolboxDisplay = toolbox.style.display; toolbox.style.display = 'none'; }
 		__fpEditSuppressed = true;
+		// Ensure teleport discs remain interactive in First-Person
+		try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
 	}
 	function __exitFirstPersonSideEffects(){
 		// Restore toolbox visibility according to current mode
@@ -439,6 +441,10 @@ export async function init() {
 	const teleportDiscs = [];
 	function __isTeleportDisc(obj){ return !!(obj && obj.userData && obj.userData.__teleportDisc); }
 	function __getTeleportDiscRoot(obj){ let o=obj; while(o && !__isTeleportDisc(o)) o=o.parent; return __isTeleportDisc(o) ? o : null; }
+	// Toggle interactivity across mode transitions without affecting user visibility
+	function setTeleportDiscsActive(active=true){
+		try { teleportDiscs.forEach(d => { if (d && d.userData){ if(!d.userData.__teleportDisc) d.userData.__teleportDisc = {}; d.userData.__teleportDisc.active = !!active; } }); } catch{}
+	}
 	function createTeleportDisc(position, normal){
 		const n = (normal && normal.isVector3) ? normal.clone().normalize() : new THREE.Vector3(0,1,0);
 		const group = new THREE.Group(); group.name = '__TeleportDisc'; group.userData.__teleportDisc = { normal: n.clone() };
@@ -492,7 +498,7 @@ export async function init() {
 			if (hl) hl.visible = !!on;
 		} catch{}
 	}
-	function getTeleportDiscs(){ return teleportDiscs.slice(); }
+	function getTeleportDiscs(){ return teleportDiscs.filter(d => (d?.userData?.__teleportDisc?.active !== false)).slice(); }
 	function teleportToDisc(disc){
 		if (!disc) return;
 		disc.updateMatrixWorld(true);
@@ -508,13 +514,8 @@ export async function init() {
 			if (len > 1e-6) { prevDir = d.normalize(); prevDist = camera.position.distanceTo(controls.target) || 10; }
 		} catch {}
 		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
-		// If disc is horizontal (near-up normal), place camera 6ft above disc height
-		if (n.dot(up) >= 0.85){
-			target.set(center.x, center.y + 6, center.z);
-		} else {
-			// Fallback for non-horizontal discs: keep legacy behavior along disc normal
-			target = center.clone().add(n.clone().multiplyScalar(6));
-		}
+	// Place camera 6ft above the disc center height (consistent for walk or fly)
+	target.set(center.x, center.y + 6, center.z);
 		// If XR session active (AR/VR): move the world so the camera appears at target
 		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 		if (session){
@@ -534,7 +535,9 @@ export async function init() {
 		} catch{}
 	}
 	// Expose teleport helpers for other modules (first-person, XR)
-	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc }; } catch{}
+	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc, setActive: setTeleportDiscsActive }; } catch{}
+	// Default: make discs active for interaction
+	try { setTeleportDiscsActive(true); } catch{}
 	// Add a UI button to place discs
 	(function(){
 		const toolbox = document.getElementById('toolbox');
@@ -2206,6 +2209,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// immersive AR (Quest passthrough or mobile AR)
 				// Save a restore point before entering XR
 				try { saveSessionDraftNow(); } catch {}
+				// Ensure teleport discs interactive in XR
+				try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
 				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
@@ -2258,6 +2263,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// Start immersive VR for headsets; use hands/controllers for manipulation
 				// Save a restore point before entering XR
 				try { saveSessionDraftNow(); } catch {}
+				// Ensure teleport discs interactive in XR
+				try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
 				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}

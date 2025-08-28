@@ -24,6 +24,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   colliderRefreshTimer: 0,
   // Desktop AR environment (sun/ground/sky)
   env: null,
+  // Vertical motion for gravity-based walk mode
+  vy: 0,
+  onGround: false,
   };
 
   function setHFov(deg){
@@ -185,13 +188,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
       move.copy(fwdPitch.multiplyScalar((state.keys.has('s')?-1:1) * (state.keys.has('Shift') ? state.boost : 1) * state.speed * dt));
     }
     camera.position.add(move);
-    if (state.constrainHeight){ camera.position.y = state.heightFeet; }
-    // Walk mode collisions: prevent passing through objects using a simple capsule vs expanded Box3 push-out
+
+    // Walk mode: use gravity/ground detection instead of hard-clamping the head height.
     if (state.constrainHeight){
       refreshCollidersIfNeeded(dt);
+      // First resolve horizontal collisions using the current head/feet span
       applyWalkCollisions(camera);
-      // Re-clamp height in case of numerical drift
-      camera.position.y = state.heightFeet;
+      // Then resolve vertical position via simple gravity and ground raycast
+      resolveVerticalAndGravity(dt, camera);
     }
   }
 
@@ -235,8 +239,11 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   function applyWalkCollisions(camera){
     const pos = camera.position;
     if (!state.colliders || state.colliders.length === 0) return;
-    const bottomY = 0; // feet
-    const topY = state.heightFeet; // feet
+    // The capsule spans from feetY .. headY
+    const headY = pos.y;
+    const feetY = pos.y - state.heightFeet;
+    const bottomY = feetY;
+    const topY = headY;
     // Iterate a few times to resolve corner overlaps
     for (let iter=0; iter<3; iter++){
       let moved = false;
@@ -249,6 +256,20 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
         const minZ = box.min.z - PERSON_RADIUS;
         const maxZ = box.max.z + PERSON_RADIUS;
         if (pos.x >= minX && pos.x <= maxX && pos.z >= minZ && pos.z <= maxZ){
+          // If the collider top is a small step within tolerance, step up onto it
+          try {
+            const boxTop = box.max.y;
+            const feetY = pos.y - state.heightFeet;
+            const stepUp = boxTop - feetY;
+            if (stepUp > 0 && stepUp <= STEP_TOLERANCE){
+              // Snap up to the step surface
+              pos.y = boxTop + state.heightFeet;
+              state.onGround = true;
+              state.vy = 0;
+              moved = true;
+              continue; // skip horizontal push for this collider
+            }
+          } catch{}
           // Inside horizontally; compute minimal push along X or Z
           const pushToMaxX = (maxX - pos.x);     // positive pushes +X
           const pushToMinX = (pos.x - minX);     // positive pushes -X (we'll negate later)
@@ -266,6 +287,81 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
         }
       }
       if (!moved) break;
+    }
+  }
+
+  // Shared raycaster for ground queries
+  const _groundRay = new THREE.Raycaster();
+  // Find ground Y below the camera by raycasting downward across a small area (diameter 1ft => radius 0.5ft).
+  // Returns the highest hit Y among samples, or null if none.
+  function findGroundY(camera, radius = 0.5){
+    try {
+      const samples = [];
+      // Sample center + 8 around circle (approx)
+      const r = Math.max(0, radius);
+      samples.push(new THREE.Vector3(0,0,0));
+      const offs = [
+        [r,0],[ -r,0 ], [0,r], [0,-r],
+        [r*0.707, r*0.707], [r*0.707, -r*0.707], [-r*0.707, r*0.707], [-r*0.707, -r*0.707]
+      ];
+      for (const o of offs) samples.push(new THREE.Vector3(o[0], 0, o[1]));
+
+      let bestY = null;
+      for (const s of samples){
+        const origin = camera.position.clone().add(new THREE.Vector3(s.x, 0, s.z));
+        const dir = new THREE.Vector3(0, -1, 0);
+        _groundRay.set(origin, dir);
+        _groundRay.far = 1000;
+        const hits = _groundRay.intersectObjects(scene.children, true);
+        for (const h of hits){
+          if (!h || !h.object) continue;
+          if (isHelperLike(h.object)) continue;
+          const y = h.point.y;
+          if (bestY === null || y > bestY) bestY = y; // prefer highest support
+          break; // take first non-helper hit for this sample
+        }
+      }
+      return bestY;
+    } catch(e){}
+    return null;
+  }
+
+  const GRAVITY_FT_S2 = 32.174; // feet / s^2
+  const MAX_FALL_SPEED = 200; // arbitrary cap
+  const STEP_TOLERANCE = 0.5; // feet: small step that can be stepped onto without falling
+
+  function resolveVerticalAndGravity(dt, camera){
+    // Determine ground support within a 1ft diameter zone
+    const supportY = findGroundY(camera, 0.5);
+    const floorY = (supportY !== null) ? supportY : 0;
+    const desiredHeadY = floorY + state.heightFeet;
+    const feetY = camera.position.y - state.heightFeet;
+    const supportedNow = (supportY !== null) && (feetY - floorY <= STEP_TOLERANCE + 1e-3);
+
+    if (state.onGround){
+      state.vy = 0;
+      if (!supportedNow){
+        // Leave ground only when the support zone no longer supports the player
+        state.onGround = false;
+      } else {
+        // Stay glued to ground
+        if (camera.position.y !== desiredHeadY){ camera.position.y = desiredHeadY; }
+      }
+    }
+
+    if (!state.onGround){
+      // Apply gravity step
+      state.vy = Math.max(-MAX_FALL_SPEED, state.vy - GRAVITY_FT_S2 * dt);
+      camera.position.y += state.vy * dt;
+      // Re-sample support to check for landing at the new position
+      const newSupportY = findGroundY(camera, 0.5);
+      const newFloorY = (newSupportY !== null) ? newSupportY : 0;
+      const newDesiredHeadY = newFloorY + state.heightFeet;
+      if (camera.position.y <= newDesiredHeadY){
+        camera.position.y = newDesiredHeadY;
+        state.vy = 0;
+        state.onGround = true;
+      }
     }
   }
 
