@@ -441,6 +441,40 @@ export async function init() {
 	const teleportDiscs = [];
 	function __isTeleportDisc(obj){ return !!(obj && obj.userData && obj.userData.__teleportDisc); }
 	function __getTeleportDiscRoot(obj){ let o=obj; while(o && !__isTeleportDisc(o)) o=o.parent; return __isTeleportDisc(o) ? o : null; }
+	// Rehydrate a disc that was loaded from JSON (no runtime registry/material refs yet)
+	function __registerTeleportDisc(group){
+		if (!group) return;
+		// Avoid duplicate registration
+		if (teleportDiscs.includes(group)) return;
+		// Ensure marker exists
+		const ud = (group.userData.__teleportDisc = group.userData.__teleportDisc || {});
+		// Normalize stored normal (plain object -> THREE.Vector3)
+		try {
+			if (ud.normal && !(ud.normal.isVector3)) {
+				ud.normal = new THREE.Vector3(ud.normal.x||0, ud.normal.y||1, ud.normal.z||0).normalize();
+			}
+		} catch{}
+		if (!ud.normal){
+			// Derive from orientation (group up rotated by group quaternion)
+			try { ud.normal = new THREE.Vector3(0,1,0).applyQuaternion(group.quaternion).normalize(); } catch { ud.normal = new THREE.Vector3(0,1,0); }
+		}
+		// Find child meshes for plane and cone (lost by JSON in userData)
+		try {
+			let plane = null, cone = null;
+			group.traverse(o => {
+				if (plane && cone) return;
+				if (o && o.isMesh && o.geometry && o.geometry.type === 'CircleGeometry') plane = plane || o;
+				if (o && o.isMesh && o.geometry && o.geometry.type === 'ConeGeometry') cone = cone || o;
+			});
+			if (plane) { ud.plane = plane; ud.top = plane; try { plane.material.depthWrite = false; plane.material.needsUpdate = true; } catch{} }
+			if (cone) { ud.cone = cone; }
+		} catch{}
+		// Ensure a consistent name marker
+		try { if (!group.name || group.name === '') group.name = '__TeleportDisc'; } catch{}
+		teleportDiscs.push(group);
+		// Default to active on load so interactions work immediately
+		try { ud.active = (ud.active !== false); } catch{}
+	}
 	// Toggle interactivity across mode transitions without affecting user visibility
 	function setTeleportDiscsActive(active=true){
 		try { teleportDiscs.forEach(d => { if (d && d.userData){ if(!d.userData.__teleportDisc) d.userData.__teleportDisc = {}; d.userData.__teleportDisc.active = !!active; } }); } catch{}
@@ -1121,7 +1155,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			clearSceneObjects();
 			const loader = new THREE.ObjectLoader();
 			const root = loader.parse(rec.json);
-			[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+			[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); if (__isTeleportDisc(child)) __registerTeleportDisc(child); });
 			updateCameraClipping();
 			// Update session draft to mirror this state without creating a new history entry
 			try { sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json: rec.json })); } catch {}
@@ -2478,6 +2512,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 	function addObjectToScene(obj, { select = false } = {}){
 		scene.add(obj); objects.push(obj);
+			// If a loaded object is a teleport disc, re-register it so picking and activation work
+			try { if (__isTeleportDisc(obj)) __registerTeleportDisc(obj); } catch{}
 		// Skip applying global material styles to map imports
 		const __isMapImportObj = !!(obj && ((obj.userData && (obj.userData.__mapImport === true || obj.userData.mapImport === true)) || (obj.name === 'Imported Topography' || obj.name === 'Imported Flat Area')));
 		if (!__isMapImportObj){
@@ -3153,7 +3189,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// Local scenes: serialize, save, list, load, delete
 	function clearSceneObjects() {
-		[...objects].forEach(o => { scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); });
+			[...objects].forEach(o => { scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); });
+			// Reset teleport disc registry
+			try { teleportDiscs.splice(0, teleportDiscs.length); } catch{}
 		selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI();
 	}
 	async function refreshScenesList() {
@@ -3171,8 +3209,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try {
 					const loader = new THREE.ObjectLoader();
 					const root = loader.parse(rec.json);
-					// Add children as top-level objects
-					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+					// Add children as top-level objects and rehydrate teleport discs
+					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); if (__isTeleportDisc(child)) __registerTeleportDisc(child); });
 					updateCameraClipping();
 					// Track current scene for overwrite on Save
 					currentSceneId = id;
@@ -3273,7 +3311,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					clearSceneObjects();
 					const loader = new THREE.ObjectLoader();
 					const root = loader.parse(rec.json);
-					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+					[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); if (__isTeleportDisc(child)) __registerTeleportDisc(child); });
 					updateCameraClipping();
 					currentSceneId = rec.id; currentSceneName = rec.name || 'Untitled';
 					// Opening a specific scene replaces any session draft
@@ -3289,7 +3327,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							clearSceneObjects();
 							const loader = new THREE.ObjectLoader();
 							const root = loader.parse(json);
-							[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); });
+							[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); if (__isTeleportDisc(child)) __registerTeleportDisc(child); });
 							updateCameraClipping();
 							// Do not set currentSceneId for session drafts
 						}

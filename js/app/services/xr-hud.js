@@ -281,8 +281,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           if (tp) vThumb = new THREE.Vector3(tp.x-w.x, tp.y-w.y, tp.z-w.z);
           let z = new THREE.Vector3(0,0,1); // palm normal (aim to point outward from palm)
           if (vIndex && vThumb){
-            // For left palm, use thumb x index to get outward normal consistently
-            z = new THREE.Vector3().crossVectors(vThumb, vIndex);
+            // WebXR uses a right-handed coord system (+X right, +Y up, +Z back).
+            // For the LEFT palm, the outward normal is index x thumb (not thumb x index).
+            // Using index × thumb yields +Y when the palm faces up, keeping the HUD above the palm.
+            z = new THREE.Vector3().crossVectors(vIndex, vThumb);
             if (z.lengthSq() < 1e-6) z.set(0,0,1); z.normalize();
           }
           // x along index direction projected on palm plane
