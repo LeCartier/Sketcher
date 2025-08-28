@@ -5,9 +5,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const BUTTON_SIZE = 0.01905; // 0.75in square
   const BUTTON_W = BUTTON_SIZE; // meters (square)
   const BUTTON_H = BUTTON_SIZE; // meters (square)
-  const GRID_GAP_X = 0.003; // ~3mm horizontal gap (small gap)
-  const GRID_GAP_Y = 0.003; // ~3mm vertical gap (small gap)
-  const PALM_OFFSET = 0.0762; // exactly 3 inches above palm plane (0.0762 m)
+  const GRID_GAP_X = 0.006; // 6mm horizontal gap
+  const GRID_GAP_Y = 0.006; // 6mm vertical gap
+  const PALM_OFFSET = 0.0508; // ~2 inches (50.8mm) above palm plane for better visibility
   const PINCH_THRESHOLD_M = 0.035; // consistent with AR edit
   let hud = null;
   let buttons = [];
@@ -49,11 +49,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let prevVisible = false;
   // Anchor control: 'palm' (left hand) or 'controller' with a reference space
   let anchor = { type: 'palm', space: null, handedness: 'left' };
-  let palmMenuDebounceUntil = 0; // ms timestamp
   function setAnchor(next){
     try { anchor = Object.assign({ type: 'palm', space: null, handedness: 'left' }, next||{}); } catch { anchor = { type: 'palm', space: null, handedness: 'left' }; }
   // Force left-hand for palm anchors
-  if (anchor.type === 'palm') anchor.handedness = 'left'; // Ensure left-only anchoring
+  if (anchor.type === 'palm') anchor.handedness = 'left';
   }
 
   function ensurePressState(m){
@@ -220,6 +219,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let camWorldPos=null, camWorldQuat=null;
     if (xrCam){ camWorldPos=new THREE.Vector3(); xrCam.getWorldPosition(camWorldPos); camWorldQuat=new THREE.Quaternion(); xrCam.getWorldQuaternion(camWorldQuat); }
   let placed=false;
+    let leftHandOpen = false;
     let anyGrabOrSqueeze = false;
     let sawRightController = false;
   try {
@@ -229,7 +229,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Palm anchoring and state checks
         const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
         let leftWristPose=null, leftIdxPose=null, leftThumbPose=null;
-  for (const src of sources){
+        for (const src of sources){
           // Track any squeeze on controllers to hide menu
           if (src.gamepad && src.gamepad.buttons){ if (src.gamepad.buttons[1]?.pressed || src.gamepad.buttons[2]?.pressed) anyGrabOrSqueeze = true; }
           if (src.handedness === 'right' && src.gamepad && !src.hand){ sawRightController = true; }
@@ -242,7 +242,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           leftIdxPose = idx && frame.getJointPose ? frame.getJointPose(idx, ref) : leftIdxPose;
           leftThumbPose = th && frame.getJointPose ? frame.getJointPose(th, ref) : leftThumbPose;
         }
-    if (anchor.type === 'palm' && anchor.space){ // Remove controller anchoring handoff
+        if (anchor.type === 'controller' && anchor.space){
           // Anchor to controller space: position above the controller and face user/camera
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           const pose = frame.getPose(anchor.space, ref);
@@ -254,6 +254,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             const forwardCtl = new THREE.Vector3(0,0,-1).applyQuaternion(qCtl);
             const pos = base.clone().add(upCtl.multiplyScalar(0.08)).add(forwardCtl.multiplyScalar(0.05));
             hud.position.lerp(pos, 0.35);
+            // Face the user/camera primarily
             if (xrCam){
               const toCam = new THREE.Vector3().subVectors(camWorldPos, pos).normalize();
               // Build basis: x = right, y = up (world), z = forward to camera
@@ -292,44 +293,31 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const yAxis = new THREE.Vector3().crossVectors(z, xAxis).normalize();
           const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, z);
           const q = new THREE.Quaternion().setFromRotationMatrix(m);
-          // Center in palm between thumb and index (fallback to wrist if missing)
-          let basePalm = w.clone();
-          if (leftIdxPose?.transform?.position && leftThumbPose?.transform?.position){
-            const ip = leftIdxPose.transform.position; const tp = leftThumbPose.transform.position;
-            basePalm = new THREE.Vector3((ip.x+tp.x)/2, (ip.y+tp.y)/2, (ip.z+tp.z)/2);
-          }
-          const targetPos = basePalm.add(z.clone().multiplyScalar(PALM_OFFSET)); // Center HUD between thumb and index
+          const targetPos = w.clone().add(z.clone().multiplyScalar(PALM_OFFSET));
           hud.position.lerp(targetPos, 0.35);
-          // Face the user's eyes: build orientation with +Z pointing to camera and Y ~ world up
-          if (camWorldPos){
-            const toCam = new THREE.Vector3().subVectors(camWorldPos, targetPos);
-            if (toCam.lengthSq() < 1e-6) toCam.set(0,0,1);
-            toCam.normalize();
-            const worldUp = new THREE.Vector3(0,1,0);
-            let xFace = new THREE.Vector3().crossVectors(worldUp, toCam);
-            if (xFace.lengthSq() < 1e-6) xFace.set(1,0,0); xFace.normalize();
-            const zFace = new THREE.Vector3().crossVectors(xFace, worldUp).normalize();
-            const mFace = new THREE.Matrix4().makeBasis(xFace, worldUp, zFace);
-            const qFace = new THREE.Quaternion().setFromRotationMatrix(mFace);
-            hud.quaternion.slerp(qFace, 0.35);
-          } else {
-            hud.quaternion.slerp(q, 0.35);
-          }
+          hud.quaternion.slerp(q, 0.35);
           placed = true;
           // Cache palm up/down state (z.y measures how much the palm normal points upward)
           hud.userData.__palmUp = (z.y >= 0.15);
-          leftPalmUp = hud.userData.__palmUp;
         }
-        // No pinch-based menu toggle; pinch is reserved for model manipulation elsewhere.
+        // Pinch detection still suppresses menu
+        if (leftIdxPose && leftThumbPose){
+          const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
+          const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+          if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;
+        }
       }
     } catch {}
   // For palm anchor, do not fallback to camera when not placed (menu should hide). For controller anchor, allow fallback.
   if (!placed && anchor.type === 'controller' && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
-    // Enforce visibility rules: show only if app set __menuShown and we have a valid palm placement
+    // Enforce visibility rules: menu shows when toggled AND no grab/squeeze; if palm-anchored, also require left hand open
     try {
-      const shouldShow = (!!hud.userData.__menuShown) && placed;
-      hud.visible = shouldShow;
-      try { window.__xrHudVisible = shouldShow; } catch {}
+  const palmReq = (anchor.type === 'palm');
+  const palmUp = !!hud.userData.__palmUp;
+  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || palmUp);
+  const mustHide = (anyGrabOrSqueeze) || (palmReq && !palmUp);
+  if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; hud.userData.__menuShown = false; try { if (typeof module!=='undefined'){} } catch {} }
+  else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { hud.visible = true; hud.userData.__autoHidden = false; try { /* reset pressed states on show */ } catch {} }
     } catch {}
     // Hover and click via controller rays; also support right finger poke
     try {
@@ -385,9 +373,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
     let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
     // Default hide highlight on all discs; re-apply on target
-  // Hide teleport highlight when HUD is visible
-  try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
-  if (!window.__xrHudVisible && best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
+    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
+    if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
     posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
     rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }
