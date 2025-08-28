@@ -223,6 +223,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let leftControllerSpace = null;
     let anyGrabOrSqueeze = false;
     let sawRightController = false;
+    // Reset per-frame palm flags
+    if (hud && hud.userData){ hud.userData.__palmPresent = false; hud.userData.__palmUp = false; }
   try {
       const session = renderer.xr.getSession?.();
     if (session && frame){
@@ -303,8 +305,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           hud.quaternion.slerp(q, 0.35);
           placed = true;
           // Cache palm up/down state (z.y measures how much the palm normal points upward)
-          hud.userData.__palmUp = (z.y >= 0.15);
-          hud.userData.__palmPresent = true;
+          if (hud && hud.userData){ hud.userData.__palmUp = (z.y >= 0.15); hud.userData.__palmPresent = true; }
         }
         // Fallback: if no left palm, place HUD relative to left controller for visibility
         if (!leftWristPose && leftControllerSpace){
@@ -333,8 +334,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             hud.userData.__palmPresent = false;
           }
         }
-        // Pinch shouldn’t block before the menu is shown. Only suppress if HUD is already visible.
-        if (hud?.visible && leftIdxPose && leftThumbPose){
+  // Pinch shouldn’t block before the menu is shown. Only suppress if HUD is visible and outside grace period.
+  const justShownAt = hud?.userData?.__menuJustShownAt || 0;
+  const nowTs = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+  const inGrace = (nowTs - justShownAt) <= 450; // ms
+  if (hud?.visible && !inGrace && leftIdxPose && leftThumbPose){
           const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
           const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
           if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;

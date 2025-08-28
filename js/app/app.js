@@ -339,7 +339,10 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
-							if (nextShown) { try { xrHud.resetPressStates?.(); } catch {} }
+							if (nextShown) {
+								try { xrHud.resetPressStates?.(); } catch {}
+								try { xrHud3D.userData.__menuJustShownAt = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); } catch{}
+							}
 						}
 					} catch {}
 				}
