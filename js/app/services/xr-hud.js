@@ -5,9 +5,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const BUTTON_SIZE = 0.01905; // 0.75in square
   const BUTTON_W = BUTTON_SIZE; // meters (square)
   const BUTTON_H = BUTTON_SIZE; // meters (square)
-  const GRID_GAP_X = 0.006; // 6mm horizontal gap
-  const GRID_GAP_Y = 0.006; // 6mm vertical gap
-  const PALM_OFFSET = 0.0508; // ~2 inches (50.8mm) above palm plane for better visibility
+  const GRID_GAP_X = 0.003; // ~3mm horizontal gap (small gap)
+  const GRID_GAP_Y = 0.003; // ~3mm vertical gap (small gap)
+  const PALM_OFFSET = 0.0762; // exactly 3 inches above palm plane (0.0762 m)
   const PINCH_THRESHOLD_M = 0.035; // consistent with AR edit
   let hud = null;
   let buttons = [];
@@ -49,6 +49,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let prevVisible = false;
   // Anchor control: 'palm' (left hand) or 'controller' with a reference space
   let anchor = { type: 'palm', space: null, handedness: 'left' };
+  let palmMenuDebounceUntil = 0; // ms timestamp
   function setAnchor(next){
     try { anchor = Object.assign({ type: 'palm', space: null, handedness: 'left' }, next||{}); } catch { anchor = { type: 'palm', space: null, handedness: 'left' }; }
   // Force left-hand for palm anchors
@@ -219,7 +220,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let camWorldPos=null, camWorldQuat=null;
     if (xrCam){ camWorldPos=new THREE.Vector3(); xrCam.getWorldPosition(camWorldPos); camWorldQuat=new THREE.Quaternion(); xrCam.getWorldQuaternion(camWorldQuat); }
   let placed=false;
-    let leftHandOpen = false;
+  let leftHandOpen = false;
+  let leftPalmUp = false;
+  let leftPinch = false;
     let anyGrabOrSqueeze = false;
     let sawRightController = false;
   try {
@@ -229,7 +232,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Palm anchoring and state checks
         const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
         let leftWristPose=null, leftIdxPose=null, leftThumbPose=null;
-        for (const src of sources){
+  for (const src of sources){
           // Track any squeeze on controllers to hide menu
           if (src.gamepad && src.gamepad.buttons){ if (src.gamepad.buttons[1]?.pressed || src.gamepad.buttons[2]?.pressed) anyGrabOrSqueeze = true; }
           if (src.handedness === 'right' && src.gamepad && !src.hand){ sawRightController = true; }
@@ -295,29 +298,50 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const q = new THREE.Quaternion().setFromRotationMatrix(m);
           const targetPos = w.clone().add(z.clone().multiplyScalar(PALM_OFFSET));
           hud.position.lerp(targetPos, 0.35);
-          hud.quaternion.slerp(q, 0.35);
+          // Face the user's eyes: build orientation with +Z pointing to camera and Y ~ world up
+          if (camWorldPos){
+            const toCam = new THREE.Vector3().subVectors(camWorldPos, targetPos);
+            if (toCam.lengthSq() < 1e-6) toCam.set(0,0,1);
+            toCam.normalize();
+            const worldUp = new THREE.Vector3(0,1,0);
+            let xFace = new THREE.Vector3().crossVectors(worldUp, toCam);
+            if (xFace.lengthSq() < 1e-6) xFace.set(1,0,0); xFace.normalize();
+            const zFace = new THREE.Vector3().crossVectors(xFace, worldUp).normalize();
+            const mFace = new THREE.Matrix4().makeBasis(xFace, worldUp, zFace);
+            const qFace = new THREE.Quaternion().setFromRotationMatrix(mFace);
+            hud.quaternion.slerp(qFace, 0.35);
+          } else {
+            hud.quaternion.slerp(q, 0.35);
+          }
           placed = true;
           // Cache palm up/down state (z.y measures how much the palm normal points upward)
           hud.userData.__palmUp = (z.y >= 0.15);
+          leftPalmUp = hud.userData.__palmUp;
         }
-        // Pinch detection still suppresses menu
+        // Left pinch detection for menu button
         if (leftIdxPose && leftThumbPose){
           const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
           const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
-          if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;
+          if (d < PINCH_THRESHOLD_M) leftPinch = true;
         }
       }
     } catch {}
   // For palm anchor, do not fallback to camera when not placed (menu should hide). For controller anchor, allow fallback.
   if (!placed && anchor.type === 'controller' && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
-    // Enforce visibility rules: menu shows when toggled AND no grab/squeeze; if palm-anchored, also require left hand open
+    // Enforce visibility rules: menu toggled by left palm-up pinch; hide on palm down or any squeeze
     try {
+  const now = (typeof performance!=='undefined'?performance.now():Date.now());
   const palmReq = (anchor.type === 'palm');
   const palmUp = !!hud.userData.__palmUp;
-  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || palmUp);
+  // Toggle menu on pinch when palm up, debounced
+  if (palmReq && palmUp && leftPinch && now >= palmMenuDebounceUntil){
+    hud.userData.__menuShown = !hud.userData.__menuShown;
+    palmMenuDebounceUntil = now + 350; // debounce
+  }
   const mustHide = (anyGrabOrSqueeze) || (palmReq && !palmUp);
-  if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; hud.userData.__menuShown = false; try { if (typeof module!=='undefined'){} } catch {} }
-  else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { hud.visible = true; hud.userData.__autoHidden = false; try { /* reset pressed states on show */ } catch {} }
+  const shouldShow = (!!hud.userData.__menuShown) && (!mustHide);
+  if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; try { /* hidden */ } catch {} }
+  else if (!hud.visible && shouldShow) { hud.visible = true; hud.userData.__autoHidden = false; try { resetPressStates(); } catch {} }
     } catch {}
     // Hover and click via controller rays; also support right finger poke
     try {

@@ -8,6 +8,13 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     fly: false,
     constrainHeight: true,
     heightFeet: 6,
+  // Vertical physics (walk mode)
+  gravity: 32, // ft/s^2
+  velY: 0,
+  onGround: false,
+  stepHeight: 0.6, // can step up/down ~7in
+  groundSnapEps: 0.08,
+  maxFallSpeed: 200,
     yaw: 0,
     pitch: 0,
     sens: 0.0025, // rad per px
@@ -22,6 +29,10 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   // Colliders cache for walk-mode collisions
   colliders: [],
   colliderRefreshTimer: 0,
+  // Raycast mesh cache for ground detection
+  raycastMeshes: [],
+  raycastRefreshTimer: 0,
+  lastPos: null,
   // Desktop AR environment (sun/ground/sky)
   env: null,
   };
@@ -123,6 +134,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     state.prevCam = { fov: camera.fov, position: camera.position.clone(), quaternion: camera.quaternion.clone() };
     // Initialize yaw/pitch from camera
     const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ'); state.yaw = e.y; state.pitch = e.x;
+  // Initialize physics trackers
+  try { state.lastPos = camera.position.clone(); } catch {}
+  state.velY = 0; state.onGround = false;
     applyHighQualityMaterials();
     setHFov(opts.hFov || 100);
     // Event listeners
@@ -140,6 +154,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   try { initDesktopEnv(); } catch{}
   // Default to original material mode on entry
   try { setMaterialMode('original'); } catch{}
+  // If we start in walk mode, snap to ground beneath
+  if (state.constrainHeight){ try { snapHeadToGroundBelow(true); } catch{} }
   }
 
   function stop(){
@@ -185,14 +201,16 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
       move.copy(fwdPitch.multiplyScalar((state.keys.has('s')?-1:1) * (state.keys.has('Shift') ? state.boost : 1) * state.speed * dt));
     }
     camera.position.add(move);
-    if (state.constrainHeight){ camera.position.y = state.heightFeet; }
-    // Walk mode collisions: prevent passing through objects using a simple capsule vs expanded Box3 push-out
+    // Walk mode collisions + gravity-grounding
     if (state.constrainHeight){
       refreshCollidersIfNeeded(dt);
+      refreshRaycastMeshesIfNeeded(dt);
       applyWalkCollisions(camera);
-      // Re-clamp height in case of numerical drift
-      camera.position.y = state.heightFeet;
+      // Vertical physics: keep a 6ft-tall avatar whose feet are pulled by gravity to the surface below
+      applyGroundingAndGravity(camera, dt);
     }
+    // Track last position for teleport heuristics
+    try { if (!state.lastPos) state.lastPos = camera.position.clone(); else state.lastPos.copy(camera.position); } catch{}
   }
 
   const PERSON_RADIUS = 0.75; // feet (1.5ft wide)
@@ -235,8 +253,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   function applyWalkCollisions(camera){
     const pos = camera.position;
     if (!state.colliders || state.colliders.length === 0) return;
-    const bottomY = 0; // feet
-    const topY = state.heightFeet; // feet
+    const bottomY = pos.y - state.heightFeet; // feet (camera at head)
+    const topY = pos.y; // feet
     // Iterate a few times to resolve corner overlaps
     for (let iter=0; iter<3; iter++){
       let moved = false;
@@ -269,6 +287,111 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     }
   }
 
+  // ---- Grounding and gravity for walk mode ----
+  const groundRaycaster = new THREE.Raycaster();
+  function refreshRaycastMeshesIfNeeded(dt){
+    state.raycastRefreshTimer -= dt;
+    if (state.raycastRefreshTimer > 0 && state.raycastMeshes.length) return;
+    state.raycastRefreshTimer = 0.5;
+    const list = [];
+    try {
+      scene.updateMatrixWorld(true);
+      scene.traverse(obj => {
+        if (!obj || !obj.isMesh || obj.visible === false) return;
+        if (isHelperLike(obj)) return;
+        // Exclude obvious AR HUD/teleport gizmos if tagged
+        if (isTeleportDisc(obj)) return;
+        list.push(obj);
+      });
+    } catch {}
+    state.raycastMeshes = list;
+  }
+
+  function isTeleportDisc(o){
+    try {
+      let p = o;
+      while (p){ if (p.userData && p.userData.__teleportDisc) return true; p = p.parent; }
+      return false;
+    } catch { return false; }
+  }
+
+  function getGroundYAt(x, z, yStart){
+    try {
+      const origin = new THREE.Vector3(x, yStart + 2, z);
+      groundRaycaster.set(origin, new THREE.Vector3(0,-1,0));
+      groundRaycaster.far = Math.max(5, yStart + 500);
+      const hits = groundRaycaster.intersectObjects(state.raycastMeshes, true);
+      if (hits && hits.length){
+        for (const h of hits){
+          // Prefer reasonably upward-facing surfaces
+          const n = h.face && h.face.normal ? h.face.normal.clone().applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld)) : null;
+          const upDot = n ? n.y : 1;
+          if (upDot >= 0.25){ return h.point.y; }
+        }
+        // Fallback to first hit if none matched normal filter
+        return hits[0].point.y;
+      }
+    } catch{}
+    // Fallbacks: our desktop env ground if present, else y=0 plane
+    try { if (state.env && state.env.ground) return state.env.ground.position.y; } catch{}
+    return 0;
+  }
+
+  function snapHeadToGroundBelow(forceUp=false){
+    try {
+      const pos = camera.position;
+      const gy = getGroundYAt(pos.x, pos.z, pos.y);
+      const targetY = gy + state.heightFeet;
+      if (forceUp || Math.abs(pos.y - targetY) > state.groundSnapEps){ pos.y = targetY; }
+      state.velY = 0; state.onGround = true;
+    } catch{}
+  }
+
+  function applyGroundingAndGravity(cam, dt){
+    const pos = cam.position;
+    // Teleport heuristic: if large horizontal jump this frame, reset vertical velocity and snap to ground
+    // (We don't have direct teleport event hooks here.)
+    try {
+      if (state.lastPos){
+        const dx = pos.x - state.lastPos.x; const dz = pos.z - state.lastPos.z;
+        if ((dx*dx + dz*dz) > 9){ // >3ft jump in one frame
+          snapHeadToGroundBelow(true);
+        }
+      }
+    } catch{}
+
+    const feetY = pos.y - state.heightFeet;
+    const groundY = getGroundYAt(pos.x, pos.z, pos.y);
+    const delta = feetY - groundY;
+
+    // Snap small steps up/down
+    if (Math.abs(delta) <= state.stepHeight){
+      pos.y = groundY + state.heightFeet;
+      state.velY = 0; state.onGround = true; return;
+    }
+
+    // If we're clearly above ground, apply gravity
+    if (delta > state.stepHeight){
+      state.onGround = false;
+      state.velY = Math.max(-state.maxFallSpeed, state.velY - state.gravity * dt);
+      const newFeet = feetY + state.velY * dt;
+      if (newFeet <= groundY + state.groundSnapEps){
+        // Land
+        pos.y = groundY + state.heightFeet;
+        state.velY = 0; state.onGround = true;
+      } else {
+        // Continue falling
+        pos.y = newFeet + state.heightFeet;
+      }
+      return;
+    }
+
+    // If somehow below ground (moving platforms or geometry edits), pop up
+    if (delta < -state.groundSnapEps){
+      pos.y = groundY + state.heightFeet; state.velY = 0; state.onGround = true; return;
+    }
+  }
+
   function buildUI(){
     const ui = document.createElement('div'); ui.id='fp-ui';
     // Bottom-center, responsive to safe-area and VisualViewport changes
@@ -294,10 +417,13 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
         // Switch to Fly
         state.constrainHeight = false;
         state.fly = true;
+  state.onGround = false; // allow vertical freedom
       } else {
         // Switch to Walk
         state.constrainHeight = true;
         state.fly = false;
+  // Snap to ground and reset vertical velocity
+  try { snapHeadToGroundBelow(true); } catch{}
       }
       toggle.textContent = state.constrainHeight ? 'Mode: Walk (6ft)' : 'Mode: Fly';
     });
@@ -611,5 +737,5 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     } catch{}
   }
 
-  return { start, stop, update, setHFov, setFlyMode:(on)=>{ state.fly=!!on; state.constrainHeight = !state.fly; }, isActive: ()=> state.active };
+  return { start, stop, update, setHFov, setFlyMode:(on)=>{ state.fly=!!on; state.constrainHeight = !state.fly; if (state.constrainHeight) { try { snapHeadToGroundBelow(true); } catch{} } else { state.onGround=false; } }, isActive: ()=> state.active };
 }

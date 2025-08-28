@@ -80,7 +80,7 @@ export function createAREdit(THREE, scene, renderer){
     const out = [];
     const sources = session.inputSources ? Array.from(session.inputSources) : [];
     const collisionActive = !!(state.useCollision && state.target && targetBox && !targetBox.isEmpty());
-    for(const src of sources){
+  for(const src of sources){
       const { gamepad, gripSpace, targetRaySpace, hand } = src;
       let isGrabbing=false; let pos=null; let quat=null; let pinching=false; let radius=HAND_SPHERE_R;
       const prev = state.grabMap.get(src) || { grabbing:false };
@@ -107,12 +107,24 @@ export function createAREdit(THREE, scene, renderer){
         const pti = frame.getJointPose ? (ti && frame.getJointPose(ti, localSpace)) : null;
         const ptt = frame.getJointPose ? (tt && frame.getJointPose(tt, localSpace)) : null;
         const pw = frame.getJointPose ? (wrist && frame.getJointPose(wrist, localSpace)) : null;
+        // Compute palm orientation to gate grabs: only allow pinching when palm is DOWN
+        let palmDown = false;
+        try {
+          if (pw && pti && ptt){
+            const wpos = pw.transform.position; const ipos = pti.transform.position; const tpos = ptt.transform.position;
+            const vIndex = new THREE.Vector3(ipos.x - wpos.x, ipos.y - wpos.y, ipos.z - wpos.z);
+            const vThumb = new THREE.Vector3(tpos.x - wpos.x, tpos.y - wpos.y, tpos.z - wpos.z);
+            // For left hand, outward normal = thumb x index; for right, use index x thumb
+            const z = (src.handedness === 'left') ? new THREE.Vector3().crossVectors(vThumb, vIndex) : new THREE.Vector3().crossVectors(vIndex, vThumb);
+            if (z.lengthSq() > 1e-8){ z.normalize(); palmDown = (z.y <= -0.15); } // palm facing downward enough
+          }
+        } catch {}
         if(pti && ptt){
           const dx=pti.transform.position.x-ptt.transform.position.x, dy=pti.transform.position.y-ptt.transform.position.y, dz=pti.transform.position.z-ptt.transform.position.z; const dist=Math.hypot(dx,dy,dz);
           if(dist < PINCH_THRESHOLD_M){
             const p = pti.transform.position;
-            // Collision gate for pinch grab
-            if (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox)){
+            // Collision gate for pinch grab, plus palm-down requirement
+            if (palmDown && (prev.grabbing || !collisionActive || isCollidingWithBox(p.x, p.y, p.z, HAND_SPHERE_R, targetBox))){
               isGrabbing=true; pinching=true; pos = p; radius = HAND_SPHERE_R;
               // Build an approximate hand orientation for 6DoF hold: use wrist->index and wrist->thumb as axes
               try {
