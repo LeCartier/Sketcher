@@ -47,7 +47,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let fingerHover = null;        // hovered mesh by fingertip
   // Visibility suppression when left hand not open or grabbing occurs
   let prevVisible = false;
-  // Anchor control: 'palm' (left hand) or 'controller' with a reference space
+  // Anchor control: 'palm' (left hand only) or 'controller' (deprecated here); we force left hand usage
   let anchor = { type: 'palm', space: null, handedness: 'left' };
   function setAnchor(next){
     try { anchor = Object.assign({ type: 'palm', space: null, handedness: 'left' }, next||{}); } catch { anchor = { type: 'palm', space: null, handedness: 'left' }; }
@@ -233,6 +233,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           // Track any squeeze on controllers to hide menu
           if (src.gamepad && src.gamepad.buttons){ if (src.gamepad.buttons[1]?.pressed || src.gamepad.buttons[2]?.pressed) anyGrabOrSqueeze = true; }
           if (src.handedness === 'right' && src.gamepad && !src.hand){ sawRightController = true; }
+          // Only sample LEFT hand joints for palm anchoring and gestures
           if (src.handedness !== 'left' || !src.hand) continue;
           const hand = src.hand;
           const wrist = hand.get?.('wrist');
@@ -302,8 +303,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           // Cache palm up/down state (z.y measures how much the palm normal points upward)
           hud.userData.__palmUp = (z.y >= 0.15);
         }
-        // Pinch detection still suppresses menu
-        if (leftIdxPose && leftThumbPose){
+        // Pinch shouldn’t block before the menu is shown. Only suppress if HUD is already visible.
+        if (hud?.visible && leftIdxPose && leftThumbPose){
           const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
           const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
           if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;
@@ -467,7 +468,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               }
             }
           };
-          for (const src of sources){ if (src.hand && src.handedness==='left') updateOne(src, handVizL); if (src.hand && src.handedness==='right') updateOne(src, handVizR); }
+          // Visualize both hands, but anchoring only uses left; right-hand viz is for pointing/poking only
+          for (const src of sources){
+            if (src.hand && src.handedness==='left') updateOne(src, handVizL);
+            if (src.hand && src.handedness==='right') updateOne(src, handVizR);
+          }
         } catch {}
 
         // Right index finger hover + poke-to-click (depress animation). Only this triggers clicks.

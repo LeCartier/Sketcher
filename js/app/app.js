@@ -318,23 +318,28 @@ export async function init() {
 			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 			if (!session || !frame) return;
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
-			// Candidate indices for a "menu"-like press on XR standard gamepads; include Meta Quest left Y/Menu
+			// Candidate indices for a "menu"-like press; on Meta Quest the left-Menu/Y is commonly among these
 			const CANDIDATES = [0,3,4,5];
 			for (const src of sources){
-				const gp = src && src.gamepad;
+				// Only the LEFT controller (not hands) can toggle the HUD
+				if (!src || src.handedness !== 'left' || !src.gamepad || src.hand) continue;
+				const gp = src.gamepad;
 				if (!gp || !gp.buttons || !gp.buttons.length) continue;
 				let pressed = false;
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 				if (pressed && !prev){
-					// Rising edge: show HUD anchored to controller if this source has a space; otherwise palm
+					// Rising edge: toggle HUD. Always anchor to LEFT palm.
 					try {
 						ensureXRHud3D();
 						if (xrHud3D) {
-							const space = src.gripSpace || src.targetRaySpace || null;
-							if (space) { xrHud.setAnchor({ type: 'controller', space, handedness: src.handedness||'left' }); }
-							else { xrHud.setAnchor({ type: 'palm', handedness: 'left' }); }
-							xrHud3D.userData.__menuShown = true; xrHud3D.visible = true; xrHud3D.userData.__autoHidden = false; try { xrHud.resetPressStates?.(); } catch {}
+							xrHud.setAnchor({ type: 'palm', handedness: 'left' });
+							const wasShown = !!xrHud3D.userData.__menuShown;
+							const nextShown = !wasShown;
+							xrHud3D.userData.__menuShown = nextShown;
+							xrHud3D.userData.__autoHidden = false;
+							xrHud3D.visible = nextShown;
+							if (nextShown) { try { xrHud.resetPressStates?.(); } catch {} }
 						}
 					} catch {}
 				}
