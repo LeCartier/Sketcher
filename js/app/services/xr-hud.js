@@ -219,7 +219,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let camWorldPos=null, camWorldQuat=null;
     if (xrCam){ camWorldPos=new THREE.Vector3(); xrCam.getWorldPosition(camWorldPos); camWorldQuat=new THREE.Quaternion(); xrCam.getWorldQuaternion(camWorldQuat); }
   let placed=false;
-    let leftHandOpen = false;
+    // Track a left-controller space for fallback placement when left hand is not tracked
+    let leftControllerSpace = null;
     let anyGrabOrSqueeze = false;
     let sawRightController = false;
   try {
@@ -233,6 +234,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           // Track any squeeze on controllers to hide menu
           if (src.gamepad && src.gamepad.buttons){ if (src.gamepad.buttons[1]?.pressed || src.gamepad.buttons[2]?.pressed) anyGrabOrSqueeze = true; }
           if (src.handedness === 'right' && src.gamepad && !src.hand){ sawRightController = true; }
+          if (src.handedness === 'left' && src.gamepad && !src.hand){ leftControllerSpace = src.gripSpace || src.targetRaySpace || null; }
           // Only sample LEFT hand joints for palm anchoring and gestures
           if (src.handedness !== 'left' || !src.hand) continue;
           const hand = src.hand;
@@ -243,7 +245,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           leftIdxPose = idx && frame.getJointPose ? frame.getJointPose(idx, ref) : leftIdxPose;
           leftThumbPose = th && frame.getJointPose ? frame.getJointPose(th, ref) : leftThumbPose;
         }
-        if (anchor.type === 'controller' && anchor.space){
+  if (anchor.type === 'controller' && anchor.space){
           // Anchor to controller space: position above the controller and face user/camera
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           const pose = frame.getPose(anchor.space, ref);
@@ -302,6 +304,34 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           placed = true;
           // Cache palm up/down state (z.y measures how much the palm normal points upward)
           hud.userData.__palmUp = (z.y >= 0.15);
+          hud.userData.__palmPresent = true;
+        }
+        // Fallback: if no left palm, place HUD relative to left controller for visibility
+        if (!leftWristPose && leftControllerSpace){
+          const ref2 = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
+          const pose = frame.getPose(leftControllerSpace, ref2);
+          if (pose){
+            const p=pose.transform.position, o=pose.transform.orientation;
+            const base = new THREE.Vector3(p.x,p.y,p.z);
+            const qCtl = new THREE.Quaternion(o.x,o.y,o.z,o.w);
+            const upCtl = new THREE.Vector3(0,1,0).applyQuaternion(qCtl);
+            const forwardCtl = new THREE.Vector3(0,0,-1).applyQuaternion(qCtl);
+            const pos = base.clone().add(upCtl.multiplyScalar(0.08)).add(forwardCtl.multiplyScalar(0.05));
+            hud.position.lerp(pos, 0.35);
+            if (xrCam){
+              const toCam = new THREE.Vector3().subVectors(camWorldPos, pos).normalize();
+              const z = toCam.clone(); const y = new THREE.Vector3(0,1,0);
+              let x = new THREE.Vector3().crossVectors(y, z); if (x.lengthSq()<1e-6) x.set(1,0,0); x.normalize();
+              const zFixed = new THREE.Vector3().crossVectors(x, y).normalize();
+              const m = new THREE.Matrix4().makeBasis(x, y, zFixed);
+              const q = new THREE.Quaternion().setFromRotationMatrix(m);
+              hud.quaternion.slerp(q, 0.35);
+            } else {
+              hud.quaternion.slerp(qCtl, 0.35);
+            }
+            placed = true;
+            hud.userData.__palmPresent = false;
+          }
         }
         // Pinch shouldn’t block before the menu is shown. Only suppress if HUD is already visible.
         if (hud?.visible && leftIdxPose && leftThumbPose){
@@ -317,8 +347,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     try {
   const palmReq = (anchor.type === 'palm');
   const palmUp = !!hud.userData.__palmUp;
-  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || palmUp);
-  const mustHide = (anyGrabOrSqueeze) || (palmReq && !palmUp);
+  const palmPresent = !!hud.userData.__palmPresent;
+  // If palm not present, don’t gate on palmUp; allow menu to show when toggled
+  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || !palmPresent || palmUp);
+  const mustHide = (anyGrabOrSqueeze) || (palmReq && palmPresent && !palmUp);
   if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; hud.userData.__menuShown = false; try { if (typeof module!=='undefined'){} } catch {} }
   else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { hud.visible = true; hud.userData.__autoHidden = false; try { /* reset pressed states on show */ } catch {} }
     } catch {}
