@@ -45,6 +45,27 @@ export async function init() {
 		}
 	})();
 
+	// Global error banner to surface runtime failures
+	(function setupErrorBanner(){
+		function show(msg){
+			try {
+				const el = document.getElementById('error-banner');
+				if (!el) return;
+				el.textContent = String(msg || 'Error');
+				el.style.display = 'block';
+			} catch {}
+		}
+		window.addEventListener('error', (e) => {
+			const m = e && (e.message || (e.error && e.error.message)) || 'Script error';
+			show(m);
+		});
+		window.addEventListener('unhandledrejection', (e) => {
+			const reason = e && e.reason;
+			const m = (reason && (reason.message || reason.stack || String(reason))) || 'Unhandled promise rejection';
+			show(m);
+		});
+	})();
+
 
 
 		async function loadWebXRPolyfillIfNeeded() {
@@ -167,6 +188,7 @@ export async function init() {
 		getButtons: (createHudButton) => {
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
+			let handStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
 			const bOne = createHudButton('1:1', ()=> setARScaleOne());
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
@@ -219,10 +241,59 @@ export async function init() {
 				applyArMaterialModeOnContent();
 				bLite.setLabel(arSimplifyMaterials ? 'Lite On' : 'Lite Off');
 			});
-			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bGizmo, bLite];
+			const bHands = createHudButton('Fingers', ()=>{
+				try {
+					// Cycle through styles
+					if (handStyle === 'fingertips') handStyle = 'index';
+					else if (handStyle === 'index') handStyle = 'skeleton';
+					else if (handStyle === 'skeleton') handStyle = 'mesh';
+					else if (handStyle === 'mesh') handStyle = 'off';
+					else handStyle = 'fingertips';
+					xrHud.setHandVizStyle?.(handStyle);
+					bHands.setLabel(
+						handStyle === 'fingertips' ? 'Fingers' :
+						handStyle === 'index' ? 'Index' :
+						handStyle === 'skeleton' ? 'Skeleton' :
+						handStyle === 'mesh' ? 'Mesh' :
+						'Hands Off'
+					);
+				} catch {}
+			});
+			// Initialize to default style
+			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
+			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bGizmo, bLite, bHands];
 			return xrHudButtons;
 		}
 	});
+
+	// First-person desktop fallback
+	const { createFirstPerson } = await import('./services/first-person.js');
+	const firstPerson = createFirstPerson({ THREE, renderer, scene, camera, domElement: renderer.domElement });
+	let __fpControlsDisabled = false;
+	let __fpEditSuppressed = false;
+	let __fpPrevToolboxDisplay = null;
+	function __enterFirstPersonSideEffects(){
+		// Disable orbit controls and editing gizmos
+		try { if (controls) controls.enabled = false; } catch {}
+		try { transformControls.enabled = false; transformControls.visible = false; } catch {}
+		try { transformControlsRotate.enabled = false; transformControlsRotate.visible = false; } catch {}
+		// Hide toolbox temporarily
+		const toolbox = document.getElementById('toolbox');
+		if (toolbox){ __fpPrevToolboxDisplay = toolbox.style.display; toolbox.style.display = 'none'; }
+		__fpEditSuppressed = true;
+	}
+	function __exitFirstPersonSideEffects(){
+		// Restore toolbox visibility according to current mode
+		const toolbox = document.getElementById('toolbox');
+		if (toolbox){
+			// If mode is edit/import, toolbox should be visible
+			const modeSel = document.getElementById('modeSelect');
+			const curMode = modeSel ? modeSel.value : 'edit';
+			if (curMode === 'edit' || curMode === 'import') toolbox.style.display = 'inline-block';
+			else toolbox.style.display = (__fpPrevToolboxDisplay != null ? __fpPrevToolboxDisplay : toolbox.style.display);
+		}
+		__fpEditSuppressed = false;
+	}
 	function ensureXRHud3D(){ const g = xrHud.ensure(); xrHud3D = xrHud.group; return g; }
 	function removeXRHud3D(){ xrHud.remove(); xrHud3D = null; xrHudButtons = []; }
 
@@ -261,7 +332,7 @@ export async function init() {
 							const space = src.gripSpace || src.targetRaySpace || null;
 							if (space) { xrHud.setAnchor({ type: 'controller', space, handedness: src.handedness||'left' }); }
 							else { xrHud.setAnchor({ type: 'palm', handedness: 'left' }); }
-							xrHud3D.visible = true; xrHud3D.userData.__autoHidden = false;
+							xrHud3D.userData.__menuShown = true; xrHud3D.visible = true; xrHud3D.userData.__autoHidden = false; try { xrHud.resetPressStates?.(); } catch {}
 						}
 					} catch {}
 				}
@@ -294,6 +365,21 @@ export async function init() {
 	try { enhanceGridMaterial(grid.material); } catch {}
 	scene.add(new THREE.AmbientLight(0xffffff,0.5));
 	const dirLight=new THREE.DirectionalLight(0xffffff,0.8); dirLight.position.set(5,10,7); dirLight.castShadow=true; scene.add(dirLight);
+
+	// Optional: add a tiny debug cube to verify rendering when troubleshooting blank view
+	(function maybeAddDebugCube(){
+		try {
+			const enable = (location && location.hash && location.hash.includes('debugcube'))
+				|| (localStorage && localStorage.getItem('sketcher.debugCube') === '1');
+			if (!enable) return;
+			const g = new THREE.BoxGeometry(1,1,1);
+			const m = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
+			const cube = new THREE.Mesh(g,m); cube.position.set(0,0.5,0); cube.castShadow = true; cube.receiveShadow = true;
+			scene.add(cube);
+			// Axis helper for orientation
+			const axes = new THREE.AxesHelper(2); scene.add(axes);
+		} catch {}
+	})();
 
 	// Controls + gizmos
 	const controls=new OrbitControls(camera,renderer.domElement);
@@ -348,6 +434,180 @@ export async function init() {
 
 	// Multi-select pivot
 	const multiSelectPivot = new THREE.Object3D(); multiSelectPivot.name='__MultiSelectPivot'; scene.add(multiSelectPivot);
+
+	// Teleport discs (jump points)
+	const teleportDiscs = [];
+	function __isTeleportDisc(obj){ return !!(obj && obj.userData && obj.userData.__teleportDisc); }
+	function __getTeleportDiscRoot(obj){ let o=obj; while(o && !__isTeleportDisc(o)) o=o.parent; return __isTeleportDisc(o) ? o : null; }
+	function createTeleportDisc(position, normal){
+		const n = (normal && normal.isVector3) ? normal.clone().normalize() : new THREE.Vector3(0,1,0);
+		const group = new THREE.Group(); group.name = '__TeleportDisc'; group.userData.__teleportDisc = { normal: n.clone() };
+		// Flat blue plane circle (2 ft Ø) — no thickness
+		const planeGeo = new THREE.CircleGeometry(1.0, 64);
+		const planeMat = new THREE.MeshStandardMaterial({ color: 0x2f8cff, emissive: 0x114477, emissiveIntensity: 0.35, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1, depthWrite: false });
+		const plane = new THREE.Mesh(planeGeo, planeMat);
+		// Orient so circle normal is +Y pre-alignment; then lift slightly to avoid z-fight
+		try { plane.rotation.x = -Math.PI/2; } catch{}
+		try { plane.position.y = 0.001; } catch{}
+		plane.castShadow = false; plane.receiveShadow = false; group.add(plane);
+		// Direction cone to indicate facing (points along disc normal)
+		const coneGeo = new THREE.ConeGeometry(0.18, 0.45, 24);
+		const coneMat = new THREE.MeshStandardMaterial({ color: 0x2f8cff, emissive: 0x114477, emissiveIntensity: 0.5 });
+		const cone = new THREE.Mesh(coneGeo, coneMat); cone.position.y = 0.25 + 0.225; group.add(cone);
+		// Orient so +Y aligns to normal
+		const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), n);
+		group.quaternion.copy(q);
+		// Place at position
+		if (position && position.isVector3) group.position.copy(position);
+		// Store references for highlight
+		group.userData.__teleportDisc.plane = plane; group.userData.__teleportDisc.top = plane; group.userData.__teleportDisc.cone = cone;
+		teleportDiscs.push(group); scene.add(group);
+		// Make selectable/movable like other objects (but we'll disable rotation on selection)
+		try { objects.push(group); } catch {}
+		try { updateVisibilityUI(); updateCameraClipping(); } catch {}
+		return group;
+	}
+	function highlightTeleportDisc(disc, on){
+		try {
+			// Boost plane emissive as subtle hover feedback
+			const ud = disc?.userData?.__teleportDisc || {};
+			const p = ud.plane; if (p && p.material) { p.material.emissiveIntensity = on ? 0.8 : 0.35; p.material.needsUpdate = true; }
+			// Create or toggle a thick orange/yellow highlight ring overlay on top cap
+			let hl = ud.ringHL;
+			if (on && !hl){
+				const top = ud.top || disc; // plane mesh or disc root
+				// Estimate radius from bounding sphere or default 1 (2 ft dia)
+				let rad = 1.0;
+				try { const bs = new THREE.Sphere(); new THREE.Box3().setFromObject(top).getBoundingSphere(bs); if (isFinite(bs.radius) && bs.radius>0) rad = Math.min(2.0, Math.max(0.3, bs.radius)); } catch{}
+				const inner = Math.max(0.01, rad * 0.80);
+				const outer = inner + Math.max(0.02, rad * 0.10); // thick band ~10% of radius
+				const g = new THREE.RingGeometry(inner, outer, 64);
+				const m = new THREE.MeshBasicMaterial({ color: 0xffc400, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending });
+				hl = new THREE.Mesh(g, m); hl.name = '__teleportDiscHL'; hl.renderOrder = 10000; hl.userData.__helper = true;
+				// Position slightly above the top surface to avoid z-fight
+				try { hl.rotation.x = -Math.PI/2; } catch{}
+				try { const y = (top.position?.y ?? 0) + 0.012; hl.position.set(top.position?.x||0, y, top.position?.z||0); } catch{}
+				disc.add(hl); ud.ringHL = hl; disc.userData.__teleportDisc = ud;
+			}
+			if (hl) hl.visible = !!on;
+		} catch{}
+	}
+	function getTeleportDiscs(){ return teleportDiscs.slice(); }
+	function teleportToDisc(disc){
+		if (!disc) return;
+		disc.updateMatrixWorld(true);
+		const center = new THREE.Vector3(); disc.getWorldPosition(center);
+		const up = new THREE.Vector3(0,1,0);
+		const n = (disc.userData?.__teleportDisc?.normal || up).clone().normalize();
+		let target = center.clone();
+		// Cache current desktop view direction and distance to keep heading after teleport
+		let prevDir = null; let prevDist = 10;
+		try {
+			const d = new THREE.Vector3().subVectors(controls.target, camera.position);
+			const len = d.length();
+			if (len > 1e-6) { prevDir = d.normalize(); prevDist = camera.position.distanceTo(controls.target) || 10; }
+		} catch {}
+		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
+		// If disc is horizontal (near-up normal), place camera 6ft above disc height
+		if (n.dot(up) >= 0.85){
+			target.set(center.x, center.y + 6, center.z);
+		} else {
+			// Fallback for non-horizontal discs: keep legacy behavior along disc normal
+			target = center.clone().add(n.clone().multiplyScalar(6));
+		}
+		// If XR session active (AR/VR): move the world so the camera appears at target
+		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
+		if (session){
+			const xrCam = renderer.xr.getCamera(camera);
+			const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
+			const delta = camPos.clone().sub(target);
+			// Move entire scene (AR uses cloned content only visible; moving whole scene works as a simple world shift)
+			scene.position.sub(delta);
+			return;
+		}
+		// Desktop: move camera and keep heading (preserve previous view direction and distance)
+		try {
+			camera.position.copy(target);
+			const look = target.clone().add(prevDir.clone().multiplyScalar(prevDist));
+			controls.target.copy(look);
+			controls.update();
+		} catch{}
+	}
+	// Expose teleport helpers for other modules (first-person, XR)
+	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc }; } catch{}
+	// Add a UI button to place discs
+	(function(){
+		const toolbox = document.getElementById('toolbox');
+		if (!toolbox) return;
+		const btn = document.createElement('button'); btn.id='placeTeleportBtn'; btn.className='icon-btn'; btn.title='Place a jump disc'; btn.setAttribute('aria-label','Place Jump Disc');
+		// Linework icon: axon ellipse with arrow pointing to center
+		btn.innerHTML = '<span class="sr-only">Place Jump Disc</span>'+
+			'<svg viewBox="0 0 24 24" aria-hidden="true">'+
+			  '<g fill="none" stroke="#222" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
+			    // Axon ellipse (represents a circle in 3D)
+			    '<ellipse cx="12" cy="9.5" rx="7" ry="3.5"/>'+
+			    // Down arrow to center
+			    '<path d="M12 5v7"/>'+
+			    '<polyline points="9,10.5 12,12.6 15,10.5"/>'+
+			  '</g>'+
+			'</svg>';
+		Object.assign(btn.style, { marginLeft:'6px' });
+		let placing=false; let preview=null; let previewNormal=new THREE.Vector3(0,1,0);
+		function ensurePreview(){ if (preview) return; preview = createTeleportDisc(new THREE.Vector3(0,0,0), new THREE.Vector3(0,1,0)); preview.materialBackup = []; preview.traverse(o=>{ if (o.material){ preview.materialBackup.push(o.material); const m=o.material.clone?o.material.clone():o.material; o.material = m; if (o.material.opacity!==undefined){ o.material.transparent=true; o.material.opacity=0.6; }}}); }
+		function removePreview(){
+			if (!preview) return;
+			try {
+				// Remove from scene
+				scene.remove(preview);
+				// Remove from registries
+				try { const i = teleportDiscs.indexOf(preview); if (i>=0) teleportDiscs.splice(i,1); } catch{}
+				try { const j = objects.indexOf(preview); if (j>=0) objects.splice(j,1); } catch{}
+				// Dispose resources
+				preview.traverse(o=>{ if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
+			} catch{}
+			preview=null;
+		}
+		btn.addEventListener('click', ()=>{ placing = !placing; btn.setAttribute('data-active', placing?'1':'0'); if (placing){ ensurePreview(); } else { removePreview(); } });
+		toolbox.appendChild(btn);
+		// Hook into existing pointer handlers for placement preview and commit
+		renderer.domElement.addEventListener('pointermove', e => {
+			if (!placing || preview==null) return; if (firstPerson && firstPerson.isActive && firstPerson.isActive()) return;
+			getPointer(e); raycaster.setFromCamera(pointer, camera);
+			// Find nearest horizontal surface under pointer (or ground)
+			const up = new THREE.Vector3(0,1,0);
+			const allHits = raycaster.intersectObjects(selectableTargets(), true) || [];
+			let best = null;
+			for (const h of allHits){
+				if (!h.face) continue;
+				// Exclude teleport discs and helpers
+				if (__getTeleportDiscRoot(h.object)) continue;
+				const wn = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
+				const dot = wn.dot(up);
+				if (dot >= 0.85){ best = h; break; }
+			}
+			let pos = null; if (best){ pos = best.point.clone(); } else { pos = intersectGround() || new THREE.Vector3(0,0,0); pos.y = 0; }
+			preview.position.copy(pos);
+			// Keep disc horizontal for placement
+			const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), up);
+			preview.quaternion.copy(q); previewNormal.copy(up);
+		});
+		renderer.domElement.addEventListener('pointerup', e => {
+			if (!placing || preview==null) return; if (firstPerson && firstPerson.isActive && firstPerson.isActive()) return;
+			// Ensure final placement is on a horizontal surface
+			getPointer(e); raycaster.setFromCamera(pointer, camera);
+			const up = new THREE.Vector3(0,1,0);
+			const hits = raycaster.intersectObjects(selectableTargets(), true) || [];
+			let okPos = null;
+			for (const h of hits){
+				if (!h.face) continue; if (__getTeleportDiscRoot(h.object)) continue;
+				const wn = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
+				if (wn.dot(up) >= 0.85){ okPos = h.point.clone(); break; }
+			}
+			if (!okPos){ okPos = intersectGround() || null; if (okPos) okPos.y = 0; }
+			if (okPos){ preview.position.copy(okPos); previewNormal.copy(up); createTeleportDisc(preview.position, previewNormal); }
+			placing = false; btn.setAttribute('data-active','0'); removePreview();
+		});
+	})();
 	let multiStartPivotMatrix = new THREE.Matrix4();
 	let multiStartMatrices = new Map();
 
@@ -575,6 +835,20 @@ export async function init() {
 	function attachTransformForSelection(){
 		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); return; }
 		if(selectedObjects.length === 1){
+			// Jump Disc: treat as movable object only (no rotation). Also restrict translation Y axis.
+			if (__getTeleportDiscRoot(selectedObjects[0])){
+				clearHandles();
+				const disc = __getTeleportDiscRoot(selectedObjects[0]);
+				// Remember baseline Y to lock vertical movement while translating
+				try { disc.userData.__teleportDisc.baseY = disc.position.y; } catch{}
+				transformControls.attach(disc);
+				if (typeof transformControls.setMode === 'function') transformControls.setMode('translate');
+				if ('showX' in transformControls) { transformControls.showX = true; }
+				if ('showY' in transformControls) { transformControls.showY = false; }
+				if ('showZ' in transformControls) { transformControls.showZ = true; }
+				transformControlsRotate.detach(); disableRotateGizmo(); enableTranslateGizmo();
+				return;
+			}
 			// Special-case: 2D Overlay group is movable on ground plane (X/Z only)
 			if (selectedObjects[0] && selectedObjects[0].name === '2D Overlay'){
 				clearHandles();
@@ -656,6 +930,20 @@ export async function init() {
 			obj.position.y = 0; // keep at ground plane
 			obj.updateMatrixWorld(true);
 			return;
+		}
+		// Constrain Jump Discs: no rotation and clamp Y (move only along surface plane approximately)
+		if (transformControls.object && __getTeleportDiscRoot(transformControls.object)){
+			const obj = __getTeleportDiscRoot(transformControls.object) || transformControls.object;
+			// Freeze rotation
+			obj.rotation.set(0, obj.rotation.y, 0);
+			// If attached to transformControls directly, hide Y movement and pin to original Y
+			if ('showY' in transformControls) { transformControls.showY = false; }
+			try {
+				const by = obj.userData?.__teleportDisc?.baseY;
+				// Lock to plane Y=baseY; if missing, set now
+				if (typeof by === 'number') obj.position.y = by; else { obj.userData.__teleportDisc.baseY = obj.position.y || 0; obj.position.y = obj.userData.__teleportDisc.baseY; }
+			} catch{}
+			obj.updateMatrixWorld(true);
 		}
 		// Soft snap for single-object translate moves
 		if (SNAP_ENABLED && selectedObjects.length===1 && transformControls.object===selectedObjects[0]){
@@ -949,6 +1237,37 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// Settings: background and grid colors (with persistence)
 	function disposeGrid(g){ try { gridUtils.disposeGrid(THREE, g); } catch {} }
+	// Convert hex like '#rrggbb' to THREE.Color and return perceived luminance (sRGB approx)
+	function __hexToColor(hex){
+		try { const c = new THREE.Color(hex); return c; } catch { return new THREE.Color('#ffffff'); }
+	}
+	function __luminanceSRGB(c){
+		// c is THREE.Color in linear by default; but three.js Color stores values in linear space when using ACES/linear pipelines.
+		// We'll approximate perceived luminance using the common Rec. 709 luma coefficients on the current values.
+		try { return 0.2126*c.r + 0.7152*c.g + 0.0722*c.b; } catch { return 0.5; }
+	}
+	function __contrastRatio(l1, l2){ const a = Math.max(l1, l2) + 0.05; const b = Math.min(l1, l2) + 0.05; return a / b; }
+	function ensureGridContrastWithBackground(){
+		try {
+			// Read current bg and grid colors
+			const bgHex = getRendererClearColorHex();
+			const bgCol = __hexToColor(bgHex);
+			const bgLum = __luminanceSRGB(bgCol);
+			let gridHex = (gridColorPicker && gridColorPicker.value) || localStorage.getItem('sketcher.gridColor') || '#ffffff';
+			let gridCol = __hexToColor(gridHex);
+			let gridLum = __luminanceSRGB(gridCol);
+			// If contrast is too low (white-on-white or black-on-black vibes), pick a contrasting default without clobbering user prefs permanently
+			const cr = __contrastRatio(bgLum, gridLum);
+			if (!isFinite(cr) || cr < 1.6 || bgHex.toLowerCase() === gridHex.toLowerCase()){
+				const useLight = bgLum < 0.5; // on dark bg, use light grid; on light bg, use dark grid
+				const fallback = useLight ? '#ffffff' : '#222222';
+				if (gridColorPicker) gridColorPicker.value = fallback;
+				setGridColor(fallback);
+				// Do not overwrite localStorage unless no prior explicit user choice existed
+				try { if (!localStorage.getItem('sketcher.gridColor')) localStorage.setItem('sketcher.gridColor', fallback); } catch {}
+			}
+		} catch {}
+	}
 	function setGridColor(hex){
 		if (!grid) return;
 		const wasVisible = grid.visible;
@@ -1491,6 +1810,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const savedGrid = localStorage.getItem('sketcher.gridColor');
 		if (gridColorPicker && savedGrid) gridColorPicker.value = savedGrid;
 		if (savedGrid) setGridColor(savedGrid); else if (gridColorPicker) setGridColor(gridColorPicker.value || '#ffffff');
+		// Ensure grid has sufficient contrast against background to avoid a "blank" look
+		ensureGridContrastWithBackground();
 		// Grid size/divs/infinite persistence
 		const savedSize = parseInt(localStorage.getItem('sketcher.gridSize')||'');
 		const savedDivs = parseInt(localStorage.getItem('sketcher.gridDivs')||'');
@@ -1504,8 +1825,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	} catch {}
 	// Live update handlers
 	if (bgColorPicker){
-		bgColorPicker.addEventListener('input',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} });
-		bgColorPicker.addEventListener('change',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} });
+		bgColorPicker.addEventListener('input',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} ensureGridContrastWithBackground(); });
+		bgColorPicker.addEventListener('change',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} ensureGridContrastWithBackground(); });
 	}
 	if (gridColorPicker){
 		gridColorPicker.addEventListener('input',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
@@ -2016,11 +2337,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			} else if (isIOS) {
 				await openQuickLookUSDZ();
 			} else {
-				alert('AR/VR not supported on this device or browser.');
+				// Desktop/laptop fallback: enter First-Person walk mode
+				try { if (controls) controls.enabled = false; __fpControlsDisabled = true; } catch{}
+				firstPerson.start({ hFov: 100, constrainHeight: true });
+				__enterFirstPersonSideEffects();
 			}
 		} catch (e) { alert('Failed to start AR/VR: ' + (e?.message || e)); console.error(e); }
 	});
-
 	// Room Scan (beta) using service API
 	document.addEventListener('sketcher:startRoomScan', async () => {
 		await loadWebXRPolyfillIfNeeded();
@@ -2134,7 +2457,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		pointer.x = (px / w) * 2 - 1;
 		pointer.y = -(py / h) * 2 + 1;
 	}
-	function intersectGround(){const pt=new THREE.Vector3();raycaster.ray.intersectPlane(groundPlane,pt);return pt;}
+	function intersectGround(){ const pt=new THREE.Vector3(); return raycaster.ray.intersectPlane(groundPlane, pt) ? pt : null; }
 	function intersectAtY(y){const plane=new THREE.Plane(new THREE.Vector3(0,1,0),-y);const pt=new THREE.Vector3();return raycaster.ray.intersectPlane(plane,pt)?pt:null;}
 
 	function updateCameraClipping(){ if (!objects.length) return; const box = new THREE.Box3(); objects.forEach(o => box.expandByObject(o)); if (box.isEmpty()) return; const size = new THREE.Vector3(); box.getSize(size); const radius = Math.max(size.x, size.y, size.z) * 0.75; const far = Math.min(100000, Math.max(1000, radius * 12)); camera.near = Math.max(0.01, far / 50000); camera.far = far; camera.updateProjectionMatrix(); if (controls){ controls.maxDistance = far * 0.95; } }
@@ -2336,9 +2659,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		cancelPlacing(); saveSessionDraftNow();
 	}
 			renderer.domElement.addEventListener('pointerdown',e=>{
+		// Suppress editing in First-Person walk mode
+		if (firstPerson && firstPerson.isActive && firstPerson.isActive()) { try { e.preventDefault(); } catch{} return; }
 		if (transformControls.dragging || transformControlsRotate.dragging) return;
 		if (e.pointerType==='touch' || e.pointerType==='pen') { activeTouchPointers.add(e.pointerId); if(activeTouchPointers.size>1) return; }
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
+				// Editor: clicking a jump disc should select it, not teleport. Teleport remains in viewer modes.
 			// For mouse, only left button; for touch/pen there is no buttons semantic like mouse
 			if (e.pointerType === 'mouse' && e.button !== 0) return;
 			// Consume events for two-click placement if active
@@ -2438,6 +2764,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} else { transformControls.detach(); transformControlsRotate.detach(); }
 	});
 			renderer.domElement.addEventListener('pointerup', e => {
+			if (firstPerson && firstPerson.isActive && firstPerson.isActive()) { try { e.preventDefault(); } catch{} return; }
 			if(e.pointerType==='touch' || e.pointerType==='pen'){
 			const start = e.target.__tapStart; activeTouchPointers.delete(e.pointerId);
 				if(mode==='edit' && start){ const dt = performance.now() - start.t; const dx = Math.abs(e.clientX - start.x); const dy = Math.abs(e.clientY - start.y); if(dt < 300 && dx < 8 && dy < 8){ getPointer(e); raycaster.setFromCamera(pointer,camera); const hits=raycaster.intersectObjects(selectableTargets(),true); if(hits.length){ const obj = __resolvePickedObjectFromHits(hits); if (obj){ selectedObjects=[obj]; const now = performance.now(); const isDouble = (lastTapObj === obj) && (now - lastTapAt < 350); if (isDouble) { singleSelectionMode='handles'; lastTapAt = 0; lastTapObj = null; } else { singleSelectionMode='gizmo'; lastTapAt = now; lastTapObj = obj; } attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } else { selectedObjects=[]; singleSelectionMode='gizmo'; transformControls.detach(); transformControlsRotate.detach(); clearHandles(); clearSelectionOutlines(); updateVisibilityUI(); lastTapAt = 0; lastTapObj = null; } } e.target.__tapStart = undefined; }
@@ -2458,9 +2785,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 
 	// Draw-create preview and two-click placement live update
-		renderer.domElement.addEventListener('pointermove',e=>{
+	renderer.domElement.addEventListener('pointermove',e=>{
+	if (firstPerson && firstPerson.isActive && firstPerson.isActive()) { return; }
 		// Update live preview for two-click placement
 		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt, { shift: !!e.shiftKey }); }
+		// Hover highlight for teleport discs
+		try {
+			getPointer(e); raycaster.setFromCamera(pointer, camera);
+			const dh = raycaster.intersectObjects(getTeleportDiscs(), true);
+			getTeleportDiscs().forEach(d=>highlightTeleportDisc(d,false));
+			if (dh && dh.length){ const d = __getTeleportDiscRoot(dh[0].object); if (d) highlightTeleportDisc(d,true); }
+		} catch{}
 		// Handle dragging
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
@@ -2661,8 +2996,52 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeRenderer);
 	renderer.setAnimationLoop((t, frame) => {
 		try {
+            				// First-person update (dt in seconds)
+				{
+					const now = (typeof performance!=='undefined'?performance.now():Date.now());
+					if (!window.__fp_prev) window.__fp_prev = now;
+					const dt = Math.min(0.1, Math.max(0, (now - window.__fp_prev)/1000));
+					window.__fp_prev = now;
+            					firstPerson.update(dt);
+						// If FP mode has been exited, re-enable OrbitControls and restore editing/toolbox once
+						if (__fpControlsDisabled && !firstPerson.isActive()) {
+							try { if (controls) controls.enabled = true; } catch{}
+							__fpControlsDisabled = false;
+							__exitFirstPersonSideEffects();
+						}
+				}
 				// XR controller menu button polling to toggle AR UI
 				handleXRMenuTogglePoll(frame);
+				// XR controller trigger teleport (rising edge)
+				(function xrTeleportPoll(){
+					try {
+						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
+						if (!window.__teleport) return;
+						const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return;
+						if (!window.__xrTriggerPrev) window.__xrTriggerPrev = new WeakMap();
+						const sources = session.inputSources ? Array.from(session.inputSources) : [];
+						for (const src of sources){
+							const gp = src && src.gamepad; const raySpace = src && (src.targetRaySpace || src.gripSpace);
+							if (!gp || !raySpace) continue;
+							const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
+							const prev = window.__xrTriggerPrev.get(src) === true;
+							if (pressed && !prev){
+								// Skip teleport if HUD is being hovered by controller
+								if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrTriggerPrev.set(src, pressed); return; }
+								const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+								if (pose){
+									const p = pose.transform.position; const o = pose.transform.orientation;
+									const origin = new THREE.Vector3(p.x,p.y,p.z);
+									const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+									const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
+									const ih = rc.intersectObjects(discs, true);
+									if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+								}
+							}
+							window.__xrTriggerPrev.set(src, pressed);
+						}
+					} catch{}
+				})();
 				// XR HUD update via service
 				xrHud.update(frame);
 				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes

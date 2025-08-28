@@ -1,12 +1,13 @@
 // XR HUD: 3D wrist-anchored curved button bar with hover/select via rays
 // Note: pass getLocalSpace() to resolve the latest XR reference space each frame.
 export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons }){
-  // Button sizing and layout for palm grid
-  const BUTTON_W = 0.028; // meters
-  const BUTTON_H = 0.0115; // meters
+  // Button sizing and layout for palm grid (.75 inch ≈ 19.05mm)
+  const BUTTON_SIZE = 0.01905; // 0.75in square
+  const BUTTON_W = BUTTON_SIZE; // meters (square)
+  const BUTTON_H = BUTTON_SIZE; // meters (square)
   const GRID_GAP_X = 0.006; // 6mm horizontal gap
   const GRID_GAP_Y = 0.006; // 6mm vertical gap
-  const PALM_OFFSET = 0.018; // 18mm above palm plane to avoid z-fighting with hand
+  const PALM_OFFSET = 0.0508; // ~2 inches (50.8mm) above palm plane for better visibility
   const PINCH_THRESHOLD_M = 0.035; // consistent with AR edit
   let hud = null;
   let buttons = [];
@@ -16,12 +17,33 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // Simple viz for hands and right-controller ray
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
   let handVizMode = null; // 'default' | 'hands-only'
-  // Finger poke/depress interaction
-  // Scale press thresholds relative to button height for better feel with smaller tiles
-  const PRESS_START_M = Math.max(0.002, 0.40 * BUTTON_H);   // ~4.6mm for H=11.5mm
-  const PRESS_RELEASE_M = Math.max(0.001, 0.20 * BUTTON_H); // ~2.3mm
-  const PRESS_MAX_M = Math.max(0.004, 0.60 * BUTTON_H);     // ~6.9mm
-  const PRESS_SMOOTH = 0.35;     // visual smoothing
+  let handVizStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
+
+  // WebXR hand joint names and a simple bone connectivity map
+  const FINGERS = ['thumb','index-finger','middle-finger','ring-finger','pinky-finger'];
+  const FINGER_JOINTS = {
+    'thumb': ['thumb-metacarpal','thumb-phalanx-proximal','thumb-phalanx-distal','thumb-tip'],
+    'index-finger': ['index-finger-metacarpal','index-finger-phalanx-proximal','index-finger-phalanx-intermediate','index-finger-phalanx-distal','index-finger-tip'],
+    'middle-finger': ['middle-finger-metacarpal','middle-finger-phalanx-proximal','middle-finger-phalanx-intermediate','middle-finger-phalanx-distal','middle-finger-tip'],
+    'ring-finger': ['ring-finger-metacarpal','ring-finger-phalanx-proximal','ring-finger-phalanx-intermediate','ring-finger-phalanx-distal','ring-finger-tip'],
+    'pinky-finger': ['pinky-finger-metacarpal','pinky-finger-phalanx-proximal','pinky-finger-phalanx-intermediate','pinky-finger-phalanx-distal','pinky-finger-tip']
+  };
+  const BONES = (()=>{
+    const bones = [];
+    for (const f of FINGERS){
+      const chain = FINGER_JOINTS[f];
+      // wrist to metacarpal
+      bones.push(['wrist', chain[0]]);
+      // chain segments
+      for (let i=0;i<chain.length-1;i++) bones.push([chain[i], chain[i+1]]);
+    }
+    return bones;
+  })();
+  // Finger poke/depress interaction — tighter thresholds for crisp feel
+  const PRESS_START_M = Math.max(0.0015, 0.22 * BUTTON_H);   // ~4mm
+  const PRESS_RELEASE_M = Math.max(0.0008, 0.12 * BUTTON_H); // ~2mm
+  const PRESS_MAX_M = Math.max(0.003, 0.35 * BUTTON_H);
+  const PRESS_SMOOTH = 0.25;     // faster visual response
   let fingerHover = null;        // hovered mesh by fingertip
   // Visibility suppression when left hand not open or grabbing occurs
   let prevVisible = false;
@@ -29,6 +51,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let anchor = { type: 'palm', space: null, handedness: 'left' };
   function setAnchor(next){
     try { anchor = Object.assign({ type: 'palm', space: null, handedness: 'left' }, next||{}); } catch { anchor = { type: 'palm', space: null, handedness: 'left' }; }
+  // Force left-hand for palm anchors
+  if (anchor.type === 'palm') anchor.handedness = 'left';
   }
 
   function ensurePressState(m){
@@ -48,11 +72,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function makeButtonTexture(label){
-    const w=256,h=96; const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
-    const bg='rgba(30,30,35,0.75)',fg='#ffffff',hl='rgba(255,255,255,0.18)';
-    const r=18; ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(w-r,0); ctx.quadraticCurveTo(w,0,w,r); ctx.lineTo(w,h-r); ctx.quadraticCurveTo(w,h,w-r,h); ctx.lineTo(r,h); ctx.quadraticCurveTo(0,h,0,h-r); ctx.lineTo(0,r); ctx.quadraticCurveTo(0,0,r,0); ctx.closePath(); ctx.fill();
-    ctx.fillStyle=hl; ctx.fillRect(0,0,w,8);
-    ctx.fillStyle=fg; ctx.font='bold 36px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,w/2,h/2);
+    // Square texture for rounded-square buttons
+    const w=256,h=256; const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
+    const bg='rgba(30,30,35,0.78)',fg='#ffffff',hl='rgba(255,255,255,0.16)';
+    const r=36; ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(w-r,0); ctx.quadraticCurveTo(w,0,w,r); ctx.lineTo(w,h-r); ctx.quadraticCurveTo(w,h,w-r,h); ctx.lineTo(r,h); ctx.quadraticCurveTo(0,h,0,h-r); ctx.lineTo(0,r); ctx.quadraticCurveTo(0,0,r,0); ctx.closePath(); ctx.fill();
+    // top sheen
+    ctx.fillStyle=hl; ctx.fillRect(0,0,w,Math.max(6, Math.floor(h*0.04)));
+    // label
+    ctx.fillStyle=fg; ctx.font='bold 66px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,w/2,h/2);
     const tex=new THREE.CanvasTexture(c); if(THREE.SRGBColorSpace) tex.colorSpace=THREE.SRGBColorSpace; tex.needsUpdate=true; return tex;
   }
 
@@ -64,6 +91,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const mesh=new THREE.Mesh(geom, mat);
     mesh.renderOrder = 10000;
     mesh.userData.__hudButton={ label, onClick, base: mat.clone(), hover: mat };
+    // Click flash overlay for feedback
+    const flashGeom = geom.clone();
+    const flashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest:false, depthWrite:false, blending: THREE.AdditiveBlending });
+    const flash = new THREE.Mesh(flashGeom, flashMat); flash.name = 'hud-flash'; flash.renderOrder = 10001; flash.scale.set(1.05, 1.05, 1);
+    mesh.add(flash); mesh.userData.__flash = flash;
     function setLabel(next){ try { const t=makeButtonTexture(next); if (mesh.material?.map?.dispose) mesh.material.map.dispose(); mesh.material.map=t; mesh.material.needsUpdate=true; mesh.userData.__hudButton.label=next; } catch{} }
     return { mesh, onClick, setLabel };
   }
@@ -79,10 +111,24 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const tips = ['thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
   const tipSpheres = tips.map(()=>sph(0.0075, tipColor));
         const wristSphere = sph(0.012, wristColor);
+        // fingertips polyline
         const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * (tips.length + 1)), 3));
-  const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
-        g.add(wristSphere, line, ...tipSpheres);
-  g.userData.__viz = { tips, tipSpheres, wristSphere, line, base:{ tipColor, wristColor, lineColor } };
+        const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
+        // skeleton polyline (segments for all bones)
+        const skelGeom = new THREE.BufferGeometry(); skelGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * BONES.length), 3));
+        const skelLine = new THREE.LineSegments(skelGeom, new THREE.LineBasicMaterial({ color: 0x5ac8ff, transparent:true, opacity:0.95, depthTest:false }));
+        skelLine.visible = false;
+        // simple hand mesh proxy: a quad (palm) and small cylinders between joints (approx)
+        const meshGroup = new THREE.Group(); meshGroup.visible = false;
+        const palmMat = new THREE.MeshBasicMaterial({ color: 0x2a7fff, transparent:true, opacity:0.15, depthTest:false, side: THREE.DoubleSide });
+        const palm = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.08), palmMat); palm.name='palm-proxy'; meshGroup.add(palm);
+        // pool a few bone cylinders for reuse
+        const cylMat = new THREE.MeshBasicMaterial({ color: 0x2a7fff, transparent:true, opacity:0.25, depthTest:false });
+        const cylGeo = new THREE.CylinderGeometry(0.004, 0.004, 1, 8);
+        const boneCyls = new Array(BONES.length).fill(0).map(()=> new THREE.Mesh(cylGeo, cylMat.clone()));
+        boneCyls.forEach(m=>{ m.visible=false; meshGroup.add(m); });
+        g.add(wristSphere, line, skelLine, meshGroup, ...tipSpheres);
+        g.userData.__viz = { tips, tipSpheres, wristSphere, line, base:{ tipColor, wristColor, lineColor }, skel:{ geom: skelGeom, line: skelLine }, mesh:{ group: meshGroup, palm, boneCyls } };
         g.visible = false; return g;
       };
       handVizL.add(mk()); handVizR.add(mk());
@@ -142,12 +188,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       // Face +Z in local space; group orientation will face outward from left palm
       hud.add(b.mesh);
     }
-    scene.add(hud);
-    hud.visible = true;
-    prevVisible = true;
+  scene.add(hud);
+  hud.visible = false; // only after menu press
+  hud.userData.__menuShown = false; // armed by menu button
+  prevVisible = false;
     ensureHandViz();
-    // Disable controller select activation for palm UI; right index finger poke only
-    return hud;
+  // Both controller trigger and right index finger can activate buttons
+  return hud;
   }
 
   function remove(){
@@ -223,7 +270,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             }
             placed = true;
           }
-        } else if (leftWristPose){
+  }
+  if (leftWristPose){
           // Derive palm plane orientation from wrist->index and wrist->thumb
           const wp = leftWristPose.transform.position;
           const w = new THREE.Vector3(wp.x, wp.y, wp.z);
@@ -231,8 +279,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           let vIndex = null, vThumb = null;
           if (ip) vIndex = new THREE.Vector3(ip.x-w.x, ip.y-w.y, ip.z-w.z);
           if (tp) vThumb = new THREE.Vector3(tp.x-w.x, tp.y-w.y, tp.z-w.z);
-          let z = new THREE.Vector3(0,0,1); // palm normal
-          if (vIndex && vThumb){ z = new THREE.Vector3().crossVectors(vIndex, vThumb); if (z.lengthSq() < 1e-6) z.set(0,0,1); z.normalize(); }
+          let z = new THREE.Vector3(0,0,1); // palm normal (aim to point outward from palm)
+          if (vIndex && vThumb){
+            // For left palm, use thumb x index to get outward normal consistently
+            z = new THREE.Vector3().crossVectors(vThumb, vIndex);
+            if (z.lengthSq() < 1e-6) z.set(0,0,1); z.normalize();
+          }
           // x along index direction projected on palm plane
           let xAxis = vIndex ? vIndex.clone() : new THREE.Vector3(1,0,0);
           // remove normal component
@@ -245,26 +297,29 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           hud.position.lerp(targetPos, 0.35);
           hud.quaternion.slerp(q, 0.35);
           placed = true;
+          // Cache palm up/down state (z.y measures how much the palm normal points upward)
+          hud.userData.__palmUp = (z.y >= 0.15);
         }
-        // Determine left-hand open (not pinching)
+        // Pinch detection still suppresses menu
         if (leftIdxPose && leftThumbPose){
           const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
           const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
-          leftHandOpen = d >= PINCH_THRESHOLD_M;
-          if (!leftHandOpen) anyGrabOrSqueeze = true; // treat pinch as grab condition
+          if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;
         }
       }
     } catch {}
-    if (!placed && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
+  // For palm anchor, do not fallback to camera when not placed (menu should hide). For controller anchor, allow fallback.
+  if (!placed && anchor.type === 'controller' && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
     // Enforce visibility rules: menu shows when toggled AND no grab/squeeze; if palm-anchored, also require left hand open
     try {
-      const palmReq = (anchor.type === 'palm');
-      const allowShow = (!anyGrabOrSqueeze) && (!palmReq || leftHandOpen);
-      const mustHide = (anyGrabOrSqueeze) || (palmReq && !leftHandOpen);
-      if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; }
-      else if (!hud.visible && allowShow && hud.userData.__autoHidden) { hud.visible = true; hud.userData.__autoHidden = false; }
+  const palmReq = (anchor.type === 'palm');
+  const palmUp = !!hud.userData.__palmUp;
+  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || palmUp);
+  const mustHide = (anyGrabOrSqueeze) || (palmReq && !palmUp);
+  if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; hud.userData.__menuShown = false; try { if (typeof module!=='undefined'){} } catch {} }
+  else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { hud.visible = true; hud.userData.__autoHidden = false; try { /* reset pressed states on show */ } catch {} }
     } catch {}
-    // Hover via rays (visualize only; do not click via controller). We can still show right controller ray, but ignore for clicking.
+    // Hover and click via controller rays; also support right finger poke
     try {
       const session = renderer.xr.getSession?.();
     if (session && frame){
@@ -272,9 +327,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         const hudTargets = buttons.map(b=>b.mesh);
         const hovered = new Set();
         let anyController = false; let anyHand = false;
+        let controllerHoveringHUD = false;
+        if (!update.__xrTriggerPrev) update.__xrTriggerPrev = new WeakMap();
   for (const src of sources){
       const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
-      // Don't use controller rays for activation; optional hover visualization only
+      // Use controller rays for hover and activation
       const raySpace = src.targetRaySpace || src.gripSpace; if (raySpace){
         const pose = frame.getPose(raySpace, ref); if (pose){
           const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
@@ -283,58 +340,135 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const top = hits && hits.length ? hits[0].object : null;
           xrHoverBySource.set(src, top);
           if (top) hovered.add(top);
+          if (top && src.gamepad) controllerHoveringHUD = true;
+          // Controller trigger clicks a hovered button
+          if (src.gamepad){
+            const pressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+            const prev = update.__xrTriggerPrev.get(src) === true;
+            if (pressed && !prev && top){
+              const handler = top.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
+              try { const fl = top.userData && top.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch{}
+            }
+            update.__xrTriggerPrev.set(src, pressed);
+          }
         }
       }
-      // Visualize right-controller pointer ray but don't enable clicking with it
+  // Visualize right-controller pointer ray; extend to first hit among HUD, scene, or teleport discs
       if (src.handedness === 'right' && src.gamepad && !src.hand){
         sawRightController = true; anyController = true;
         if (rightRay && rightRayTip){
           const pose = raySpace ? frame.getPose(raySpace, ref) : null;
           if (pose){
-            const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
-            const posAttr = rightRay.geometry.attributes.position;
-            posAttr.setXYZ(0, origin.x, origin.y, origin.z);
-            const tip = origin.clone().add(dir.clone().multiplyScalar(1.5));
-            posAttr.setXYZ(1, tip.x, tip.y, tip.z);
-            posAttr.needsUpdate = true; rightRay.visible = true;
-            rightRayTip.position.copy(tip); rightRayTip.visible = true;
+    const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+    // Raycast against HUD, scene, and teleport discs
+    const discs = (window.__teleport && window.__teleport.getTeleportDiscs) ? window.__teleport.getTeleportDiscs() : [];
+    const sceneTargets = [];
+    try { scene.traverse(obj=>{ if (obj && obj.isMesh && obj.visible && !obj.userData?.__helper) sceneTargets.push(obj); }); } catch{}
+    raycaster.set(origin, dir);
+    let best = null;
+    const consider = (hits, tag)=>{ if (!hits||!hits.length) return; const h = hits[0]; const d = (typeof h.distance==='number')? h.distance : origin.distanceTo(h.point); if (best==null || d < best.dist) best = { point: h.point.clone(), obj: h.object, dist: d, tag } };
+    try { consider(raycaster.intersectObjects(hudTargets, true), 'hud'); } catch{}
+    try { consider(raycaster.intersectObjects(sceneTargets, true), 'scene'); } catch{}
+    try { if (discs && discs.length) consider(raycaster.intersectObjects(discs, true), 'disc'); } catch{}
+    const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
+    let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
+    // Default hide highlight on all discs; re-apply on target
+    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
+    if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
+    posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
+    rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }
         }
       }
           if (src.hand) anyHand = true;
         }
         if (rightRay && rightRayTip && !sawRightController){ rightRay.visible = false; rightRayTip.visible = false; }
-        // Switch palette based on modality: blue when hands-only
+  // Switch palette based on modality: blue when hands-only
         if (anyHand && !anyController) setHandVizPalette('hands-only'); else setHandVizPalette('default');
 
-        // Simple hand outlines: wrist + fingertips per hand
+        // Hand visualization per style: fingertips | index | skeleton | mesh | off
         try {
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           const updateOne = (src, group) => {
             const child = group && group.children && group.children[0]; if (!child) return;
             const vz = child.userData.__viz; if (!vz) return;
             const wristJ = src.hand?.get?.('wrist'); const wrist = wristJ ? frame.getJointPose(wristJ, ref) : null;
-            const tips = vz.tips.map(name => { const j = src.hand?.get?.(name); return j ? frame.getJointPose(j, ref) : null; });
-            if (!wrist || tips.every(t=>!t)) { if (child.visible) child.visible=false; return; }
+            // Hide completely if style is 'off'
+            if (handVizStyle === 'off') { child.visible = false; return; }
+            if (!wrist) { child.visible = false; return; }
             const wpos = wrist.transform.position; vz.wristSphere.position.set(wpos.x, wpos.y, wpos.z);
-            const posAttr = vz.line.geometry.attributes.position; let idx=0;
-            posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
-            for (let i=0;i<tips.length;i++){
-              const tp = tips[i]?.transform?.position; if (tp){
-                vz.tipSpheres[i].position.set(tp.x,tp.y,tp.z);
-                posAttr.setXYZ(idx++, tp.x, tp.y, tp.z);
-              } else {
-                // duplicate wrist if missing
+            // Hide all sub-visuals initially
+            vz.line.visible = false; vz.skel.line.visible = false; vz.mesh.group.visible = false;
+            for (const s of vz.tipSpheres) { s.visible = false; }
+
+            if (handVizStyle === 'fingertips' || handVizStyle === 'index'){
+              const tipNames = (handVizStyle === 'index') ? ['index-finger-tip'] : vz.tips;
+              const tips = tipNames.map(name => { const j = src.hand?.get?.(name); return j ? frame.getJointPose(j, ref) : null; });
+              if (tips.length && tips.some(t=>t)){
+                const posAttr = vz.line.geometry.attributes.position; let idx=0;
                 posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
-                vz.tipSpheres[i].position.copy(vz.wristSphere.position);
+                for (let i=0;i<tips.length;i++){
+                  const tp = tips[i]?.transform?.position; if (tp){
+                    const name = tipNames[i]; const fullIdx = vz.tips.indexOf(name);
+                    if (fullIdx >= 0) { const sphere = vz.tipSpheres[fullIdx]; sphere.position.set(tp.x,tp.y,tp.z); sphere.visible = true; }
+                    posAttr.setXYZ(idx++, tp.x, tp.y, tp.z);
+                  } else {
+                    posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
+                  }
+                }
+                posAttr.needsUpdate = true; vz.line.visible = true; child.visible = true;
+              } else { child.visible = false; }
+            } else if (handVizStyle === 'skeleton'){
+              // Draw line segments between known bones
+              const posAttr = vz.skel.geom.attributes.position; let idx=0; let any=false;
+              for (const [aName,bName] of BONES){
+                const aJ = src.hand?.get?.(aName); const bJ = src.hand?.get?.(bName);
+                const a = aJ ? frame.getJointPose(aJ, ref) : null; const b = bJ ? frame.getJointPose(bJ, ref) : null;
+                if (a?.transform?.position && b?.transform?.position){
+                  const ap = a.transform.position; const bp = b.transform.position;
+                  posAttr.setXYZ(idx++, ap.x, ap.y, ap.z);
+                  posAttr.setXYZ(idx++, bp.x, bp.y, bp.z);
+                  any = true;
+                } else {
+                  // fill with wrist if missing to keep buffer bounds
+                  posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
+                  posAttr.setXYZ(idx++, wpos.x, wpos.y, wpos.z);
+                }
+              }
+              posAttr.needsUpdate = true; vz.skel.line.visible = any; child.visible = any;
+            } else if (handVizStyle === 'mesh'){
+              // Approximate with cylinders along bones and a palm quad facing the camera
+              const cam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera() : null;
+              if (!cam) { child.visible=false; return; }
+              vz.mesh.group.visible = true; child.visible = true;
+              // Position palm proxy at wrist, oriented to camera
+              const camQ = new THREE.Quaternion(); cam.getWorldQuaternion(camQ);
+              vz.mesh.palm.position.set(wpos.x, wpos.y + 0.01, wpos.z);
+              vz.mesh.palm.quaternion.copy(camQ);
+              // Place cylinders along bones
+              let i=0;
+              for (const cyl of vz.mesh.boneCyls){ cyl.visible = false; }
+              for (const [aName,bName] of BONES){
+                if (i >= vz.mesh.boneCyls.length) break; const cyl = vz.mesh.boneCyls[i++];
+                const aJ = src.hand?.get?.(aName); const bJ = src.hand?.get?.(bName);
+                const a = aJ ? frame.getJointPose(aJ, ref) : null; const b = bJ ? frame.getJointPose(bJ, ref) : null;
+                if (a?.transform?.position && b?.transform?.position){
+                  const ap = new THREE.Vector3(a.transform.position.x, a.transform.position.y, a.transform.position.z);
+                  const bp = new THREE.Vector3(b.transform.position.x, b.transform.position.y, b.transform.position.z);
+                  const mid = ap.clone().add(bp).multiplyScalar(0.5);
+                  const dir = new THREE.Vector3().subVectors(bp, ap);
+                  const len = dir.length(); if (len < 1e-5) continue; dir.normalize();
+                  // orient cylinder along dir
+                  const q = new THREE.Quaternion(); q.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+                  cyl.position.copy(mid); cyl.quaternion.copy(q); cyl.scale.set(1, len, 1); cyl.visible = true;
+                }
               }
             }
-            posAttr.needsUpdate = true; child.visible = true;
           };
           for (const src of sources){ if (src.hand && src.handedness==='left') updateOne(src, handVizL); if (src.hand && src.handedness==='right') updateOne(src, handVizR); }
         } catch {}
 
-  // Right index finger hover + poke-to-click (depress animation). Only this triggers clicks.
+        // Right index finger hover + poke-to-click (depress animation). Only this triggers clicks.
         try {
           const rightHand = sources.find(s => s.hand && s.handedness === 'right');
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
@@ -345,25 +479,42 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             if (pIdx?.transform?.position) idxPos = pIdx.transform.position;
           }
           fingerHover = null;
-          // Evaluate hover and press per button
-      for (const b of buttons){
-            const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
-            // default target depth is 0 (released)
-            let targetDepth = 0; let within = false; let pressedNow = st.pressed;
-            if (idxPos){
-              // bounds check in local XY
-              const lp = m.worldToLocal(new THREE.Vector3(idxPos.x, idxPos.y, idxPos.z));
-        const halfW = BUTTON_W/2, halfH = BUTTON_H/2;
-              if (Math.abs(lp.x) <= halfW && Math.abs(lp.y) <= halfH){
-                within = true;
-                // penetration along world normal
-                const pen = penetrationAlongNormal(m, idxPos); // negative means pushing through
-                const depth = THREE.MathUtils.clamp(-pen, 0, PRESS_MAX_M); // convert to positive mm depth
-                targetDepth = depth;
-                // hysteresis press/release
-                if (!st.pressed && depth >= PRESS_START_M) { pressedNow = true; }
-                if (st.pressed && depth <= PRESS_RELEASE_M) { pressedNow = false; }
+          // Evaluate candidate buttons and choose a single active one to avoid edge mis-clicks
+          const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          let best = null; // { m, st, depth, dist }
+          const ACTIVE_SHRINK_X = 0.85, ACTIVE_SHRINK_Y = 0.85; // shrink hit box to reduce boundary triggers
+          const toLocal = (p, m)=> m.worldToLocal(new THREE.Vector3(p.x, p.y, p.z));
+          if (idxPos){
+            for (const b of buttons){
+              const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
+              const lp = toLocal(idxPos, m);
+              const halfW = BUTTON_W/2, halfH = BUTTON_H/2;
+              const inX = Math.abs(lp.x) <= halfW * ACTIVE_SHRINK_X;
+              const inY = Math.abs(lp.y) <= halfH * ACTIVE_SHRINK_Y;
+              if (!inX || !inY) continue;
+              const pen = penetrationAlongNormal(m, idxPos);
+              const depth = THREE.MathUtils.clamp(-pen, 0, PRESS_MAX_M);
+              if (depth <= 0) continue;
+              const dist = Math.hypot(lp.x, lp.y);
+              if (!best || depth > best.depth + 1e-6 || (Math.abs(depth - best.depth) < 1e-6 && dist < best.dist)){
+                best = { m, st, depth, dist };
               }
+            }
+          }
+          // Animate and handle press only on the best candidate; release others
+          for (const b of buttons){
+            const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
+            let targetDepth = 0; let within = false; let pressedNow = st.pressed;
+            if (best && best.m === m){
+              targetDepth = best.depth; within = true;
+              // stability frames: require 2 frames above threshold before firing
+              st._stable = (st._stable || 0) + (best.depth >= PRESS_START_M ? 1 : 0);
+              const cooldown = st._cooldownUntil && now < st._cooldownUntil;
+              if (!st.pressed && st._stable >= 2 && !cooldown) { pressedNow = true; }
+              if (st.pressed && best.depth <= PRESS_RELEASE_M) { pressedNow = false; st._stable = 0; }
+            } else {
+              st._stable = 0;
+              if (st.pressed) { pressedNow = false; }
             }
             // animate to target depth
             st.depth = st.depth + (targetDepth - st.depth) * PRESS_SMOOTH;
@@ -371,22 +522,46 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             m.scale.set(st.baseScale.x, st.baseScale.y * s, st.baseScale.z);
             // update hovered set for highlight
             if (within) { hovered.add(m); if (!fingerHover) fingerHover = m; }
-            // onPress transition: fire onClick
+            // onPress transition: fire onClick once and set cooldown
             if (!st.pressed && pressedNow){
               const handler = m.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
+              st._cooldownUntil = now + 180; // ms
+              // Trigger flash overlay
+              try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
             }
             st.pressed = pressedNow;
+            // Fade flash overlay each frame
+            try { const fl = m.userData && m.userData.__flash; if (fl && fl.material && fl.material.opacity>0) { fl.material.opacity = Math.max(0, fl.material.opacity - 0.12); } } catch {}
           }
         } catch {}
 
   // Apply hover highlight for any hovered (ray or finger)
   hudTargets.forEach(m=>{ const mat=m.material; if (!mat) return; const on = hovered.has(m); mat.opacity = on ? 1.0 : 0.82; mat.needsUpdate=true; });
+  // Expose HUD hover to suppress other interactions (e.g., teleport)
+  try { window.__xrHudHover = !!controllerHoveringHUD; } catch{}
 
       } else {
         if (rightRay) rightRay.visible = false; if (rightRayTip) rightRayTip.visible = false;
+        try { window.__xrHudHover = false; } catch{}
         }
     } catch {}
   }
 
-  return { ensure, remove, update, setAnchor, get group(){ return hud; }, get buttons(){ return buttons; } };
+  function resetPressStates(){ try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {} }
+
+  function setHandVizStyle(style){
+    const allowed = ['fingertips','index','off'];
+    if (allowed.includes(style)) handVizStyle = style;
+    // Hide spheres immediately if turned off
+    try {
+      for (const group of [handVizL, handVizR]){
+        const child = group && group.children && group.children[0];
+        const vz = child && child.userData && child.userData.__viz;
+        if (!vz) continue;
+        for (const s of vz.tipSpheres){ if (s) s.visible = (handVizStyle !== 'off'); }
+      }
+    } catch {}
+  }
+
+  return { ensure, remove, update, setAnchor, setHandVizStyle, get group(){ return hud; }, get buttons(){ return buttons; }, resetPressStates };
 }
