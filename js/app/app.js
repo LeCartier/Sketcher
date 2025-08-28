@@ -466,8 +466,33 @@ export async function init() {
 				if (o && o.isMesh && o.geometry && o.geometry.type === 'CircleGeometry') plane = plane || o;
 				if (o && o.isMesh && o.geometry && o.geometry.type === 'ConeGeometry') cone = cone || o;
 			});
-			if (plane) { ud.plane = plane; ud.top = plane; try { plane.material.depthWrite = false; plane.material.needsUpdate = true; } catch{} }
-			if (cone) { ud.cone = cone; }
+			// Reapply canonical materials to ensure consistent look
+			if (plane) {
+				ud.plane = plane; ud.top = plane;
+				try {
+					const m = plane.material;
+					if (m && m.isMeshStandardMaterial){
+						m.color && m.color.set(0x2f8cff);
+						m.emissive && m.emissive.set(0x114477);
+						m.emissiveIntensity = 0.35;
+						m.roughness = 0.6; m.metalness = 0.0; m.side = THREE.DoubleSide;
+						m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -1; m.depthWrite = false;
+						m.needsUpdate = true;
+					}
+				} catch{}
+			}
+			if (cone) {
+				ud.cone = cone;
+				try {
+					const m = cone.material;
+					if (m && m.isMeshStandardMaterial){
+						m.color && m.color.set(0x2f8cff);
+						m.emissive && m.emissive.set(0x114477);
+						m.emissiveIntensity = 0.5;
+						m.needsUpdate = true;
+					}
+				} catch{}
+			}
 		} catch{}
 		// Ensure a consistent name marker
 		try { if (!group.name || group.name === '') group.name = '__TeleportDisc'; } catch{}
@@ -513,9 +538,9 @@ export async function init() {
 			const ud = disc?.userData?.__teleportDisc || {};
 			const p = ud.plane; if (p && p.material) { p.material.emissiveIntensity = on ? 0.8 : 0.35; p.material.needsUpdate = true; }
 			// Create or toggle a thick orange/yellow highlight ring overlay on top cap
-			let hl = ud.ringHL;
+				let hl = ud.ringHL;
 			if (on && !hl){
-				const top = ud.top || disc; // plane mesh or disc root
+					const top = ud.top || disc; // plane mesh or disc root
 				// Estimate radius from bounding sphere or default 1 (2 ft dia)
 				let rad = 1.0;
 				try { const bs = new THREE.Sphere(); new THREE.Box3().setFromObject(top).getBoundingSphere(bs); if (isFinite(bs.radius) && bs.radius>0) rad = Math.min(2.0, Math.max(0.3, bs.radius)); } catch{}
@@ -525,8 +550,14 @@ export async function init() {
 				const m = new THREE.MeshBasicMaterial({ color: 0xffc400, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending });
 				hl = new THREE.Mesh(g, m); hl.name = '__teleportDiscHL'; hl.renderOrder = 10000; hl.userData.__helper = true;
 				// Position slightly above the top surface to avoid z-fight
-				try { hl.rotation.x = -Math.PI/2; } catch{}
-				try { const y = (top.position?.y ?? 0) + 0.012; hl.position.set(top.position?.x||0, y, top.position?.z||0); } catch{}
+					try { hl.rotation.x = -Math.PI/2; } catch{}
+					try {
+						// Anchor to top world position, then convert to disc local, offset a hair on +Y
+						disc.updateMatrixWorld(true);
+						const topWorld = new THREE.Vector3(); top.getWorldPosition(topWorld);
+						const topLocal = disc.worldToLocal(topWorld.clone());
+						const y = topLocal.y + 0.012; hl.position.set(topLocal.x, y, topLocal.z);
+					} catch{}
 				disc.add(hl); ud.ringHL = hl; disc.userData.__teleportDisc = ud;
 			}
 			if (hl) hl.visible = !!on;
@@ -2515,8 +2546,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// If a loaded object is a teleport disc, re-register it so picking and activation work
 			try { if (__isTeleportDisc(obj)) __registerTeleportDisc(obj); } catch{}
 		// Skip applying global material styles to map imports
-		const __isMapImportObj = !!(obj && ((obj.userData && (obj.userData.__mapImport === true || obj.userData.mapImport === true)) || (obj.name === 'Imported Topography' || obj.name === 'Imported Flat Area')));
-		if (!__isMapImportObj){
+			const __isMapImportObj = !!(obj && ((obj.userData && (obj.userData.__mapImport === true || obj.userData.mapImport === true)) || (obj.name === 'Imported Topography' || obj.name === 'Imported Flat Area')));
+			const __isTeleportObj = !!__isTeleportDisc(obj);
+			if (!__isMapImportObj && !__isTeleportObj){
 		// Apply current material style to this object (shared instance)
 		if (currentMaterialStyle === 'original'){
 			const stack = [obj];
