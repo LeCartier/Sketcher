@@ -176,15 +176,19 @@ export function createAREdit(THREE, scene, renderer){
       // When a new grab starts, try to pick a child
       const newly = grabbingPre.find(p=>p.justStarted);
       const stillGrabbing = grabbingPre.length > 0;
+      // Only consider direct children of the AR clone root as selectable "objects"
       const pickChildAt = (px,py,pz,r)=>{
+        if (!state.root || !Array.isArray(state.root.children)) return null;
         let best = null; let bestDist = Infinity;
         const tmpBox = new THREE.Box3(); const tmpCenter = new THREE.Vector3();
-        const visit = (obj)=>{
-          if (!obj || obj.userData?.__helper || obj === state.root) return;
-          if (obj.visible === false) return;
-          try { tmpBox.setFromObject(obj); } catch { return; }
-          if (tmpBox.isEmpty()) return;
-          // sphere vs box test, then choose by center distance
+        for (const ch of state.root.children){
+          if (!ch) continue;
+          // Skip helpers/overlays
+          if (ch.userData && ch.userData.__helper) continue;
+          if (ch.name === '2D Overlay') continue;
+          if (ch.visible === false) continue;
+          try { tmpBox.setFromObject(ch); } catch { continue; }
+          if (tmpBox.isEmpty()) continue;
           const cx = Math.max(tmpBox.min.x, Math.min(px, tmpBox.max.x));
           const cy = Math.max(tmpBox.min.y, Math.min(py, tmpBox.max.y));
           const cz = Math.max(tmpBox.min.z, Math.min(pz, tmpBox.max.z));
@@ -193,12 +197,9 @@ export function createAREdit(THREE, scene, renderer){
             tmpBox.getCenter(tmpCenter);
             const cdx = tmpCenter.x - px, cdy = tmpCenter.y - py, cdz = tmpCenter.z - pz;
             const cdist = Math.hypot(cdx,cdy,cdz);
-            if (cdist < bestDist){ bestDist = cdist; best = obj; }
+            if (cdist < bestDist){ bestDist = cdist; best = ch; }
           }
-          const children = obj.children || [];
-          for (const ch of children) visit(ch);
-        };
-        visit(state.root);
+        }
         return best;
       };
       if (newly){
