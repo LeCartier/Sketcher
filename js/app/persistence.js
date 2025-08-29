@@ -9,7 +9,38 @@
  */
 export function buildExportRootFromObjects(THREE, objects) {
   const root = new THREE.Group();
-  (objects || []).forEach(o => { if (o) root.add(o.clone(true)); });
+  (objects || []).forEach(o => { if (o) {
+    const c = o.clone(true);
+    // Deep-clone materials on the clone so modifications (simplify/restore) do not affect originals
+    try {
+      c.traverse((node) => {
+        if (!node || !node.isMesh) return;
+        const mat = node.material;
+        if (!mat) return;
+        if (Array.isArray(mat)) {
+          node.material = mat.map(m => {
+            try {
+              const nm = m.clone();
+              // If the material referenced textures, clone their maps where possible
+              ['map','normalMap','roughnessMap','metalnessMap','emissiveMap','alphaMap','aoMap'].forEach(k=>{
+                try { if (nm[k] && nm[k].clone) nm[k] = nm[k].clone(); } catch{}
+              });
+              return nm;
+            } catch(e){ return m; }
+          });
+        } else {
+          try {
+            const nm = mat.clone();
+            ['map','normalMap','roughnessMap','metalnessMap','emissiveMap','alphaMap','aoMap'].forEach(k=>{
+              try { if (nm[k] && nm[k].clone) nm[k] = nm[k].clone(); } catch{}
+            });
+            node.material = nm;
+          } catch(e){ /* leave original reference if clone fails */ }
+        }
+      });
+    } catch(e){}
+    root.add(c);
+  } });
   return root;
 }
 

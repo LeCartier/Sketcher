@@ -118,6 +118,10 @@ export async function init() {
 	let arContent = null; // cloned scene content for AR
 	let arPlaced = false;
 	let arPrevVisibility = null; // Map(object -> prevVisible) to restore after AR
+	const FEET_TO_METERS = 0.3048;
+	// Optional visual scale debug: enable by adding '#scaleDebug' to the URL or set localStorage 'sketcher.scaleDebug' = '1'
+	const ENABLE_SCALE_DEBUG = (typeof location !== 'undefined' && location.hash && location.hash.includes('scaleDebug')) || (typeof localStorage !== 'undefined' && localStorage.getItem && localStorage.getItem('sketcher.scaleDebug') === '1');
+	let __scaleDebugGroup = null;
 	let xrHitTestSource = null;
 	let xrViewerSpace = null;
 	let xrLocalSpace = null;
@@ -144,7 +148,7 @@ export async function init() {
 	function setARScaleOne(){
 		if (!arContent) return;
 		arOneToOne = true;
-			try { arContent.scale.set(1,1,1); } catch {}
+			try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}
 			if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent);
 		// Keep on floor
 		try {
@@ -155,10 +159,16 @@ export async function init() {
 				arContent.position.y = 0;
 			}
 		} catch {}
+		// If ground lock active, ensure model is aligned to local-floor (y=0)
+		try { if (arGroundLocked) { arContent.updateMatrixWorld(true); const box = new THREE.Box3().setFromObject(arContent); const dy = -box.min.y; arContent.position.y += dy; } } catch {}
 	}
+
+	// Ensure HUD reflects 1:1 active state
+	try { setHudButtonActiveByLabel('1:1', true); } catch {}
 	function setARScaleFit(){
 		if (!arContent) return;
 		arOneToOne = false;
+		try { setHudButtonActiveByLabel('1:1', false); } catch {}
 		const box = new THREE.Box3().setFromObject(arContent);
 		const size = box.getSize(new THREE.Vector3());
 		const maxDim = Math.max(1e-4, Math.max(size.x, size.y, size.z));
@@ -170,6 +180,7 @@ export async function init() {
 	function resetARTransform(){
 		if (!arContent) return;
 		setARScaleOne();
+		try { setHudButtonActiveByLabel('1:1', false); } catch {}
 		// Place 1.5m in front again, on floor
 		try { arContent.position.set(0, 0, -1.5); } catch {}
 		try { arContent.quaternion.identity(); } catch {}
@@ -265,6 +276,32 @@ export async function init() {
 			return xrHudButtons;
 		}
 	});
+
+		// State for ground lock
+		let arGroundLocked = false;
+
+		// Helper: toggle HUD button active visual by label (orange when active)
+		function setHudButtonActiveByLabel(label, active){
+			try {
+				if (!xrHudButtons || !xrHudButtons.length) return;
+				for (const b of xrHudButtons){
+					try {
+						const mesh = b && b.mesh;
+						const meta = mesh && mesh.userData && mesh.userData.__hudButton;
+						if (!meta) continue;
+						if (meta.label === label){
+							mesh.userData.__hudButton.active = !!active;
+							// Use material.color to tint the button; multiply the texture
+							if (mesh.material) {
+								if (active) mesh.material.color.setHex(0xff8800);
+								else mesh.material.color.setHex(0xffffff);
+								mesh.material.needsUpdate = true;
+							}
+						}
+					} catch(_){}
+				}
+			} catch(e){ }
+		}
 
 	// First-person desktop fallback
 	const { createFirstPerson } = await import('./services/first-person.js');
@@ -425,6 +462,9 @@ export async function init() {
 						if ('linewidth' in m) { try { m.linewidth = 0.5; } catch(_){} }
 						m.needsUpdate = true;
 					}
+					// Toggle ground lock state
+					arGroundLocked = !arGroundLocked;
+					setHudButtonActiveByLabel('Lock Ground', arGroundLocked);
 				});
 			});
 		}catch{}
@@ -2303,6 +2343,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
 					if (arContent) { scene.remove(arContent); arContent = null; }
+					if (__scaleDebugGroup && __scaleDebugGroup.parent) { __scaleDebugGroup.parent.remove(__scaleDebugGroup); __scaleDebugGroup = null; }
 					arPlaced = false;
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;
 					removeXRHud3D();
@@ -2336,6 +2377,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					modeSelect.value = 'edit';
 					modeSelect.dispatchEvent(new Event('change'));
 				});
+
+					// Defensive: restore any AR-simplified materials on the live scene
+					try { if (typeof restoreMaterialsForARInPlace === 'function') restoreMaterialsForARInPlace(THREE, scene); } catch {}
+
+					// When XR session ends, clear HUD active states
+					try {
+						setHudButtonActiveByLabel('1:1', false);
+						setHudButtonActiveByLabel('Lock Ground', false);
+						arGroundLocked = false;
+					} catch {}
 			} else if (supportsVR) {
 				// Start immersive VR for headsets; use hands/controllers for manipulation
 				// Save a restore point before entering XR
@@ -2375,6 +2426,21 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
 					arPlaced = true;
+							try { setHudButtonActiveByLabel('1:1', arOneToOne); } catch {}
+							// Scale debug visuals
+							try {
+								if (ENABLE_SCALE_DEBUG) {
+									__scaleDebugGroup = new THREE.Group(); __scaleDebugGroup.name = 'Scale Debug';
+									const mat1 = new THREE.MeshBasicMaterial({ color: 0x00ff00, opacity: 0.6, transparent: true });
+									const cube1m = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), mat1);
+									cube1m.position.set(arContent.position.x + 0.6, 0.5, arContent.position.z);
+									const mat2 = new THREE.MeshBasicMaterial({ color: 0xff0000, opacity: 0.6, transparent: true });
+									const cube1ft = new THREE.Mesh(new THREE.BoxGeometry(FEET_TO_METERS, FEET_TO_METERS, FEET_TO_METERS), mat2);
+									cube1ft.position.set(arContent.position.x + 0.6 + 1.2, FEET_TO_METERS/2, arContent.position.z);
+									__scaleDebugGroup.add(cube1m, cube1ft); scene.add(__scaleDebugGroup);
+									console.log('AR/VR placed: arContent.scale=', arContent.scale, 'arBaseBox=', arBaseBox);
+								}
+							} catch(e){ console.warn('scale debug fail', e); }
 					// Now hide originals to avoid duplicate visuals
 					try {
 						arPrevVisibility = new Map();
@@ -3173,7 +3239,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						scene.add(arContent);
 						computeArBaseMetrics(arContent);
 						// Ensure 1:1 scale in meters after feet->meters conversion in prepareModelForAR
-						try { arContent.scale.set(1,1,1); } catch {}
+						try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}
 						// Hide originals after clone is added to avoid duplicate visuals
 						try {
 							arPrevVisibility = new Map();
