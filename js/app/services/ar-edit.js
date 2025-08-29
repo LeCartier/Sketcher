@@ -228,23 +228,40 @@ export function createAREdit(THREE, scene, renderer){
     updateGizmo(grabbingPts);
     if(grabbingPts.length===1){
       const p = grabbingPts[0];
+      // World-space 6DoF hold; then convert back to parent's local space
+      const parent = targetObj.parent || null;
+      const parentWorldQuat = new THREE.Quaternion(); if (parent && parent.getWorldQuaternion) parent.getWorldQuaternion(parentWorldQuat);
+      const parentWorldInv = new THREE.Matrix4(); if (parent && parent.matrixWorld) { parentWorldInv.copy(parent.matrixWorld).invert(); }
+      // On start, capture world deltas between hand and object
       if(!state.one){
         const handPos = new THREE.Vector3(p.x, p.y, p.z);
         const handQuat = (p.quat && p.quat.isQuaternion) ? p.quat.clone() : (p.quat ? p.quat.clone?.() : new THREE.Quaternion());
         const invH = handQuat.clone(); try { invH.invert(); } catch { invH.conjugate(); }
-        const deltaPos = targetObj.position.clone().sub(handPos).applyQuaternion(invH);
-        const deltaQuat = invH.clone().multiply(targetObj.quaternion.clone());
+        const objWPos = new THREE.Vector3(); const objWQuat = new THREE.Quaternion();
+        try { targetObj.updateMatrixWorld(true); targetObj.getWorldPosition(objWPos); targetObj.getWorldQuaternion(objWQuat); } catch{}
+        const deltaPos = objWPos.clone().sub(handPos).applyQuaternion(invH); // in hand frame
+        const deltaQuat = invH.clone().multiply(objWQuat.clone()); // hand->object
         state.one = { startHandPos: handPos, startHandQuat: handQuat, deltaPos, deltaQuat };
       }
       const g = state.one;
       const handPos = new THREE.Vector3(p.x, p.y, p.z);
       const handQuat = (p.quat && p.quat.isQuaternion) ? p.quat.clone() : (p.quat ? p.quat.clone?.() : new THREE.Quaternion());
-      const desiredQuat = handQuat.clone().multiply(g.deltaQuat);
-      const forwardDelta = g.deltaPos.clone().applyQuaternion(handQuat);
-      const desiredPos = handPos.clone().add(forwardDelta);
+      const desiredWQuat = handQuat.clone().multiply(g.deltaQuat);
+      const forwardDeltaW = g.deltaPos.clone().applyQuaternion(handQuat);
+      const desiredWPos = handPos.clone().add(forwardDeltaW);
+      // Convert desired world TR to local TR
       const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
-      try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
-      try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
+      let desiredLocalPos = desiredWPos.clone();
+      try { if (parent) desiredLocalPos.applyMatrix4(parentWorldInv); } catch{}
+      let desiredLocalQuat = desiredWQuat.clone();
+      try {
+        if (parent) {
+          const invPQ = parentWorldQuat.clone(); try { invPQ.invert(); } catch { invPQ.conjugate(); }
+          desiredLocalQuat.premultiply(invPQ);
+        }
+      } catch{}
+      try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
+      try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
         try { state.dirtySet.add(targetObj); } catch{}
       }
@@ -260,41 +277,59 @@ export function createAREdit(THREE, scene, renderer){
         // If exactly one is colliding, treat as one-hand translate using that point
         if (both.length === 1){
           const gp = both[0];
-          if(!state.one){ state.one = { start: { x: gp.x, y: gp.y, z: gp.z }, startPos: targetObj.position.clone() }; }
+          const parent = targetObj.parent || null;
+          const parentWorldInv = new THREE.Matrix4(); if (parent && parent.matrixWorld) { parentWorldInv.copy(parent.matrixWorld).invert(); }
+          if(!state.one){
+            const startWPos = new THREE.Vector3(); try { targetObj.updateMatrixWorld(true); targetObj.getWorldPosition(startWPos); } catch{}
+            state.one = { start: { x: gp.x, y: gp.y, z: gp.z }, startWPos };
+          }
           const g = state.one; const dx=gp.x-g.start.x, dy=gp.y-g.start.y, dz=gp.z-g.start.z;
-          const desiredPos = new THREE.Vector3(g.startPos.x+dx, g.startPos.y+dy, g.startPos.z+dz);
-          try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
+          const desiredWPos = new THREE.Vector3(g.startWPos.x+dx, g.startWPos.y+dy, g.startWPos.z+dz);
+          let desiredLocalPos = desiredWPos.clone(); try { if (parent) desiredLocalPos.applyMatrix4(parentWorldInv); } catch{}
+          try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
         }
         // Do not engage two-hand orbit/scale unless both are colliding
         return;
       }
-      const p0=both[0], p1=both[1]; const mid=new THREE.Vector3((p0.x+p1.x)/2, (p0.y+p1.y)/2, (p0.z+p1.z)/2);
+      const p0=both[0], p1=both[1]; const midW=new THREE.Vector3((p0.x+p1.x)/2, (p0.y+p1.y)/2, (p0.z+p1.z)/2);
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
+      const parent = targetObj.parent || null;
+      const parentWorldQuat = new THREE.Quaternion(); if (parent && parent.getWorldQuaternion) parent.getWorldQuaternion(parentWorldQuat);
+      const parentWorldInv = new THREE.Matrix4(); if (parent && parent.matrixWorld) { parentWorldInv.copy(parent.matrixWorld).invert(); }
       if(!state.two){
-        const startMid = mid.clone();
+        const startMid = midW.clone();
         const startDist = Math.max(1e-4, d);
-        const startScale = targetObj.scale.clone();
-        const startPos = targetObj.position.clone();
+        const startScaleLocal = targetObj.scale.clone();
+  const startWPos = new THREE.Vector3(); const startWQuat = new THREE.Quaternion();
+        try { targetObj.updateMatrixWorld(true); targetObj.getWorldPosition(startWPos); targetObj.getWorldQuaternion(startWQuat); } catch{}
         const startVec = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
-        const startQuat = targetObj.quaternion.clone();
-        const startOffset = startPos.clone().sub(startMid);
-        state.two = { startMid, startDist, startScale, startPos, startVec, startQuat, startOffset };
+        const startOffsetW = startWPos.clone().sub(startMid);
+        state.two = { startMid, startDist, startScaleLocal, startWPos, startVec, startWQuat, startOffsetW };
       }
-  const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
-  // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
-  if (!state.allowScale) s = 1;
-      const desiredScale = new THREE.Vector3(st.startScale.x*s, st.startScale.y*s, st.startScale.z*s);
+      const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
+      // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
+      if (!state.allowScale) s = 1;
+      const desiredLocalScale = new THREE.Vector3(st.startScaleLocal.x*s, st.startScaleLocal.y*s, st.startScaleLocal.z*s);
       const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
       let R = new THREE.Quaternion();
       try { R = new THREE.Quaternion().setFromUnitVectors(st.startVec.clone().normalize(), v1.clone().normalize()); } catch { R.identity?.(); }
-      const desiredQuat = R.clone().multiply(st.startQuat);
-      const offset = st.startOffset.clone().multiplyScalar(s).applyQuaternion(R);
-      const desiredPos = mid.clone().add(offset);
+      const desiredWQuat = R.clone().multiply(st.startWQuat);
+      const offsetW = st.startOffsetW.clone().multiplyScalar(s).applyQuaternion(R);
+      const desiredWPos = midW.clone().add(offsetW);
+      // Convert to local
+      let desiredLocalPos = desiredWPos.clone(); try { if (parent) desiredLocalPos.applyMatrix4(parentWorldInv); } catch{}
+      let desiredLocalQuat = desiredWQuat.clone();
+      try {
+        if (parent) {
+          const invPQ = parentWorldQuat.clone(); try { invPQ.invert(); } catch { invPQ.conjugate(); }
+          desiredLocalQuat.premultiply(invPQ);
+        }
+      } catch{}
       const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
-      // Apply scale only if scaling is allowed
-      if (state.allowScale) { try { targetObj.scale.lerp(desiredScale, state.smooth); } catch { targetObj.scale.copy(desiredScale); } }
-      try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
-      try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
+      // Apply local transforms with smoothing
+      if (state.allowScale) { try { targetObj.scale.lerp(desiredLocalScale, state.smooth); } catch { targetObj.scale.copy(desiredLocalScale); } }
+      try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
+      try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
         if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
