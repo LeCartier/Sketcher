@@ -149,6 +149,8 @@ export async function init() {
 		if (!arContent) return;
 		arOneToOne = true;
 			try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}
+			// Disable pinch scaling in AR edit while 1:1 is active
+			try { arEdit.setScaleEnabled(false); } catch {}
 			if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent);
 		// Keep on floor
 		try {
@@ -168,6 +170,8 @@ export async function init() {
 	function setARScaleFit(){
 		if (!arContent) return;
 		arOneToOne = false;
+		// Re-enable pinch scaling when not in 1:1
+		try { arEdit.setScaleEnabled(true); } catch {}
 		try { setHudButtonActiveByLabel('1:1', false); } catch {}
 		const box = new THREE.Box3().setFromObject(arContent);
 		const size = box.getSize(new THREE.Vector3());
@@ -180,7 +184,10 @@ export async function init() {
 	function resetARTransform(){
 		if (!arContent) return;
 		setARScaleOne();
+		// Reset clears 1:1 toggle visual and re-enables pinch scaling
 		try { setHudButtonActiveByLabel('1:1', false); } catch {}
+		try { arEdit.setScaleEnabled(true); } catch {}
+		arOneToOne = false;
 		// Place 1.5m in front again, on floor
 		try { arContent.position.set(0, 0, -1.5); } catch {}
 		try { arContent.quaternion.identity(); } catch {}
@@ -199,9 +206,21 @@ export async function init() {
 		getButtons: (createHudButton) => {
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
-			let handStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
+			let handStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
 			const bOne = createHudButton('1:1', ()=>{
-				try { if (arOneToOne) setARScaleFit(); else setARScaleOne(); } catch {}
+				// Toggle-only behavior: do not auto-fit; just flip 1:1 state and update HUD + scale gate
+				try {
+					if (arOneToOne) {
+						// Turning 1:1 off: keep current scale, just re-enable pinch scaling and clear highlight
+						arOneToOne = false;
+						arEdit.setScaleEnabled(true);
+						setHudButtonActiveByLabel('1:1', false);
+					} else {
+						// Turning 1:1 on: set feet->meters scale and disable pinch scaling
+						setARScaleOne();
+						setHudButtonActiveByLabel('1:1', true);
+					}
+				} catch {}
 			});
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
@@ -237,18 +256,14 @@ export async function init() {
 			});
 			const bHands = createHudButton('Fingers', ()=>{
 				try {
-					// Cycle through styles
-					if (handStyle === 'fingertips') handStyle = 'index';
-					else if (handStyle === 'index') handStyle = 'skeleton';
-					else if (handStyle === 'skeleton') handStyle = 'mesh';
-					else if (handStyle === 'mesh') handStyle = 'off';
+					// Cycle through supported styles
+					if (handStyle === 'fingertips') handStyle = 'skeleton';
+					else if (handStyle === 'skeleton') handStyle = 'off';
 					else handStyle = 'fingertips';
 					xrHud.setHandVizStyle?.(handStyle);
 					bHands.setLabel(
 						handStyle === 'fingertips' ? 'Fingers' :
-						handStyle === 'index' ? 'Index' :
 						handStyle === 'skeleton' ? 'Skeleton' :
-						handStyle === 'mesh' ? 'Mesh' :
 						'Hands Off'
 					);
 				} catch {}
@@ -2359,6 +2374,33 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					// If per-object edits occurred, offer to apply them back to the editor scene
+					try {
+						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
+						if (info.any) {
+							const ok = confirm('Apply XR object adjustments back to the 3D workspace?');
+							if (ok) {
+								const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
+								const { setWorldMatrix } = transforms;
+								for (const n of info.nodes) {
+									if (!n) continue;
+									const orig = n.userData && n.userData.__sourceRef;
+									if (!orig) continue;
+									try {
+										n.updateMatrixWorld(true);
+										const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+										n.matrixWorld.decompose(pos, quat, scl);
+										pos.multiplyScalar(METERS_TO_FEET);
+										scl.multiplyScalar(METERS_TO_FEET);
+										const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
+										setWorldMatrix(orig, worldFeet);
+									} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+								}
+								try { saveSessionDraftNow(); } catch{}
+							}
+							try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
+						}
+					} catch{}
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					if (__scaleDebugGroup && __scaleDebugGroup.parent) { __scaleDebugGroup.parent.remove(__scaleDebugGroup); __scaleDebugGroup = null; }
 					arPlaced = false;
@@ -2446,7 +2488,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arPlaced = true;
 					// Ensure model ground is horizontal and snapped to local-floor when placed
 					try { alignModelToGround(arContent); } catch {}
-							try { setHudButtonActiveByLabel('1:1', arOneToOne); } catch {}
+							try {
+								setHudButtonActiveByLabel('1:1', arOneToOne);
+								arEdit.setScaleEnabled(!arOneToOne ? true : false);
+							} catch {}
 							// Scale debug visuals
 							try {
 								if (ENABLE_SCALE_DEBUG) {
@@ -2472,6 +2517,33 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					// Offer to apply per-object edits from XR back to originals
+					try {
+						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
+						if (info.any) {
+							const ok = confirm('Apply XR object adjustments back to the 3D workspace?');
+							if (ok) {
+								const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
+								const { setWorldMatrix } = transforms;
+								for (const n of info.nodes) {
+									if (!n) continue;
+									const orig = n.userData && n.userData.__sourceRef;
+									if (!orig) continue;
+									try {
+										n.updateMatrixWorld(true);
+										const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+										n.matrixWorld.decompose(pos, quat, scl);
+										pos.multiplyScalar(METERS_TO_FEET);
+										scl.multiplyScalar(METERS_TO_FEET);
+										const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
+										setWorldMatrix(orig, worldFeet);
+									} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+								}
+								try { saveSessionDraftNow(); } catch{}
+							}
+							try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
+						}
+					} catch{}
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
 					xrHitTestSource = null; xrViewerSpace = null; xrLocalSpace = null;

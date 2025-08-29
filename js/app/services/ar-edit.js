@@ -27,12 +27,17 @@ export function createAREdit(THREE, scene, renderer){
   useCollision: true,
   perObject: false,
   perActive: null, // currently selected sub-object when perObject is true
+  dirtySet: new Set(), // set of clone nodes that were transformed in per-object mode
+  allowScale: true, // when false, two-hand pinch will not scale the target (used by 1:1 mode)
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
   function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); }
+  function setScaleEnabled(on){ state.allowScale = !!on; }
+  function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
+  function clearDirty(){ state.dirtySet.clear(); }
   function start(session){ state.session = session || null; }
   function stop(){ state.session = null; clearManip(); removeGizmo(); }
 
@@ -236,8 +241,12 @@ export function createAREdit(THREE, scene, renderer){
       const desiredQuat = handQuat.clone().multiply(g.deltaQuat);
       const forwardDelta = g.deltaPos.clone().applyQuaternion(handQuat);
       const desiredPos = handPos.clone().add(forwardDelta);
+      const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
       try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
       try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
+      if (state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
+        try { state.dirtySet.add(targetObj); } catch{}
+      }
       state.two = null; // reset two-hand state if switching modes
     } else if(grabbingPts.length>=2){
       // Require both hands/controllers to be currently colliding to orbit/scale
@@ -270,7 +279,9 @@ export function createAREdit(THREE, scene, renderer){
         const startOffset = startPos.clone().sub(startMid);
         state.two = { startMid, startDist, startScale, startPos, startVec, startQuat, startOffset };
       }
-      const st = state.two; const s = Math.max(0.01, Math.min(50, d / st.startDist));
+  const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
+  // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
+  if (!state.allowScale) s = 1;
       const desiredScale = new THREE.Vector3(st.startScale.x*s, st.startScale.y*s, st.startScale.z*s);
       const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
       let R = new THREE.Quaternion();
@@ -278,9 +289,15 @@ export function createAREdit(THREE, scene, renderer){
       const desiredQuat = R.clone().multiply(st.startQuat);
       const offset = st.startOffset.clone().multiplyScalar(s).applyQuaternion(R);
       const desiredPos = mid.clone().add(offset);
-      try { targetObj.scale.lerp(desiredScale, state.smooth); } catch { targetObj.scale.copy(desiredScale); }
+      const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
+      // Apply scale only if scaling is allowed
+      if (state.allowScale) { try { targetObj.scale.lerp(desiredScale, state.smooth); } catch { targetObj.scale.copy(desiredScale); } }
       try { targetObj.position.lerp(desiredPos, state.smooth); } catch { targetObj.position.copy(desiredPos); }
       try { targetObj.quaternion.slerp(desiredQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredQuat); }
+      if (state.perObject && targetObj){
+        const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
+        if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
+      }
       state.one = null; // reset one-hand state
     } else {
       state.one = null; state.two = null;
@@ -317,5 +334,5 @@ export function createAREdit(THREE, scene, renderer){
     }
   }
 
-  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, start, stop, update };
+  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, getDirtyInfo, clearDirty, start, stop, update };
 }

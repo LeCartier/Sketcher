@@ -14,13 +14,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const PINCH_MAX = 0.06; // max threshold when using radii
   let hud = null;
   let buttons = [];
-  const xrHoverBySource = new WeakMap();
-  const xrPressedSources = new WeakSet();
+  let xrHoverBySource = new WeakMap();
+  let xrPressedSources = new WeakSet();
   const raycaster = new THREE.Raycaster();
   // Simple viz for hands and right-controller ray
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
   let handVizMode = null; // 'default' | 'hands-only'
-  let handVizStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
+  let handVizStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
 
   // WebXR hand joint names and a simple bone connectivity map
   const FINGERS = ['thumb','index-finger','middle-finger','ring-finger','pinky-finger'];
@@ -222,7 +222,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   function remove(){
     try { const l = hud && hud.userData && hud.userData.__listeners; if (l?.session){ l.session.removeEventListener('selectstart', l.onSelectStart); l.session.removeEventListener('selectend', l.onSelectEnd); } } catch {}
     if (hud?.parent) hud.parent.remove(hud);
-    hud = null; buttons = []; xrHoverBySource.clear();
+  hud = null; buttons = []; xrHoverBySource = new WeakMap(); xrPressedSources = new WeakSet();
     // Cleanup viz
     try {
       if (handVizL?.parent) handVizL.parent.remove(handVizL);
@@ -471,7 +471,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // Switch palette based on modality: blue when hands-only
         if (anyHand && !anyController) setHandVizPalette('hands-only'); else setHandVizPalette('default');
 
-        // Hand visualization per style: fingertips | index | skeleton | mesh | off
+  // Hand visualization per style: fingertips | skeleton | off
         try {
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           const updateOne = (src, group) => {
@@ -483,11 +483,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             if (!wrist) { child.visible = false; return; }
             const wpos = wrist.transform.position; vz.wristSphere.position.set(wpos.x, wpos.y, wpos.z);
             // Hide all sub-visuals initially
-            vz.line.visible = false; vz.skel.line.visible = false; vz.mesh.group.visible = false;
+            vz.line.visible = false; vz.skel.line.visible = false; if (vz.mesh?.group) vz.mesh.group.visible = false;
             for (const s of vz.tipSpheres) { s.visible = false; }
 
-            if (handVizStyle === 'fingertips' || handVizStyle === 'index'){
-              const tipNames = (handVizStyle === 'index') ? ['index-finger-tip'] : vz.tips;
+            if (handVizStyle === 'fingertips'){
+              const tipNames = vz.tips;
               const tips = tipNames.map(name => { const j = src.hand?.get?.(name); return j ? frame.getJointPose(j, ref) : null; });
               if (tips.length && tips.some(t=>t)){
                 const posAttr = vz.line.geometry.attributes.position; let idx=0;
@@ -521,76 +521,6 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
                 }
               }
               posAttr.needsUpdate = true; vz.skel.line.visible = any; child.visible = any;
-            } else if (handVizStyle === 'mesh'){
-              // Render a filled hand silhouette onto a camera-facing canvas-backed plane.
-              const cam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera() : null;
-              if (!cam) { child.visible=false; return; }
-              const mesh = vz.mesh;
-              mesh.group.visible = true; child.visible = true;
-              // orient plane to camera and place at wrist
-              const camQ = new THREE.Quaternion(); cam.getWorldQuaternion(camQ);
-              const planePos = new THREE.Vector3(wpos.x, wpos.y + 0.01, wpos.z);
-              mesh.palm.position.copy(planePos);
-              mesh.palm.quaternion.copy(camQ);
-
-              // collect joint positions for silhouette (metacarpals + tips + wrist)
-              const jointNames = ['wrist','thumb-metacarpal','index-finger-metacarpal','middle-finger-metacarpal','ring-finger-metacarpal','pinky-finger-metacarpal','thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
-              const pts = [];
-              for (const name of jointNames){
-                const j = src.hand?.get?.(name);
-                const p = j ? frame.getJointPose(j, ref) : null;
-                if (p && p.transform && p.transform.position){ pts.push(new THREE.Vector3(p.transform.position.x, p.transform.position.y, p.transform.position.z)); }
-              }
-              if (pts.length < 3) { child.visible = false; return; }
-
-              // build basis from camera orientation (right, up)
-              const right = new THREE.Vector3(1,0,0).applyQuaternion(camQ).normalize();
-              const up = new THREE.Vector3(0,1,0).applyQuaternion(camQ).normalize();
-
-              // convert to 2D local coords relative to plane center
-              const local2 = pts.map(p=>{
-                const v = p.clone().sub(planePos);
-                return [ v.dot(right), v.dot(up) ];
-              });
-
-              // compute extents and scale plane to fit
-              let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-              for (const [x,y] of local2){ if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y; }
-              const extX = Math.max(0.02, maxX - minX); const extY = Math.max(0.02, maxY - minY);
-              const pad = 0.18; // pad fraction
-              const desiredW = (extX * (1 + pad)); const desiredH = (extY * (1 + pad));
-              const baseW = mesh.palm.geometry.parameters.width || 0.12; const baseH = mesh.palm.geometry.parameters.height || 0.12;
-              const sx = desiredW / baseW; const sy = desiredH / baseH;
-              mesh.palm.scale.set(Math.max(0.06, sx), Math.max(0.06, sy), 1);
-
-              // draw silhouette into canvas
-              try {
-                const canvas = mesh.palm.material.map.image; const ctx = canvas.getContext('2d'); const W = canvas.width, H = canvas.height;
-                // clear
-                ctx.clearRect(0,0,W,H);
-                // pixel scale: meters -> pixels
-                const pxPerM = W / (baseW * mesh.palm.scale.x);
-                // map points to pixel coords
-                const pxs = local2.map(([x,y])=> [ Math.round(W/2 + x * pxPerM), Math.round(H/2 + -y * pxPerM) ]);
-                // compute convex hull (Andrew monotone chain)
-                function cross(o,a,b){ return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]); }
-                const ptsSorted = pxs.slice().sort((a,b)=> a[0] === b[0] ? a[1]-b[1] : a[0]-b[0]);
-                const lower = [];
-                for (const p of ptsSorted){ while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
-                const upper = [];
-                for (let i=ptsSorted.length-1;i>=0;i--){ const p = ptsSorted[i]; while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
-                const hull = lower.slice(0, lower.length-1).concat(upper.slice(0, upper.length-1));
-                if (hull.length >= 3){
-                  // smooth by drawing path and filling
-                  ctx.fillStyle = 'rgba(240,210,175,0.95)'; // flesh-like fill
-                  ctx.strokeStyle = 'rgba(80,50,30,0.95)'; ctx.lineWidth = Math.max(2, Math.round(W * 0.01));
-                  ctx.beginPath(); ctx.moveTo(hull[0][0], hull[0][1]);
-                  for (let i=1;i<hull.length;i++) ctx.lineTo(hull[i][0], hull[i][1]);
-                  ctx.closePath(); ctx.fill(); ctx.stroke();
-                }
-                // slight feather: draw a faint inner shadow for depth
-                mesh.palm.material.map.needsUpdate = true;
-              } catch (e){ /* drawing errors should not break frame */ }
             }
           };
           // Visualize both hands, but anchoring only uses left; right-hand viz is for pointing/poking only
@@ -682,7 +612,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   function resetPressStates(){ try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {} }
 
   function setHandVizStyle(style){
-    const allowed = ['fingertips','index','skeleton','mesh','off'];
+  const allowed = ['fingertips','skeleton','off'];
     if (allowed.includes(style)) handVizStyle = style;
     // Hide spheres immediately if turned off
     try {

@@ -11,6 +11,22 @@ export function buildExportRootFromObjects(THREE, objects) {
   const root = new THREE.Group();
   (objects || []).forEach(o => { if (o) {
     const c = o.clone(true);
+    // Preserve a mapping from each cloned node back to its source node for later round-tripping
+    try {
+      const srcNodes = []; o.traverse(n => { if (n) srcNodes.push(n); });
+      const cloneNodes = []; c.traverse(n => { if (n) cloneNodes.push(n); });
+      const n = Math.min(srcNodes.length, cloneNodes.length);
+      for (let i = 0; i < n; i++){
+        const sn = srcNodes[i]; const cn = cloneNodes[i];
+        try {
+          cn.userData = cn.userData || {};
+          // Direct in-memory back-reference (lifetime: this session)
+          cn.userData.__sourceRef = sn;
+          // Stable id for diagnostics
+          cn.userData.__srcId = sn.uuid || (sn.userData && sn.userData.__srcId) || undefined;
+        } catch {}
+      }
+    } catch {}
     // Deep-clone materials on the clone so modifications (simplify/restore) do not affect originals
     try {
       c.traverse((node) => {
