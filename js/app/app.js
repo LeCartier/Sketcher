@@ -160,7 +160,7 @@ export async function init() {
 			}
 		} catch {}
 		// If ground lock active, ensure model is aligned to local-floor (y=0)
-		try { if (arGroundLocked) { arContent.updateMatrixWorld(true); const box = new THREE.Box3().setFromObject(arContent); const dy = -box.min.y; arContent.position.y += dy; } } catch {}
+		try { if (arGroundLocked) { alignModelToGround(arContent); } } catch {}
 	}
 
 	// Ensure HUD reflects 1:1 active state
@@ -215,35 +215,17 @@ export async function init() {
 			const bLock = createHudButton('Lock Ground', ()=>{
 				try {
 					if (!arContent) return;
-					// Compute content box in meters and snap min.y to 0
-					arContent.updateMatrixWorld(true);
-					const box = new THREE.Box3().setFromObject(arContent);
-					if (!box.isEmpty()){
-						const dy = -box.min.y;
-						arContent.position.y += dy;
+					// Toggle lock state
+					arGroundLocked = !arGroundLocked;
+					// Visual HUD tint
+					try { setHudButtonActiveByLabel('Lock Ground', arGroundLocked); } catch {}
+					// If enabling lock, align model now
+					if (arGroundLocked) {
+						try { alignModelToGround(arContent); } catch {}
 					}
-					// Align yaw to camera forward projected on XZ, keep facing user
-					const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
-					if (xrCam){
-						const cq = new THREE.Quaternion(); xrCam.getWorldQuaternion(cq);
-						const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(cq); fwd.y = 0; if (fwd.lengthSq()>1e-6) fwd.normalize(); else fwd.set(0,0,-1);
-						const yaw = Math.atan2(fwd.x, fwd.z);
-						const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
-						// Keep object’s current pitch/roll; replace yaw
-						const e = new THREE.Euler(); e.setFromQuaternion(arContent.quaternion, 'YXZ'); e.y = yaw; arContent.quaternion.setFromEuler(e);
-					}
-					// Optional: scale to keep on-ground object within reasonable bounds
-					try {
-						const b2 = new THREE.Box3().setFromObject(arContent);
-						const size = b2.getSize(new THREE.Vector3());
-						const maxDim = Math.max(size.x, size.y, size.z);
-						const targetMax = Math.min(2.5, Math.max(0.25, arFitMaxDim));
-						const s = THREE.MathUtils.clamp(targetMax / Math.max(1e-4, maxDim), 0.2, 5);
-						arContent.scale.multiplyScalar(s);
-					} catch {}
 					// Recompute metrics/material mode consistency
-					computeArBaseMetrics(arContent);
-					applyArMaterialModeOnContent();
+					try { computeArBaseMetrics(arContent); } catch {}
+					try { applyArMaterialModeOnContent(); } catch {}
 				} catch {}
 			});
 			const bGizmo = createHudButton('Gizmo', ()=>{ try { arEdit.setGizmoEnabled(!(arEdit._gizmoOn = !arEdit._gizmoOn)); } catch {} });
@@ -279,6 +261,40 @@ export async function init() {
 
 		// State for ground lock
 		let arGroundLocked = false;
+
+			// Helper: align model so its local up aligns with world up (make ground horizontal) and snap its min.y to 0
+			function alignModelToGround(root){
+				try {
+					if (!root) return;
+					root.updateMatrixWorld(true);
+					// Compute world quaternion for root
+					const worldQ = new THREE.Quaternion(); root.getWorldQuaternion(worldQ);
+					// model's up in world
+					const modelUpWorld = new THREE.Vector3(0,1,0).applyQuaternion(worldQ).normalize();
+					const worldUp = new THREE.Vector3(0,1,0);
+					// If already aligned, skip
+					if (modelUpWorld.angleTo(worldUp) < 1e-3) {
+						// still snap to ground
+						const box = new THREE.Box3().setFromObject(root);
+						if (!box.isEmpty()){
+							const dy = -box.min.y;
+							root.position.y += dy;
+						}
+						return;
+					}
+					// rotation that maps modelUpWorld -> worldUp
+					const r = new THREE.Quaternion().setFromUnitVectors(modelUpWorld, worldUp);
+					// Apply rotation in parent space so world up aligns
+					root.quaternion.premultiply(r);
+					root.updateMatrixWorld(true);
+					// Snap to floor
+					const box2 = new THREE.Box3().setFromObject(root);
+					if (!box2.isEmpty()){
+						const dy2 = -box2.min.y;
+						root.position.y += dy2;
+					}
+				} catch(e){ console.warn('alignModelToGround failed', e); }
+			}
 
 		// Helper: toggle HUD button active visual by label (orange when active)
 		function setHudButtonActiveByLabel(label, active){
@@ -2425,7 +2441,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					} catch { arContent.position.set(0, 0, -0.3048); }
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
+
 					arPlaced = true;
+					// Ensure model ground is horizontal and snapped to local-floor when placed
+					try { alignModelToGround(arContent); } catch {}
 							try { setHudButtonActiveByLabel('1:1', arOneToOne); } catch {}
 							// Scale debug visuals
 							try {
@@ -3263,11 +3282,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						}
 					} catch { arContent.position.set(0, 0, -0.3048); }
 					try { arEdit.setTarget(arContent); } catch {}
+
 					arPlaced = true;
+					// Ensure model ground is horizontal and snapped to local-floor when placed
+					try { alignModelToGround(arContent); } catch {}
 				}
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
+					// If ground lock is active, re-apply alignment each frame to enforce horizontal ground
+					try { if (arGroundLocked) alignModelToGround(arContent); } catch {}
 				}
 			}
 			renderer.render(scene, camera);
