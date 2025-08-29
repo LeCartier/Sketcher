@@ -319,10 +319,12 @@ export async function init() {
 			if (!session || !frame) return;
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
 			// Candidate indices for a "menu"-like press; on Meta Quest the left-Menu/Y is commonly among these
-			const CANDIDATES = [0,3,4,5];
+		// Only the LEFT side's physical gamepad/menu inputs toggle the HUD; some UAs expose both hand and gamepad on the same inputSource,
+		// so accept gamepad presses regardless of whether `src.hand` is present.
+		const CANDIDATES = [0,3,4,5];
 			for (const src of sources){
-				// Only the LEFT controller (not hands) can toggle the HUD
-				if (!src || src.handedness !== 'left' || !src.gamepad || src.hand) continue;
+			// Require left-handed gamepad-capable input sources; allow src.hand to be present
+			if (!src || src.handedness !== 'left' || !src.gamepad) continue;
 				const gp = src.gamepad;
 				if (!gp || !gp.buttons || !gp.buttons.length) continue;
 				let pressed = false;
@@ -2284,7 +2286,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { saveSessionDraftNow(); } catch {}
 				// Ensure teleport discs interactive in XR
 				try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
-				const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
+				const arOptions = { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'dom-overlay'], domOverlay: { root: document.body } };
+				try { if (!arOptions.optionalFeatures.includes('hand-tracking')) arOptions.optionalFeatures.push('hand-tracking'); } catch {}
+				const session = await navigator.xr.requestSession('immersive-ar', arOptions);
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true;
@@ -2338,7 +2342,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { saveSessionDraftNow(); } catch {}
 				// Ensure teleport discs interactive in XR
 				try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
-				const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'], domOverlay: { root: document.body } });
+				const vrOptions = { optionalFeatures: ['local-floor', 'bounded-floor', 'dom-overlay'], domOverlay: { root: document.body } };
+				try { if (!vrOptions.optionalFeatures.includes('hand-tracking')) vrOptions.optionalFeatures.push('hand-tracking'); } catch {}
+				const session = await navigator.xr.requestSession('immersive-vr', vrOptions);
 				renderer.xr.setSession(session);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;

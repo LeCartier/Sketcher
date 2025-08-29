@@ -8,7 +8,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const GRID_GAP_X = 0.006; // 6mm horizontal gap
   const GRID_GAP_Y = 0.006; // 6mm vertical gap
   const PALM_OFFSET = 0.0508; // ~2 inches (50.8mm) above palm plane for better visibility
-  const PINCH_THRESHOLD_M = 0.035; // consistent with AR edit
+  const PINCH_THRESHOLD_M = 0.035; // fallback hard threshold (m)
+  const PINCH_SCALE = 2.0; // scale factor for radii-based threshold
+  const PINCH_MIN = 0.02; // min threshold when using radii
+  const PINCH_MAX = 0.06; // max threshold when using radii
   let hud = null;
   let buttons = [];
   const xrHoverBySource = new WeakMap();
@@ -276,23 +279,37 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             placed = true;
           }
   }
-  if (leftWristPose){
-          // Derive palm plane orientation from wrist->index and wrist->thumb
+        if (leftWristPose){
+          // Prefer using the wrist joint orientation to compute the palm outward normal.
+          // Per WebXR spec the joint native -Y points outward from the palm, so transform (0,-1,0) by the wrist quaternion.
           const wp = leftWristPose.transform.position;
           const w = new THREE.Vector3(wp.x, wp.y, wp.z);
+          let z = null; // world palm normal
+          try {
+            const o = leftWristPose.transform.orientation;
+            if (o) {
+              const qW = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+              z = new THREE.Vector3(0, -1, 0).applyQuaternion(qW).normalize();
+            }
+          } catch(e){ z = null; }
+
+          // If orientation isn't available or is degenerate, fall back to index×thumb cross product using wrist->index and wrist->thumb vectors
           const ip = leftIdxPose?.transform?.position; const tp = leftThumbPose?.transform?.position;
           let vIndex = null, vThumb = null;
           if (ip) vIndex = new THREE.Vector3(ip.x-w.x, ip.y-w.y, ip.z-w.z);
           if (tp) vThumb = new THREE.Vector3(tp.x-w.x, tp.y-w.y, tp.z-w.z);
-          let z = new THREE.Vector3(0,0,1); // palm normal (aim to point outward from palm)
-          if (vIndex && vThumb){
-            // WebXR uses a right-handed coord system (+X right, +Y up, +Z back).
-            // For the LEFT palm, the outward normal is index x thumb (not thumb x index).
-            // Using index × thumb yields +Y when the palm faces up, keeping the HUD above the palm.
-            z = new THREE.Vector3().crossVectors(vIndex, vThumb);
-            if (z.lengthSq() < 1e-6) z.set(0,0,1); z.normalize();
+          if (!z){
+            if (vIndex && vThumb){
+              // For LEFT hand prefer index x thumb ordering; if handedness flips, this can be inverted.
+              z = new THREE.Vector3().crossVectors(vIndex, vThumb);
+              if (z.lengthSq() < 1e-6) z.set(0,0,1);
+              z.normalize();
+            } else {
+              z = new THREE.Vector3(0,0,1);
+            }
           }
-          // x along index direction projected on palm plane
+
+          // x axis along index direction projected on palm plane
           let xAxis = vIndex ? vIndex.clone() : new THREE.Vector3(1,0,0);
           // remove normal component
           const proj = z.clone().multiplyScalar(xAxis.dot(z)); xAxis.sub(proj);
@@ -304,8 +321,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           hud.position.lerp(targetPos, 0.35);
           hud.quaternion.slerp(q, 0.35);
           placed = true;
-          // Cache palm up/down state (z.y measures how much the palm normal points upward)
+          // Cache palm up/down state and presence (only when wrist pose was usable)
           if (hud && hud.userData){ hud.userData.__palmUp = (z.y >= 0.15); hud.userData.__palmPresent = true; }
+        } else {
+          // Explicitly mark palm not present when we have no wrist pose
+          if (hud && hud.userData) hud.userData.__palmPresent = false;
         }
         // Fallback: if no left palm, place HUD relative to left controller for visibility
         if (!leftWristPose && leftControllerSpace){
@@ -341,7 +361,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   if (hud?.visible && !inGrace && leftIdxPose && leftThumbPose){
           const a = leftIdxPose.transform.position; const b = leftThumbPose.transform.position;
           const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
-          if (d < PINCH_THRESHOLD_M) anyGrabOrSqueeze = true;
+          // Prefer device-provided joint radii to compute a dynamic pinch threshold when available
+          const rIdx = (typeof leftIdxPose.radius === 'number') ? leftIdxPose.radius : NaN;
+          const rThumb = (typeof leftThumbPose.radius === 'number') ? leftThumbPose.radius : NaN;
+          let thresh = PINCH_THRESHOLD_M;
+          if (!Number.isNaN(rIdx) && !Number.isNaN(rThumb)){
+            thresh = Math.min(PINCH_MAX, Math.max(PINCH_MIN, (rIdx + rThumb) * PINCH_SCALE));
+          }
+          if (d < thresh) anyGrabOrSqueeze = true;
         }
       }
     } catch {}
