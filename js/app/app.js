@@ -437,6 +437,8 @@ export async function init() {
 			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 			if (!session || !frame) return;
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
+			const nowTs = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+			const inCooldown = (handleXRMenuTogglePoll.__cooldownUntil && nowTs < handleXRMenuTogglePoll.__cooldownUntil);
 			// Candidate indices for a "menu"-like press; on Meta Quest the left-Menu/Y is commonly among these
 		// Only the LEFT side's physical gamepad/menu inputs toggle the HUD; some UAs expose both hand and gamepad on the same inputSource,
 		// so accept gamepad presses regardless of whether `src.hand` is present.
@@ -481,6 +483,8 @@ export async function init() {
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 						if (pressed && !prev){
+							// Debounce: ignore toggles while in cooldown window
+							if (inCooldown){ __xrMenuPrevBySource.set(src, pressed); continue; }
 							// Require left hand palm-up before toggling HUD
 							if (!leftPalmUp){ __xrMenuPrevBySource.set(src, pressed); continue; }
 					// Rising edge: toggle HUD. Always anchor to LEFT palm.
@@ -518,7 +522,9 @@ export async function init() {
 								try { xrHud.resetPressStates?.(); } catch {}
 								try { xrHud3D.userData.__menuJustShownAt = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); } catch{}
 							}
-						}
+							}
+							// Start cooldown to prevent double-toggles (e.g., single pinch triggering open+close)
+							handleXRMenuTogglePoll.__cooldownUntil = nowTs + 500;
 					} catch {}
 				}
 				__xrMenuPrevBySource.set(src, pressed);
@@ -549,6 +555,8 @@ export async function init() {
 					if (!handleXRMenuTogglePoll.__handPrev) handleXRMenuTogglePoll.__handPrev = { pinch:false };
 					const prevPinch = !!handleXRMenuTogglePoll.__handPrev.pinch;
 					if (palmUpOk && isPinch && !prevPinch){
+						// Debounce: ignore toggles while in cooldown window
+						if (inCooldown){ handleXRMenuTogglePoll.__handPrev.pinch = isPinch; return; }
 						// Toggle HUD; anchor to left palm; temporarily force Ray only if a controller exists
 						ensureXRHud3D();
 						if (xrHud3D){
@@ -577,6 +585,8 @@ export async function init() {
 								xrHud3D.userData.__forcedRayByMenu = undefined;
 							}
 						}
+						// Start cooldown window to avoid immediate re-toggle on the same pinch
+						handleXRMenuTogglePoll.__cooldownUntil = nowTs + 500;
 					}
 					handleXRMenuTogglePoll.__handPrev.pinch = isPinch;
 				}
