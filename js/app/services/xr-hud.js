@@ -81,8 +81,16 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const r=36; ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(w-r,0); ctx.quadraticCurveTo(w,0,w,r); ctx.lineTo(w,h-r); ctx.quadraticCurveTo(w,h,w-r,h); ctx.lineTo(r,h); ctx.quadraticCurveTo(0,h,0,h-r); ctx.lineTo(0,r); ctx.quadraticCurveTo(0,0,r,0); ctx.closePath(); ctx.fill();
     // top sheen
     ctx.fillStyle=hl; ctx.fillRect(0,0,w,Math.max(6, Math.floor(h*0.04)));
-    // label
-    ctx.fillStyle=fg; ctx.font='bold 66px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,w/2,h/2);
+    // label (support simple stacking for two-word labels)
+    ctx.fillStyle=fg; ctx.font='bold 66px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    const parts = (label||'').split(' ');
+    if (parts.length > 1) {
+      // draw two stacked lines
+      ctx.fillText(parts.slice(0, Math.ceil(parts.length/2)).join(' '), w/2, h/2 - 26);
+      ctx.fillText(parts.slice(Math.ceil(parts.length/2)).join(' '), w/2, h/2 + 26);
+    } else {
+      ctx.fillText(label,w/2,h/2);
+    }
     const tex=new THREE.CanvasTexture(c); if(THREE.SRGBColorSpace) tex.colorSpace=THREE.SRGBColorSpace; tex.needsUpdate=true; return tex;
   }
 
@@ -118,20 +126,31 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * (tips.length + 1)), 3));
         const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: lineColor, transparent:true, opacity:0.9, depthTest:false }));
         // skeleton polyline (segments for all bones)
-        const skelGeom = new THREE.BufferGeometry(); skelGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * BONES.length), 3));
+  const skelGeom = new THREE.BufferGeometry();
+  // skeleton line segments require two points per bone (start and end) -> 2 * BONES.length vertices
+  skelGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * BONES.length * 2), 3));
         const skelLine = new THREE.LineSegments(skelGeom, new THREE.LineBasicMaterial({ color: 0x5ac8ff, transparent:true, opacity:0.95, depthTest:false }));
         skelLine.visible = false;
-        // simple hand mesh proxy: a quad (palm) and small cylinders between joints (approx)
-        const meshGroup = new THREE.Group(); meshGroup.visible = false;
-        const palmMat = new THREE.MeshBasicMaterial({ color: 0x2a7fff, transparent:true, opacity:0.15, depthTest:false, side: THREE.DoubleSide });
-        const palm = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.08), palmMat); palm.name='palm-proxy'; meshGroup.add(palm);
-        // pool a few bone cylinders for reuse
-        const cylMat = new THREE.MeshBasicMaterial({ color: 0x2a7fff, transparent:true, opacity:0.25, depthTest:false });
-        const cylGeo = new THREE.CylinderGeometry(0.004, 0.004, 1, 8);
-        const boneCyls = new Array(BONES.length).fill(0).map(()=> new THREE.Mesh(cylGeo, cylMat.clone()));
-        boneCyls.forEach(m=>{ m.visible=false; meshGroup.add(m); });
-        g.add(wristSphere, line, skelLine, meshGroup, ...tipSpheres);
-        g.userData.__viz = { tips, tipSpheres, wristSphere, line, base:{ tipColor, wristColor, lineColor }, skel:{ geom: skelGeom, line: skelLine }, mesh:{ group: meshGroup, palm, boneCyls } };
+            // simple hand mesh proxy: a camera-facing canvas plane that draws a smoothed filled silhouette
+            const meshGroup = new THREE.Group(); meshGroup.visible = false;
+            // create a canvas texture for silhouette rendering
+            const CANVAS_W = 256, CANVAS_H = 256;
+            const c = document.createElement('canvas'); c.width = CANVAS_W; c.height = CANVAS_H; const ctx = c.getContext('2d');
+            // initial clear
+            ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
+            const palmTex = new THREE.CanvasTexture(c); if(THREE.SRGBColorSpace) palmTex.colorSpace = THREE.SRGBColorSpace; palmTex.needsUpdate = true;
+            // plane sized to roughly cover a hand area; double-sided so it remains visible in AR passthrough
+            const PALM_W = 0.12, PALM_H = 0.12;
+            const palmMat = new THREE.MeshBasicMaterial({ map: palmTex, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+            const palm = new THREE.Mesh(new THREE.PlaneGeometry(PALM_W, PALM_H), palmMat); palm.name = 'palm-proxy'; meshGroup.add(palm);
+            // keep legacy cylinders available but hidden (not used for silhouette)
+            const cylMat = new THREE.MeshBasicMaterial({ color: 0x2a7fff, transparent:true, opacity:0.0, depthTest:false });
+            const cylGeo = new THREE.CylinderGeometry(0.004, 0.004, 1, 8);
+            const boneCyls = new Array(BONES.length).fill(0).map(()=> new THREE.Mesh(cylGeo, cylMat.clone()));
+      boneCyls.forEach(m=>{ m.visible=false; meshGroup.add(m); });
+    g.add(wristSphere, line, skelLine, meshGroup, ...tipSpheres);
+    // expose canvas texture and ctx for runtime silhouette drawing
+    g.userData.__viz = { tips, tipSpheres, wristSphere, line, base:{ tipColor, wristColor, lineColor }, skel:{ geom: skelGeom, line: skelLine }, mesh:{ group: meshGroup, palm, boneCyls, palmTex: palmTex, palmCanvas: c, palmCtx: ctx, palmSize: [PALM_W, PALM_H] } };
         g.visible = false; return g;
       };
       handVizL.add(mk()); handVizR.add(mk());
@@ -503,32 +522,75 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               }
               posAttr.needsUpdate = true; vz.skel.line.visible = any; child.visible = any;
             } else if (handVizStyle === 'mesh'){
-              // Approximate with cylinders along bones and a palm quad facing the camera
+              // Render a filled hand silhouette onto a camera-facing canvas-backed plane.
               const cam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera() : null;
               if (!cam) { child.visible=false; return; }
-              vz.mesh.group.visible = true; child.visible = true;
-              // Position palm proxy at wrist, oriented to camera
+              const mesh = vz.mesh;
+              mesh.group.visible = true; child.visible = true;
+              // orient plane to camera and place at wrist
               const camQ = new THREE.Quaternion(); cam.getWorldQuaternion(camQ);
-              vz.mesh.palm.position.set(wpos.x, wpos.y + 0.01, wpos.z);
-              vz.mesh.palm.quaternion.copy(camQ);
-              // Place cylinders along bones
-              let i=0;
-              for (const cyl of vz.mesh.boneCyls){ cyl.visible = false; }
-              for (const [aName,bName] of BONES){
-                if (i >= vz.mesh.boneCyls.length) break; const cyl = vz.mesh.boneCyls[i++];
-                const aJ = src.hand?.get?.(aName); const bJ = src.hand?.get?.(bName);
-                const a = aJ ? frame.getJointPose(aJ, ref) : null; const b = bJ ? frame.getJointPose(bJ, ref) : null;
-                if (a?.transform?.position && b?.transform?.position){
-                  const ap = new THREE.Vector3(a.transform.position.x, a.transform.position.y, a.transform.position.z);
-                  const bp = new THREE.Vector3(b.transform.position.x, b.transform.position.y, b.transform.position.z);
-                  const mid = ap.clone().add(bp).multiplyScalar(0.5);
-                  const dir = new THREE.Vector3().subVectors(bp, ap);
-                  const len = dir.length(); if (len < 1e-5) continue; dir.normalize();
-                  // orient cylinder along dir
-                  const q = new THREE.Quaternion(); q.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
-                  cyl.position.copy(mid); cyl.quaternion.copy(q); cyl.scale.set(1, len, 1); cyl.visible = true;
-                }
+              const planePos = new THREE.Vector3(wpos.x, wpos.y + 0.01, wpos.z);
+              mesh.palm.position.copy(planePos);
+              mesh.palm.quaternion.copy(camQ);
+
+              // collect joint positions for silhouette (metacarpals + tips + wrist)
+              const jointNames = ['wrist','thumb-metacarpal','index-finger-metacarpal','middle-finger-metacarpal','ring-finger-metacarpal','pinky-finger-metacarpal','thumb-tip','index-finger-tip','middle-finger-tip','ring-finger-tip','pinky-finger-tip'];
+              const pts = [];
+              for (const name of jointNames){
+                const j = src.hand?.get?.(name);
+                const p = j ? frame.getJointPose(j, ref) : null;
+                if (p && p.transform && p.transform.position){ pts.push(new THREE.Vector3(p.transform.position.x, p.transform.position.y, p.transform.position.z)); }
               }
+              if (pts.length < 3) { child.visible = false; return; }
+
+              // build basis from camera orientation (right, up)
+              const right = new THREE.Vector3(1,0,0).applyQuaternion(camQ).normalize();
+              const up = new THREE.Vector3(0,1,0).applyQuaternion(camQ).normalize();
+
+              // convert to 2D local coords relative to plane center
+              const local2 = pts.map(p=>{
+                const v = p.clone().sub(planePos);
+                return [ v.dot(right), v.dot(up) ];
+              });
+
+              // compute extents and scale plane to fit
+              let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+              for (const [x,y] of local2){ if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y; }
+              const extX = Math.max(0.02, maxX - minX); const extY = Math.max(0.02, maxY - minY);
+              const pad = 0.18; // pad fraction
+              const desiredW = (extX * (1 + pad)); const desiredH = (extY * (1 + pad));
+              const baseW = mesh.palm.geometry.parameters.width || 0.12; const baseH = mesh.palm.geometry.parameters.height || 0.12;
+              const sx = desiredW / baseW; const sy = desiredH / baseH;
+              mesh.palm.scale.set(Math.max(0.06, sx), Math.max(0.06, sy), 1);
+
+              // draw silhouette into canvas
+              try {
+                const canvas = mesh.palm.material.map.image; const ctx = canvas.getContext('2d'); const W = canvas.width, H = canvas.height;
+                // clear
+                ctx.clearRect(0,0,W,H);
+                // pixel scale: meters -> pixels
+                const pxPerM = W / (baseW * mesh.palm.scale.x);
+                // map points to pixel coords
+                const pxs = local2.map(([x,y])=> [ Math.round(W/2 + x * pxPerM), Math.round(H/2 + -y * pxPerM) ]);
+                // compute convex hull (Andrew monotone chain)
+                function cross(o,a,b){ return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]); }
+                const ptsSorted = pxs.slice().sort((a,b)=> a[0] === b[0] ? a[1]-b[1] : a[0]-b[0]);
+                const lower = [];
+                for (const p of ptsSorted){ while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
+                const upper = [];
+                for (let i=ptsSorted.length-1;i>=0;i--){ const p = ptsSorted[i]; while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
+                const hull = lower.slice(0, lower.length-1).concat(upper.slice(0, upper.length-1));
+                if (hull.length >= 3){
+                  // smooth by drawing path and filling
+                  ctx.fillStyle = 'rgba(240,210,175,0.95)'; // flesh-like fill
+                  ctx.strokeStyle = 'rgba(80,50,30,0.95)'; ctx.lineWidth = Math.max(2, Math.round(W * 0.01));
+                  ctx.beginPath(); ctx.moveTo(hull[0][0], hull[0][1]);
+                  for (let i=1;i<hull.length;i++) ctx.lineTo(hull[i][0], hull[i][1]);
+                  ctx.closePath(); ctx.fill(); ctx.stroke();
+                }
+                // slight feather: draw a faint inner shadow for depth
+                mesh.palm.material.map.needsUpdate = true;
+              } catch (e){ /* drawing errors should not break frame */ }
             }
           };
           // Visualize both hands, but anchoring only uses left; right-hand viz is for pointing/poking only
@@ -620,7 +682,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   function resetPressStates(){ try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {} }
 
   function setHandVizStyle(style){
-    const allowed = ['fingertips','index','off'];
+    const allowed = ['fingertips','index','skeleton','mesh','off'];
     if (allowed.includes(style)) handVizStyle = style;
     // Hide spheres immediately if turned off
     try {

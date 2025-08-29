@@ -200,7 +200,9 @@ export async function init() {
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
 			let handStyle = 'fingertips'; // 'fingertips' | 'index' | 'skeleton' | 'mesh' | 'off'
-			const bOne = createHudButton('1:1', ()=> setARScaleOne());
+			const bOne = createHudButton('1:1', ()=>{
+				try { if (arOneToOne) setARScaleFit(); else setARScaleOne(); } catch {}
+			});
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
 			// Toggle per-object vs whole-scene manipulation
@@ -228,7 +230,6 @@ export async function init() {
 					try { applyArMaterialModeOnContent(); } catch {}
 				} catch {}
 			});
-			const bGizmo = createHudButton('Gizmo', ()=>{ try { arEdit.setGizmoEnabled(!(arEdit._gizmoOn = !arEdit._gizmoOn)); } catch {} });
 			const bLite = createHudButton(arSimplifyMaterials ? 'Lite On' : 'Lite Off', ()=>{
 				arSimplifyMaterials = !arSimplifyMaterials;
 				applyArMaterialModeOnContent();
@@ -254,7 +255,7 @@ export async function init() {
 			});
 			// Initialize to default style
 			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
-			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bGizmo, bLite, bHands];
+			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bLite, bHands];
 			return xrHudButtons;
 		}
 	});
