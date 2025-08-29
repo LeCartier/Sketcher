@@ -449,18 +449,35 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
     // Raycast against HUD, scene, and teleport discs
     const discs = (window.__teleport && window.__teleport.getTeleportDiscs) ? window.__teleport.getTeleportDiscs() : [];
+    // Improve hit precision against thin rings/planes
+    try { raycaster.params.Line = { threshold: 0.01 }; raycaster.params.Points = { threshold: 0.02 }; } catch{}
     const sceneTargets = [];
-    try { scene.traverse(obj=>{ if (obj && obj.isMesh && obj.visible && !obj.userData?.__helper) sceneTargets.push(obj); }); } catch{}
+    try { scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); }); } catch{}
     raycaster.set(origin, dir);
     let best = null;
-    const consider = (hits, tag)=>{ if (!hits||!hits.length) return; const h = hits[0]; const d = (typeof h.distance==='number')? h.distance : origin.distanceTo(h.point); if (best==null || d < best.dist) best = { point: h.point.clone(), obj: h.object, dist: d, tag } };
+    const consider = (hits, tag)=>{
+      if (!hits||!hits.length) return;
+      const h = hits[0];
+      const d = (typeof h.distance==='number')? h.distance : origin.distanceTo(h.point);
+      // Bias discs to win over scene meshes at nearly equal distance, to prevent "shoot-through"
+      const bias = (tag==='disc') ? -0.01 : 0;
+      const score = d + bias;
+      if (best==null || score < best.score) best = { point: h.point.clone(), obj: h.object, dist: d, score, tag };
+    };
     try { consider(raycaster.intersectObjects(hudTargets, true), 'hud'); } catch{}
     try { consider(raycaster.intersectObjects(sceneTargets, true), 'scene'); } catch{}
-    try { if (discs && discs.length) consider(raycaster.intersectObjects(discs, true), 'disc'); } catch{}
+    try {
+      if (discs && discs.length){
+        // Include disc children for robust intersection (plane + ring overlay)
+        const discTargets = [];
+        for (const d of discs){ if (!d) continue; d.traverse(o=>{ if (o && o.isMesh) discTargets.push(o); }); }
+        consider(raycaster.intersectObjects(discTargets, true), 'disc');
+      }
+    } catch{}
     const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
     let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
-    // Default hide highlight on all discs; re-apply on target
-    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
+  // Default hide highlight on all discs; re-apply on target
+  try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
   if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
     posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
     rightRayTip.position.copy(tip); rightRayTip.visible = true;

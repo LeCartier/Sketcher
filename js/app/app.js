@@ -523,6 +523,64 @@ export async function init() {
 				}
 				__xrMenuPrevBySource.set(src, pressed);
 			}
+			// Hand-tracking gesture toggle: left palm-up + pinch toggles HUD, controller-independent
+			try {
+				let leftHand = sources.find(s => s && s.handedness === 'left' && s.hand);
+				if (leftHand){
+					const ref = xrLocalSpace || xrViewerSpace || null;
+					const wrist = leftHand.hand.get && leftHand.hand.get('wrist');
+					const idx = leftHand.hand.get && leftHand.hand.get('index-finger-tip');
+					const th = leftHand.hand.get && leftHand.hand.get('thumb-tip');
+					const pw = wrist && frame.getJointPose ? frame.getJointPose(wrist, ref) : null;
+					const pi = idx && frame.getJointPose ? frame.getJointPose(idx, ref) : null;
+					const pt = th && frame.getJointPose ? frame.getJointPose(th, ref) : null;
+					let palmUpOk = false;
+					if (pw && pw.transform && pw.transform.orientation){
+						const o = pw.transform.orientation; const qW = new THREE.Quaternion(o.x,o.y,o.z,o.w);
+						const z = new THREE.Vector3(0,-1,0).applyQuaternion(qW).normalize();
+						palmUpOk = (z.y >= 0.15);
+					}
+					let isPinch = false;
+					if (pi && pt){
+						const a = pi.transform.position; const b = pt.transform.position;
+						const dist = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+						isPinch = dist < 0.035;
+					}
+					if (!handleXRMenuTogglePoll.__handPrev) handleXRMenuTogglePoll.__handPrev = { pinch:false };
+					const prevPinch = !!handleXRMenuTogglePoll.__handPrev.pinch;
+					if (palmUpOk && isPinch && !prevPinch){
+						// Toggle HUD; anchor to left palm; temporarily force Ray only if a controller exists
+						ensureXRHud3D();
+						if (xrHud3D){
+							xrHud.setAnchor({ type: 'palm', handedness: 'left' });
+							const wasShown = !!xrHud3D.userData.__menuShown;
+							const nextShown = !wasShown;
+							xrHud3D.userData.__menuShown = nextShown;
+							xrHud3D.userData.__autoHidden = false;
+							xrHud3D.visible = nextShown;
+							if (nextShown){
+								if (sources.some(s=>s && s.gamepad && !s.hand)){
+									xrHud3D.userData.__prevInteractionRay = xrInteractionRay;
+									setXRInteractionMode(true);
+									xrHud3D.userData.__forcedRayByMenu = true;
+								} else {
+									xrHud3D.userData.__forcedRayByMenu = false;
+								}
+								xrHud.resetPressStates?.();
+								xrHud3D.userData.__menuJustShownAt = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+							} else {
+								if (xrHud3D.userData.__forcedRayByMenu){
+									const prevMode = xrHud3D.userData.__prevInteractionRay;
+									if (typeof prevMode === 'boolean') setXRInteractionMode(prevMode);
+								}
+								xrHud3D.userData.__prevInteractionRay = undefined;
+								xrHud3D.userData.__forcedRayByMenu = undefined;
+							}
+						}
+					}
+					handleXRMenuTogglePoll.__handPrev.pinch = isPinch;
+				}
+			} catch{}
 		} catch {}
 	}
 
