@@ -138,6 +138,18 @@ export async function init() {
 	let arSimplifyMaterials = false; // AR performance mode toggle
 	// XR interaction mode: true = Ray teleport, false = Grab (pinch)
 	let xrInteractionRay = false;
+
+	// Defensive: ensure the scene root has identity transform (no offsets/rotations/scales)
+	function resetSceneTransform(){
+		try {
+			if (!scene) return;
+			if (scene.position){ scene.position.set(0,0,0); }
+			if (scene.quaternion){ scene.quaternion.identity(); }
+			if (scene.rotation){ scene.rotation.set(0,0,0); }
+			if (scene.scale){ scene.scale.set(1,1,1); }
+			if (scene.updateMatrixWorld) scene.updateMatrixWorld(true);
+		} catch {}
+	}
 	function computeArBaseMetrics(root){
 		try {
 			root.updateMatrixWorld(true);
@@ -709,14 +721,24 @@ export async function init() {
 		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
 	// Place camera 6ft above the disc center height (consistent for walk or fly)
 	target.set(center.x, center.y + 6, center.z);
-		// If XR session active (AR/VR): move the world so the camera appears at target
+		// If XR session active (AR/VR): do NOT move the entire scene in AR.
+		// Moving the scene root also moves XR-managed controllers/hands, causing misalignment.
 		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 		if (session){
-			const xrCam = renderer.xr.getCamera(camera);
-			const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
-			const delta = camPos.clone().sub(target);
-			// Move entire scene (AR uses cloned content only visible; moving whole scene works as a simple world shift)
-			scene.position.sub(delta);
+			const mode = (session.environmentBlendMode || 'opaque');
+			if (mode !== 'opaque'){
+				// AR passthrough: skip world-teleport to keep tracking aligned. Optionally we could move arContent only.
+				return;
+			}
+			// In VR, avoid moving XR-managed nodes; instead, shift only user content if needed.
+			try {
+				const xrCam = renderer.xr.getCamera(camera);
+				const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
+				const delta = camPos.clone().sub(target);
+				// Prefer shifting AR/VR content root if available; fallback: no-op to avoid controller drift
+				if (arContent && arContent.parent){ arContent.parent.position.sub(delta); }
+				else if (objects && objects.length){ for (const o of objects){ if (o && o.parent===scene) o.position.sub(delta); } }
+			} catch {}
 			return;
 		}
 		// Desktop: move camera and keep heading (preserve previous view direction and distance)
@@ -2433,6 +2455,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { if (!arOptions.optionalFeatures.includes('hand-tracking')) arOptions.optionalFeatures.push('hand-tracking'); } catch {}
 				const session = await navigator.xr.requestSession('immersive-ar', arOptions);
 				renderer.xr.setSession(session);
+				// Ensure world transform is clean before XR begins
+				resetSceneTransform();
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true;
 				arPlaced = false;
@@ -2445,6 +2469,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					// Reset scene transform after XR ends to clear any residual offsets
+					resetSceneTransform();
 					// If per-object edits occurred, offer to apply them back to the editor scene
 					try {
 						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
@@ -2527,6 +2553,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { if (!vrOptions.optionalFeatures.includes('hand-tracking')) vrOptions.optionalFeatures.push('hand-tracking'); } catch {}
 				const session = await navigator.xr.requestSession('immersive-vr', vrOptions);
 				renderer.xr.setSession(session);
+				// Ensure world transform is clean before XR begins
+				resetSceneTransform();
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;
 				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
@@ -2588,6 +2616,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					// Reset scene transform after XR ends to clear any residual offsets
+					resetSceneTransform();
 					// Offer to apply per-object edits from XR back to originals
 					try {
 						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
