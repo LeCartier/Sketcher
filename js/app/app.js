@@ -440,6 +440,37 @@ export async function init() {
 		// Only the LEFT side's physical gamepad/menu inputs toggle the HUD; some UAs expose both hand and gamepad on the same inputSource,
 		// so accept gamepad presses regardless of whether `src.hand` is present.
 		const CANDIDATES = [0,3,4,5];
+			// Pre-scan: detect whether any controllers are present and whether left palm is up
+			let anyControllerPresent = false;
+			let leftPalmPresent = false;
+			let leftPalmUp = false;
+			try {
+				for (const s of sources){
+					if (s && s.gamepad && !s.hand) anyControllerPresent = true;
+					if (s && s.handedness === 'left' && s.hand){
+						const wrist = s.hand.get && s.hand.get('wrist');
+						const idx = s.hand.get && s.hand.get('index-finger-tip');
+						const th = s.hand.get && s.hand.get('thumb-tip');
+						const ref = xrLocalSpace || xrViewerSpace || null;
+						const pw = wrist && frame.getJointPose ? frame.getJointPose(wrist, ref) : null;
+						leftPalmPresent = !!pw;
+						if (pw && pw.transform && pw.transform.orientation){
+							const o = pw.transform.orientation; const qW = new THREE.Quaternion(o.x,o.y,o.z,o.w);
+							const z = new THREE.Vector3(0,-1,0).applyQuaternion(qW).normalize();
+							leftPalmUp = (z.y >= 0.15);
+						} else if (pw && idx && th){
+							const pi = frame.getJointPose(idx, ref); const pt = frame.getJointPose(th, ref);
+							if (pi && pt){
+								const w = pw.transform.position; const ip = pi.transform.position; const tp = pt.transform.position;
+								const vIndex = new THREE.Vector3(ip.x-w.x, ip.y-w.y, ip.z-w.z);
+								const vThumb = new THREE.Vector3(tp.x-w.x, tp.y-w.y, tp.z-w.z);
+								let z = new THREE.Vector3().crossVectors(vIndex, vThumb); if (z.lengthSq()<1e-6) z.set(0,0,1); z.normalize();
+								leftPalmUp = (z.y >= 0.15);
+							}
+						}
+					}
+				}
+			} catch {}
 			for (const src of sources){
 			// Require left-handed gamepad-capable input sources; allow src.hand to be present
 			if (!src || src.handedness !== 'left' || !src.gamepad) continue;
@@ -449,6 +480,8 @@ export async function init() {
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
 				const prev = __xrMenuPrevBySource.get(src) === true;
 						if (pressed && !prev){
+							// Require left hand palm-up before toggling HUD
+							if (!leftPalmUp){ __xrMenuPrevBySource.set(src, pressed); continue; }
 					// Rising edge: toggle HUD. Always anchor to LEFT palm.
 					try {
 						ensureXRHud3D();
@@ -459,17 +492,27 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
-									// Temporarily force Ray mode while the HUD is shown; restore previous on hide
-									if (nextShown){
-										try { xrHud3D.userData.__prevInteractionRay = xrInteractionRay; } catch{}
-										try { setXRInteractionMode(true); } catch{}
-									} else {
-										try {
-											const prevMode = xrHud3D.userData.__prevInteractionRay;
-											if (typeof prevMode === 'boolean') setXRInteractionMode(prevMode);
-											xrHud3D.userData.__prevInteractionRay = undefined;
-										} catch{}
-									}
+											// Temporarily force Ray mode while the HUD is shown, but only if a controller is present.
+											if (nextShown){
+												if (anyControllerPresent){
+													try { xrHud3D.userData.__prevInteractionRay = xrInteractionRay; } catch{}
+													try { setXRInteractionMode(true); } catch{}
+													xrHud3D.userData.__forcedRayByMenu = true;
+												} else {
+													// Hands-only: do not change interaction mode
+													xrHud3D.userData.__forcedRayByMenu = false;
+												}
+											} else {
+												// Restore previous mode only if we had forced it
+												try {
+													if (xrHud3D.userData.__forcedRayByMenu){
+														const prevMode = xrHud3D.userData.__prevInteractionRay;
+														if (typeof prevMode === 'boolean') setXRInteractionMode(prevMode);
+													}
+													xrHud3D.userData.__prevInteractionRay = undefined;
+													xrHud3D.userData.__forcedRayByMenu = undefined;
+												} catch{}
+											}
 							if (nextShown) {
 								try { xrHud.resetPressStates?.(); } catch {}
 								try { xrHud3D.userData.__menuJustShownAt = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); } catch{}
