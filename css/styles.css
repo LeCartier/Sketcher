@@ -48,10 +48,10 @@ canvas { display: block; touch-action: none; }
 /* Mobile/Tablet/VR delete bar (hidden by default; JS toggles display) */
 #mobileDeleteBar {
 	display: none;
-	position: fixed;
+	position: fixed; /* stay in viewport; JS sets left/top to sit under toolbox */
 	left: 24px;
-	top: calc(50% + 180px); /* below centered toolbox stack */
-	transform: translateY(0);
+	top: 0;
+	transform: none;
 	background: rgba(255,255,255,0.96);
 	border: 1px solid #e0e0e0;
 	border-radius: 14px; /* match toolbox */
@@ -159,7 +159,7 @@ body.page-leave #pageFade { opacity: 1; }
 #ui-container { top: 24px; left: 24px; right: auto; max-width: 320px; z-index: 12; }
 /* Hide legacy main UI panel (kept in DOM for script refs only) */
 #ui-container { display: none !important; pointer-events: none; }
-#toolbox { display: none; left: 24px; right: auto; z-index: 11; position: fixed; top: 50%; transform: translateY(-50%); }
+#toolbox { display: block; left: 24px; right: auto; z-index: 11; position: fixed; top: 50%; transform: translateY(-50%); }
 .leaflet-container { z-index: 1; }
 #mapModalBackdrop { z-index: 1000; }
 canvas { z-index: 0; }

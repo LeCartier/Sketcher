@@ -95,6 +95,19 @@ function applyHUDValue(){
 
 function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
 
+// Keep the 2D delete bar docked just below the toolbox when visible
+function placeMobileDeleteBar2D(){
+  try {
+    if (!mobileDeleteBar2D || mobileDeleteBar2D.style.display === 'none') return;
+    const toolbox = document.getElementById('toolbox'); if (!toolbox) return;
+    const r = toolbox.getBoundingClientRect();
+    const left = Math.max(8, Math.round(r.left));
+    const top = Math.round(r.bottom + 8);
+    mobileDeleteBar2D.style.left = left + 'px';
+    mobileDeleteBar2D.style.top = top + 'px';
+  } catch {}
+}
+
 function resize(){
   // Refresh DPR in case browser/page zoom changed (trackpad pinch, display scale)
   dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -118,6 +131,8 @@ function resize(){
   view.x += worldCenterBefore.x - worldCenterAfter.x;
   view.y += worldCenterBefore.y - worldCenterAfter.y;
   draw();
+  // Re-dock the delete bar on viewport changes
+  placeMobileDeleteBar2D();
 }
 window.addEventListener('resize', resize);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
@@ -549,6 +564,7 @@ function draw(){
     if (mobileDeleteBar2D) {
       const shouldShow = noKeyboard && selection.index >= 0;
       mobileDeleteBar2D.style.display = shouldShow ? 'flex' : 'none';
+      if (shouldShow) placeMobileDeleteBar2D();
     }
   } catch {}
   // Brush cursor
@@ -1786,10 +1802,25 @@ function wireCollapse(toggleId, groupId){
     group.classList.toggle('open', !open);
     group.setAttribute('aria-hidden', open ? 'true' : 'false');
     toggle.setAttribute('aria-pressed', open ? 'false' : 'true');
-    // If closing the Draw parent, return to navigation (pan)
-    if (groupId === 'draw2DGroup' && open) {
-      setTool('pan');
+    // Deactivate tools when parent closes
+    if (open) {
+      if (groupId === 'draw2DGroup') {
+        // Exiting drawing group, return to navigation
+        setTool('pan');
+      }
+      if (groupId === 'shapes2DGroup') {
+        // Exit shapes group as well
+        setTool('pan');
+      }
+      if (groupId === 'erase2DGroup' && (tool==='erase-object' || tool==='erase-pixel')) {
+        setTool('pan');
+      }
+      if (groupId === 'modify2DGroup' && ['offset','fillet','chamfer','trim','mirror','array','dimension','measure','hatch'].includes(tool)) {
+        setTool('pan'); hideModifyHUD && hideModifyHUD();
+      }
     }
+    // Keep the delete bar docked under toolbox on any toggle
+    placeMobileDeleteBar2D();
   });
 }
 // Wire collapsible groups in required order: drawing, shapes, text, style, erase, edit/export

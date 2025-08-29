@@ -34,13 +34,21 @@
     <!-- ...existing code... -->
   <!-- ...existing code... -->
     
-  <input id="modelInput" type="file" accept=".gltf,.glb,.obj,.rvt" style="display:none;">
+  <input id="modelInput" type="file" accept=".gltf,.glb,.obj,.ifc,.rvt" style="display:none;">
   </div>
   <!-- Popup showing the model currently being placed (appears next to the toolbox) -->
   <div id="placingPopup" role="status" aria-live="polite" aria-atomic="true" style="display:none;">
     <div class="placing-title">Placing</div>
     <div id="placingName" class="placing-name">…</div>
     <button id="placingCancel" class="placing-cancel" title="Cancel placement" aria-label="Cancel placement" type="button">×</button>
+  </div>
+  <!-- Processing banner for texture/geometry preparation -->
+  <div id="processingBanner" style="display:none; position:fixed; left:12px; bottom:12px; background:rgba(30,30,30,0.85); color:#fff; padding:10px 12px; border-radius:8px; z-index:10; font-size:13px;">
+    <div id="processingTitle" style="font-weight:600; margin-bottom:4px;">Preparing assets…</div>
+    <div id="processingStep">Optimizing textures and geometry…</div>
+    <div id="processingProgress" style="height:4px; background:#444; border-radius:3px; margin-top:8px; width:240px; overflow:hidden;">
+      <div id="processingBar" style="height:100%; width:0%; background:#4caf50;"></div>
+    </div>
   </div>
   <div id="toolbox">
     <!-- 1) Click-Drag Create -->
@@ -1220,7 +1228,15 @@
           window.addEventListener('resize', () => { if (textureEditor.style.display !== 'none') placeTE(); });
         }
     });
-    init();
+    // Boot app with error surface so failures don't look like a blank viewer
+    (async () => {
+      try { await init(); }
+      catch (err) {
+        console.error('Init failed', err);
+        const eb = document.getElementById('error-banner');
+        if (eb) { eb.textContent = 'Initialization failed: ' + (err?.message || err); eb.style.display = 'block'; }
+      }
+    })();
   </script>
   <script type="module">
   // Share to Community flow (Supabase backend): serialize current scene, save to community, then redirect to Community for trade picks

@@ -136,6 +136,8 @@ export async function init() {
 	let arBaseDiagonal = 1; // meters
 	let arFitMaxDim = 1.6; // meters target for Fit
 	let arSimplifyMaterials = false; // AR performance mode toggle
+	// XR interaction mode: true = Ray teleport, false = Grab (pinch)
+	let xrInteractionRay = false;
 	function computeArBaseMetrics(root){
 		try {
 			root.updateMatrixWorld(true);
@@ -224,6 +226,12 @@ export async function init() {
 			});
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
+			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
+	    const bInteract = createHudButton('Ray', ()=>{
+				try {
+		    setXRInteractionMode(!xrInteractionRay);
+				} catch {}
+			});
 			// Toggle per-object vs whole-scene manipulation
 			const bMode = createHudButton('Objects', ()=>{
 				try {
@@ -270,7 +278,11 @@ export async function init() {
 			});
 			// Initialize to default style
 			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
-			xrHudButtons = [bOne, bFit, bReset, bLock, bMode, bLite, bHands];
+				// Initialize interaction button visuals
+				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
+				// Also ensure AR edit initial enable state matches mode (Grab by default)
+				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
+			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bLite, bHands];
 			return xrHudButtons;
 		}
 	});
@@ -333,6 +345,29 @@ export async function init() {
 					} catch(_){}
 				}
 			} catch(e){ }
+		}
+
+		// Helper: set XR interaction mode and update HUD visuals: true = Ray (teleport), false = Grab (pinch)
+		function setXRInteractionMode(isRay){
+			try {
+				xrInteractionRay = !!isRay;
+				// Enable AR edit only in Grab mode
+				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
+				// Update the interaction button label and tint
+				if (Array.isArray(xrHudButtons)){
+					for (const b of xrHudButtons){
+						try {
+							const meta = b?.mesh?.userData?.__hudButton;
+							if (!meta) continue;
+							if (meta.label === 'Ray' || meta.label === 'Grab' || meta.label === 'Ray/Grab'){
+								b.setLabel(xrInteractionRay ? 'Ray' : 'Grab');
+								if (b.mesh && b.mesh.material){ b.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); b.mesh.material.needsUpdate = true; }
+								break;
+							}
+						} catch{}
+					}
+				}
+			} catch{}
 		}
 
 	// First-person desktop fallback
@@ -399,7 +434,7 @@ export async function init() {
 				let pressed = false;
 				for (const idx of CANDIDATES){ const b = gp.buttons[idx]; if (b && (b.pressed || b.touched)) { pressed = true; break; } }
 				const prev = __xrMenuPrevBySource.get(src) === true;
-				if (pressed && !prev){
+						if (pressed && !prev){
 					// Rising edge: toggle HUD. Always anchor to LEFT palm.
 					try {
 						ensureXRHud3D();
@@ -410,6 +445,17 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
+									// Temporarily force Ray mode while the HUD is shown; restore previous on hide
+									if (nextShown){
+										try { xrHud3D.userData.__prevInteractionRay = xrInteractionRay; } catch{}
+										try { setXRInteractionMode(true); } catch{}
+									} else {
+										try {
+											const prevMode = xrHud3D.userData.__prevInteractionRay;
+											if (typeof prevMode === 'boolean') setXRInteractionMode(prevMode);
+											xrHud3D.userData.__prevInteractionRay = undefined;
+										} catch{}
+									}
 							if (nextShown) {
 								try { xrHud.resetPressStates?.(); } catch {}
 								try { xrHud3D.userData.__menuJustShownAt = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); } catch{}
@@ -1367,7 +1413,21 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const noKeyboard = !hasHardwareKeyboard3D && !likelyDesktop && (isMobileUA || isTouchCapable || inXR);
 				const shouldShow = mode==='edit' && (selectedObjects && selectedObjects.length > 0) && (inXR || isHeadsetUA || noKeyboard);
 				mobileDeleteBar.style.display = shouldShow ? 'flex' : 'none';
+				if (shouldShow) placeMobileDeleteBar();
 			}
+		} catch {}
+	}
+
+	// Keep the mobile delete bar docked just below the toolbox
+	function placeMobileDeleteBar(){
+		try {
+			if (!mobileDeleteBar || mobileDeleteBar.style.display === 'none') return;
+			if (!toolbox) return;
+			const r = toolbox.getBoundingClientRect();
+			const left = Math.round(r.left);
+			const top = Math.round(r.bottom + 10);
+			mobileDeleteBar.style.left = left + 'px';
+			mobileDeleteBar.style.top = top + 'px';
 		} catch {}
 	}
 
@@ -2094,10 +2154,21 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					group.classList.add('open');
 					group.setAttribute('aria-hidden','false');
 				}
+				// If closing Draw/Create parent, clear any active draw tool
+				if (isOpen && group === drawCreateGroup) {
+					try {
+						activeDrawTool = null;
+						[dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); });
+					} catch {}
+				}
+				// After any toggle, keep the delete bar docked below toolbox
+				placeMobileDeleteBar();
 			});
 		}
 	if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
 	if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
+	// On resize, keep the delete bar docked too
+	window.addEventListener('resize', () => { placeMobileDeleteBar(); });
 	if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
 	if (toggleSceneManagerBtn && sceneManagerGroup) togglePanel(toggleSceneManagerBtn, sceneManagerGroup);
 	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
@@ -2596,23 +2667,91 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// Upload model
 	uploadBtn.addEventListener('click',()=>fileInput.click());
-	fileInput.addEventListener('change',e=>{
+	fileInput.addEventListener('change',async e=>{
 		const file=e.target.files[0]; if(!file)return;
 		const lower=file.name.toLowerCase();
+		const processingBanner = document.getElementById('processingBanner');
+		const processingTitle = document.getElementById('processingTitle');
+		const processingStep = document.getElementById('processingStep');
+		const processingBar = document.getElementById('processingBar');
+		function showProcessing(title, step){ try { if (processingTitle) processingTitle.textContent = title; if (processingStep) processingStep.textContent = step; if (processingBar) processingBar.style.width = '0%'; if (processingBanner) processingBanner.style.display = 'block'; } catch{} }
+		function updateProcessing(p){ try { if (processingBar) processingBar.style.width = Math.max(0, Math.min(100, Math.floor(p*100))) + '%'; } catch{} }
+		function hideProcessing(){ try { if (processingBanner) processingBanner.style.display = 'none'; } catch{} }
 		if (lower.endsWith('.rvt')){
 			alert('Revit (.rvt) files are not directly supported in-browser.\n\nPlease export your model from Revit as OBJ/FBX/GLTF (or via the Revit add-in or FormIt/3ds Max) and import that here.');
 			fileInput.value='';
 			return;
 		}
+		// IFC support
+		if (lower.endsWith('.ifc')){
+			showProcessing('Importing IFC…', 'Parsing geometry and materials');
+			try {
+				const url = URL.createObjectURL(file);
+				const { IFCLoader } = await import('../vendor/IFCLoader.js');
+				const ifcLoader = new IFCLoader();
+				// Configure WASM path; using CDN default. You can host locally under assets/ifc/ if preferred.
+				if (ifcLoader.ifcManager && typeof ifcLoader.ifcManager.setWasmPath === 'function') {
+					ifcLoader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.50/');
+				}
+				ifcLoader.load(url, (model) => {
+					try {
+						loadedModel = model.scene || model; // IFCLoader returns a mesh/group
+						// IFCs are typically in meters; convert to feet to match Sketcher scene units
+						const METERS_TO_FEET = 1.0 / 0.3048;
+						loadedModel.scale.multiplyScalar(METERS_TO_FEET);
+						// Ensure materials keep textures; IFCLoader builds MeshStandardMaterials already
+						// Show placing popup with file name
+						if (placingName) placingName.textContent = file.name;
+						if (placingPopup) placingPopup.style.display = 'block';
+						hideProcessing();
+					} finally {
+						URL.revokeObjectURL(url);
+					}
+				}, (prog)=>{ try { if (prog && prog.total) updateProcessing(prog.loaded / prog.total); } catch{} }, (err)=>{
+					console.error('IFC load error', err);
+					alert('Failed to load IFC: ' + (err?.message || err));
+					hideProcessing();
+					URL.revokeObjectURL(url);
+				});
+			} catch (err){
+				console.error(err);
+				alert('IFC import failed: ' + (err?.message || err));
+				hideProcessing();
+			}
+			return;
+		}
 		const url=URL.createObjectURL(file);
 		const loader=lower.endsWith('.obj')?new OBJLoader():new GLTFLoader();
+		if (!lower.endsWith('.obj')) showProcessing('Importing Model…', 'Preparing textures and geometry');
+		try {
+			if (loader.setKTX2Loader){
+				const { KTX2Loader } = await import('../vendor/KTX2Loader.js');
+				const ktx2 = new KTX2Loader().setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.155.0/examples/jsm/libs/basis/').detectSupport(renderer);
+				loader.setKTX2Loader(ktx2);
+			}
+		} catch {}
+		try {
+			if (loader.setDRACOLoader){
+				const { DRACOLoader } = await import('../vendor/DRACOLoader.js');
+				const draco = new DRACOLoader();
+				draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.155.0/examples/jsm/libs/draco/');
+				loader.setDRACOLoader(draco);
+			}
+		} catch {}
+		try {
+			if (loader.setMeshoptDecoder){
+				const { MeshoptDecoder } = await import('../vendor/meshopt_decoder.js');
+				loader.setMeshoptDecoder(MeshoptDecoder);
+			}
+		} catch {}
 		loader.load(url,gltf=>{
 			loadedModel=gltf.scene||gltf;
 			// Show placing popup with file name
 			if (placingName) placingName.textContent = file.name;
 			if (placingPopup) placingPopup.style.display = 'block';
 			URL.revokeObjectURL(url);
-		});
+			hideProcessing();
+		}, (prog)=>{ try { if (prog && prog.total) updateProcessing(prog.loaded / prog.total); } catch{} }, (err)=>{ console.error(err); alert('Model import failed: ' + (err?.message || err)); hideProcessing(); URL.revokeObjectURL(url); });
 	});
 
 	// Cancel current placement
@@ -3266,26 +3405,61 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (!window.__teleport) return;
 						const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return;
 						if (!window.__xrTriggerPrev) window.__xrTriggerPrev = new WeakMap();
+						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
 							const gp = src && src.gamepad; const raySpace = src && (src.targetRaySpace || src.gripSpace);
-							if (!gp || !raySpace) continue;
-							const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
-							const prev = window.__xrTriggerPrev.get(src) === true;
-							if (pressed && !prev){
-								// Skip teleport if HUD is being hovered by controller
-								if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrTriggerPrev.set(src, pressed); return; }
-								const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
-								if (pose){
-									const p = pose.transform.position; const o = pose.transform.orientation;
-									const origin = new THREE.Vector3(p.x,p.y,p.z);
-									const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
-									const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
-									const ih = rc.intersectObjects(discs, true);
-									if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+							// Controller trigger teleport
+							if (gp && raySpace){
+								const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
+								const prev = window.__xrTriggerPrev.get(src) === true;
+								if (pressed && !prev){
+									// Skip teleport if HUD is being hovered by controller
+									if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrTriggerPrev.set(src, pressed); continue; }
+									// Allow teleport only in Ray mode
+									if (!xrInteractionRay) { window.__xrTriggerPrev.set(src, pressed); continue; }
+									const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+									if (pose){
+										const p = pose.transform.position; const o = pose.transform.orientation;
+										const origin = new THREE.Vector3(p.x,p.y,p.z);
+										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
+										const ih = rc.intersectObjects(discs, true);
+										if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+									}
 								}
+								window.__xrTriggerPrev.set(src, pressed);
+								continue;
 							}
-							window.__xrTriggerPrev.set(src, pressed);
+							// Hand-tracking pinch teleport (right hand only) in Ray mode
+							if (src && src.handedness === 'right' && src.hand && xrInteractionRay){
+								try {
+									const ti = src.hand.get && src.hand.get('index-finger-tip');
+									const tt = src.hand.get && src.hand.get('thumb-tip');
+									if (!ti || !tt) continue;
+									const pti = frame.getJointPose(ti, xrLocalSpace || xrViewerSpace || null);
+									const ptt = frame.getJointPose(tt, xrLocalSpace || xrViewerSpace || null);
+									if (!pti || !ptt) continue;
+									const dx = pti.transform.position.x - ptt.transform.position.x;
+									const dy = pti.transform.position.y - ptt.transform.position.y;
+									const dz = pti.transform.position.z - ptt.transform.position.z;
+									const dist = Math.hypot(dx,dy,dz);
+									const prevPinch = window.__xrPinchPrev.get(src) === true;
+									const isPinch = dist < 0.035; // ~3.5cm
+									if (isPinch && !prevPinch){
+										// Skip if HUD is hovered
+										if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrPinchPrev.set(src, isPinch); continue; }
+										// Cast ray from fingertip orientation
+										const p = pti.transform.position; const o = pti.transform.orientation;
+										const origin = new THREE.Vector3(p.x,p.y,p.z);
+										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
+										const ih = rc.intersectObjects(discs, true);
+										if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+									}
+									window.__xrPinchPrev.set(src, isPinch);
+								} catch{}
+							}
 						}
 					} catch{}
 				})();
