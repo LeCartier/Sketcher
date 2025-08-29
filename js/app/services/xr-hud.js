@@ -439,7 +439,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         }
       }
   // Visualize right-controller pointer ray; extend to first hit among HUD, scene, or teleport discs
-      if (src.handedness === 'right' && src.gamepad && !src.hand){
+  // Show a right-hand/controller ray in Ray mode only (both controller and hand allowed)
+  const wantRay = !!(typeof window !== 'undefined' && window.__xrInteractionRay === true);
+  if (wantRay && src.handedness === 'right' && (src.gamepad || src.hand)){
         sawRightController = true; anyController = true;
         if (rightRay && rightRayTip){
           const pose = raySpace ? frame.getPose(raySpace, ref) : null;
@@ -459,13 +461,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
     // Default hide highlight on all discs; re-apply on target
     try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
-    if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
+  if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
     posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
     rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }
         }
       }
-          if (src.hand) anyHand = true;
+      if (src.hand) anyHand = true;
         }
         if (rightRay && rightRayTip && !sawRightController){ rightRay.visible = false; rightRayTip.visible = false; }
   // Switch palette based on modality: blue when hands-only

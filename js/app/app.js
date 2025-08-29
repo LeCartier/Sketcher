@@ -239,7 +239,7 @@ export async function init() {
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', ()=> resetARTransform());
 			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
-	    const bInteract = createHudButton('Ray', ()=>{
+	    const bInteract = createHudButton('Grab', ()=>{
 				try {
 		    setXRInteractionMode(!xrInteractionRay);
 				} catch {}
@@ -362,7 +362,9 @@ export async function init() {
 		// Helper: set XR interaction mode and update HUD visuals: true = Ray (teleport), false = Grab (pinch)
 		function setXRInteractionMode(isRay){
 			try {
-				xrInteractionRay = !!isRay;
+					xrInteractionRay = !!isRay;
+					// Publish current mode for modules (e.g., xr-hud hand ray rendering)
+					try { window.__xrInteractionRay = xrInteractionRay; } catch{}
 				// Enable AR edit only in Grab mode
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
 				// Update the interaction button label and tint
@@ -721,13 +723,22 @@ export async function init() {
 		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
 	// Place camera 6ft above the disc center height (consistent for walk or fly)
 	target.set(center.x, center.y + 6, center.z);
-		// If XR session active (AR/VR): do NOT move the entire scene in AR.
-		// Moving the scene root also moves XR-managed controllers/hands, causing misalignment.
+		// If XR session active (AR/VR): avoid moving the scene root.
 		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
 		if (session){
 			const mode = (session.environmentBlendMode || 'opaque');
 			if (mode !== 'opaque'){
-				// AR passthrough: skip world-teleport to keep tracking aligned. Optionally we could move arContent only.
+				// AR passthrough: move the placed model (arContent) to the disc, keeping ground alignment.
+				try {
+					if (arContent){
+						const xrCam = renderer.xr.getCamera(camera);
+						const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
+						const delta = new THREE.Vector3(target.x, 0, target.z);
+						// Keep model on local-floor (y=0) and face roughly same heading
+						arContent.position.set(delta.x, 0, delta.z);
+						try { alignModelToGround(arContent); } catch{}
+					}
+				} catch {}
 				return;
 			}
 			// In VR, avoid moving XR-managed nodes; instead, shift only user content if needed.
@@ -2457,6 +2468,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				renderer.xr.setSession(session);
 				// Ensure world transform is clean before XR begins
 				resetSceneTransform();
+				// Default to Grab (pinch) on session start
+				setXRInteractionMode(false);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true;
 				arPlaced = false;
@@ -2555,6 +2568,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				renderer.xr.setSession(session);
 				// Ensure world transform is clean before XR begins
 				resetSceneTransform();
+				// Default to Grab (pinch) on session start
+				setXRInteractionMode(false);
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;
 				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
