@@ -118,6 +118,7 @@ export async function init() {
 	let arContent = null; // cloned scene content for AR
 	let arPlaced = false;
 	let arPrevVisibility = null; // Map(object -> prevVisible) to restore after AR
+	let arPendingTeleport = null; // Vector3 meters (xz on local-floor) to apply on first AR placement
 	const FEET_TO_METERS = 0.3048;
 	// Optional visual scale debug: enable by adding '#scaleDebug' to the URL or set localStorage 'sketcher.scaleDebug' = '1'
 	const ENABLE_SCALE_DEBUG = (typeof location !== 'undefined' && location.hash && location.hash.includes('scaleDebug')) || (typeof localStorage !== 'undefined' && localStorage.getItem && localStorage.getItem('sketcher.scaleDebug') === '1');
@@ -776,10 +777,12 @@ export async function init() {
 					if (arContent){
 						const xrCam = renderer.xr.getCamera(camera);
 						const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
-						const delta = new THREE.Vector3(target.x, 0, target.z);
 						// Keep model on local-floor (y=0) and face roughly same heading
-						arContent.position.set(delta.x, 0, delta.z);
+						arContent.position.set(target.x, 0, target.z);
 						try { alignModelToGround(arContent); } catch{}
+					} else {
+						// Not yet placed: remember target to apply on first placement
+						arPendingTeleport = new THREE.Vector3(target.x, 0, target.z);
 					}
 				} catch {}
 				return;
@@ -2641,6 +2644,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					} catch { arContent.position.set(0, 0, -0.3048); }
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
+
+					// If we had a pending teleport target (ray selected before model existed), apply it now
+					try {
+						if (arPendingTeleport && arContent){
+							arContent.position.set(arPendingTeleport.x, 0, arPendingTeleport.z);
+							alignModelToGround(arContent);
+							arPendingTeleport = null;
+						}
+					} catch {}
 
 					arPlaced = true;
 					// Ensure model ground is horizontal and snapped to local-floor when placed
