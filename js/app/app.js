@@ -855,14 +855,13 @@ export async function init() {
 				} catch {}
 				return;
 			}
-			// In VR, avoid moving XR-managed nodes; instead, shift only user content if needed.
+						// In VR, avoid moving XR-managed nodes; instead, shift only the cloned AR/VR content group.
 			try {
 				const xrCam = renderer.xr.getCamera(camera);
 				const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
 				const delta = camPos.clone().sub(target);
-				// Prefer shifting AR/VR content root if available; fallback: no-op to avoid controller drift
-				if (arContent && arContent.parent){ arContent.parent.position.sub(delta); }
-				else if (objects && objects.length){ for (const o of objects){ if (o && o.parent===scene) o.position.sub(delta); } }
+							// Shift only the AR/VR content; never move the scene root or live editor objects during XR
+							if (arContent){ arContent.position.sub(delta); }
 			} catch {}
 			return;
 		}
