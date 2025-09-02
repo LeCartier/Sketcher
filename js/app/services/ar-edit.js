@@ -34,7 +34,7 @@ export function createAREdit(THREE, scene, renderer){
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
-  function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); }
+  function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); clearSnapHelper(); }
   function setScaleEnabled(on){ state.allowScale = !!on; }
   function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
   function clearDirty(){ state.dirtySet.clear(); }
@@ -344,18 +344,13 @@ export function createAREdit(THREE, scene, renderer){
       const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
       // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
       if (!state.allowScale) s = 1;
-      // 1:1 snap: compute target absolute scalar and snap if close
+      // 1:1 snap: only for per-object scaling (no snap/highlight for whole-scene)
       let snappedNow = false;
       try {
-        if (state.allowScale) {
-          // Determine absolute target scalar for 1:1
+        if (state.allowScale && state.perObject) {
+          // Determine absolute target scalar for 1:1 (per-object default is 1.0)
           const startScalar = (st.startScaleLocal.x + st.startScaleLocal.y + st.startScaleLocal.z) / 3;
-          let oneScalar = 1.0; // per-object default
-          if (!state.perObject) {
-            // Scene mode: prefer hint from root target userData.__oneScale
-            const hint = (state.target && state.target.userData && typeof state.target.userData.__oneScale === 'number') ? state.target.userData.__oneScale : null;
-            if (typeof hint === 'number' && isFinite(hint) && hint > 1e-6) oneScalar = hint;
-          }
+          const oneScalar = 1.0;
           const sTarget = Math.max(1e-6, oneScalar / Math.max(1e-6, startScalar));
           const delta = Math.abs(s - sTarget);
           const thr = Math.max(SNAP_ONE_TOL_ABS, Math.abs(sTarget) * SNAP_ONE_TOL_REL);
@@ -387,15 +382,15 @@ export function createAREdit(THREE, scene, renderer){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
         if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
       }
-      // Snap highlight + haptics
+      // Snap highlight + haptics (only in per-object mode)
       try {
-        if (snappedNow && !state.snapped) {
+        if (state.perObject && snappedNow && !state.snapped) {
           // First frame snapping: pulse both sources if available
           if (p0?.src) hapticPulse(p0.src, 0.4, 40);
           if (p1?.src) hapticPulse(p1.src, 0.4, 40);
         }
-        state.snapped = snappedNow;
-        if (state.snapped) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
+        state.snapped = state.perObject ? snappedNow : false;
+        if (state.snapped && state.perObject) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
       } catch{}
       state.one = null; // reset one-hand state
     } else {
