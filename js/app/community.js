@@ -71,6 +71,14 @@ async function openPreviewRecord(rec){
   overlay.raf = raf; overlay.renderer = renderer; overlay.scene=scene; overlay.camera=camera;
   overlay.onResize = () => { const s=getSize(); renderer.setSize(s.w, s.h, false); camera.aspect = Math.max(0.001, s.w/s.h); camera.updateProjectionMatrix(); };
   window.addEventListener('resize', overlay.onResize);
+
+  // Add FFE label if applicable
+  if (rec && rec.group === 'FFE') {
+    const badge = document.createElement('div');
+    badge.textContent = 'FFE';
+    Object.assign(badge.style, { position:'absolute', right:'12px', bottom:'12px', background:'rgba(255,0,255,0.9)', color:'#111', border:'1px solid rgba(0,0,0,0.35)', borderRadius:'8px', padding:'4px 10px', font:'600 12px system-ui, sans-serif', zIndex:2 });
+    c.appendChild(badge);
+  }
 }
 
 function closePreview(){

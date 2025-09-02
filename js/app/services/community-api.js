@@ -37,7 +37,7 @@ async function uploadThumbDataUrl(dataUrl) {
   return pub?.publicUrl || null;
 }
 
-export async function saveCommunityScene({ name, json, thumb }) {
+export async function saveCommunityScene({ name, json, thumb, group = null, password = null }) {
   const supabase = await getClient();
   // Enforce simple client-side size checks (defense-in-depth with DB constraints)
   if (!name || name.length > 80) name = (name || 'Untitled').slice(0, 80);
@@ -45,9 +45,26 @@ export async function saveCommunityScene({ name, json, thumb }) {
   if (jsonText.length > 300000) throw new Error('Scene too large');
   let thumb_url = null;
   try { thumb_url = await uploadThumbDataUrl(thumb); } catch {}
+  // Optional FFE password gate (client-side only; add RLS/policy server-side for real security)
+  if (group === 'FFE' && password !== 'CLINT') {
+    throw new Error('Invalid password for FFE upload');
+  }
   const payload = { name, json: JSON.parse(jsonText), thumb_url };
-  const { data, error } = await supabase.from('community_scenes').insert(payload).select('id').single();
-  if (error) throw error;
+  // Use 'label' as the DB column to avoid reserved keyword issues with 'group'
+  if (group) payload.label = group;
+  // Insert, retry without group if the column doesn't exist yet
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.from('community_scenes').insert(payload).select('id').single());
+    if (error) throw error;
+  } catch (e) {
+    // Fallback: remove group and try again for older schema
+    try {
+  const legacy = { ...payload }; delete legacy.label;
+      ({ data, error } = await supabase.from('community_scenes').insert(legacy).select('id').single());
+      if (error) throw error;
+    } catch (e2) { throw e2; }
+  }
   // Backend cap: keep only latest 20 (best-effort) and remove orphaned thumbs
   try {
     const { data: rows } = await supabase
@@ -98,23 +115,51 @@ export async function pickRandomCommunity(n = 5) {
 
 export async function getCommunityScene(id) {
   const supabase = await getClient();
-  const { data, error } = await supabase
-    .from('community_scenes')
-    .select('id,name,json,thumb_url')
-    .eq('id', id)
-    .single();
-  if (error) throw error;
-  return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url };
+  // Try selecting with group column; fallback to legacy schema
+  try {
+    const { data, error } = await supabase
+      .from('community_scenes')
+      .select('id,name,json,thumb_url,label')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url, group: data.label || null };
+  } catch (e) {
+    const { data, error } = await supabase
+      .from('community_scenes')
+      .select('id,name,json,thumb_url')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url, group: null };
+  }
 }
 
-export async function listLatestCommunity(limit = 10) {
+export async function listLatestCommunity(limit = 10, { group = null } = {}) {
   const supabase = await getClient();
   // Prefer created_at only to avoid errors if updated_at is absent
-  const { data, error } = await supabase
-    .from('community_scenes')
-    .select('id,name,thumb_url,created_at')
-    .order('created_at', { ascending: false })
-    .limit(Math.max(1, limit));
-  if (error) throw error;
-  return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at }));
+  // Try with group column present; if it fails, fallback to legacy query without group filtering
+  try {
+    let q = supabase
+      .from('community_scenes')
+      .select('id,name,thumb_url,created_at,label')
+      .order('created_at', { ascending: false })
+      .limit(Math.max(1, limit));
+    if (group) q = q.eq('label', group);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at, group: r.label || null }));
+  } catch (e) {
+    // Legacy schema without 'label' column: cannot represent FFE; return empty for FFE requests
+    if (group) {
+      return [];
+    }
+    const { data, error } = await supabase
+      .from('community_scenes')
+      .select('id,name,thumb_url,created_at')
+      .order('created_at', { ascending: false })
+      .limit(Math.max(1, limit));
+    if (error) throw error;
+    return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at, group: null }));
+  }
 }

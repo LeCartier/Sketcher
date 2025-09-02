@@ -39,7 +39,7 @@ export function createAREdit(THREE, scene, renderer){
   function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
   function clearDirty(){ state.dirtySet.clear(); }
   function start(session){ state.session = session || null; }
-  function stop(){ state.session = null; clearManip(); removeGizmo(); }
+  function stop(){ state.session = null; clearManip(); removeGizmo(); clearSnapHelper(); }
 
   function clearManip(){ if(state.target){ delete state.target.userData._grab; delete state.target.userData._bi; } state.one=null; state.two=null; }
 
@@ -67,6 +67,41 @@ export function createAREdit(THREE, scene, renderer){
   const CONTROLLER_SPHERE_R = 0.040; // ~4cm sphere for controller grip/pose
   const GRAB_NEAR_MARGIN = 0.0; // meters; 0 = require true penetration for grab
   const COLLISION_PUSH_GAIN = 0.0; // disable passive push; only interact when grabbing
+  // 1:1 snap config
+  const SNAP_ONE_TOL_REL = 0.03; // 3% relative tolerance
+  const SNAP_ONE_TOL_ABS = 0.02; // absolute tolerance fallback in 's' space
+  // Runtime snap state
+  state.snapped = false;
+  state.snapHelper = null; // THREE.Box3Helper
+
+  function clearSnapHelper(){
+    try {
+      if (state.snapHelper){
+        if (state.snapHelper.parent) state.snapHelper.parent.remove(state.snapHelper);
+        if (state.snapHelper.geometry?.dispose) state.snapHelper.geometry.dispose();
+        if (state.snapHelper.material?.dispose) state.snapHelper.material.dispose();
+      }
+    } catch{}
+    state.snapHelper = null; state.snapped = false;
+  }
+  function ensureSnapHelper(THREE, scene){
+    if (state.snapHelper) return state.snapHelper;
+    try {
+      const box = new THREE.Box3();
+      const helper = new THREE.Box3Helper(box, 0x00ff00);
+      helper.name = '__SnapOneOutline'; helper.renderOrder = 10002; helper.userData.__helper = true;
+      // Make sure it renders on top
+      if (helper.material){ helper.material.depthTest = false; helper.material.transparent = true; helper.material.opacity = 0.95; helper.material.needsUpdate = true; }
+      scene.add(helper); state.snapHelper = helper;
+    } catch{}
+    return state.snapHelper;
+  }
+  function updateSnapHelperForTarget(THREE, scene, targetObj){
+    if (!targetObj) { clearSnapHelper(); return; }
+    const h = ensureSnapHelper(THREE, scene); if (!h) return;
+    try { h.box.setFromObject(targetObj); } catch{ try { const b=new THREE.Box3(); targetObj?.traverse?.(c=>{ if(c.isMesh){ const bb=new THREE.Box3().setFromObject(c); if (!b.isEmpty()) b.union(bb); else b.copy(bb); }}); h.box.copy(b);} catch{} }
+    h.visible = true;
+  }
 
   function isCollidingWithBox(px, py, pz, radius, box){
     if (!box || box.isEmpty()) return false;
@@ -266,7 +301,7 @@ export function createAREdit(THREE, scene, renderer){
         try { state.dirtySet.add(targetObj); } catch{}
       }
       state.two = null; // reset two-hand state if switching modes
-    } else if(grabbingPts.length>=2){
+  } else if(grabbingPts.length>=2){
       // Require both hands/controllers to be currently colliding to orbit/scale
       const colliding = (p)=>{
         if (!targetBox || targetBox.isEmpty()) return false;
@@ -309,6 +344,24 @@ export function createAREdit(THREE, scene, renderer){
       const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
       // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
       if (!state.allowScale) s = 1;
+      // 1:1 snap: compute target absolute scalar and snap if close
+      let snappedNow = false;
+      try {
+        if (state.allowScale) {
+          // Determine absolute target scalar for 1:1
+          const startScalar = (st.startScaleLocal.x + st.startScaleLocal.y + st.startScaleLocal.z) / 3;
+          let oneScalar = 1.0; // per-object default
+          if (!state.perObject) {
+            // Scene mode: prefer hint from root target userData.__oneScale
+            const hint = (state.target && state.target.userData && typeof state.target.userData.__oneScale === 'number') ? state.target.userData.__oneScale : null;
+            if (typeof hint === 'number' && isFinite(hint) && hint > 1e-6) oneScalar = hint;
+          }
+          const sTarget = Math.max(1e-6, oneScalar / Math.max(1e-6, startScalar));
+          const delta = Math.abs(s - sTarget);
+          const thr = Math.max(SNAP_ONE_TOL_ABS, Math.abs(sTarget) * SNAP_ONE_TOL_REL);
+          if (delta <= thr) { s = sTarget; snappedNow = true; }
+        }
+      } catch{}
       const desiredLocalScale = new THREE.Vector3(st.startScaleLocal.x*s, st.startScaleLocal.y*s, st.startScaleLocal.z*s);
       const v1 = new THREE.Vector3(p1.x-p0.x, p1.y-p0.y, p1.z-p0.z).normalize();
       let R = new THREE.Quaternion();
@@ -334,9 +387,21 @@ export function createAREdit(THREE, scene, renderer){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
         if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
       }
+      // Snap highlight + haptics
+      try {
+        if (snappedNow && !state.snapped) {
+          // First frame snapping: pulse both sources if available
+          if (p0?.src) hapticPulse(p0.src, 0.4, 40);
+          if (p1?.src) hapticPulse(p1.src, 0.4, 40);
+        }
+        state.snapped = snappedNow;
+        if (state.snapped) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
+      } catch{}
       state.one = null; // reset one-hand state
     } else {
       state.one = null; state.two = null;
+      // Hide snap visual when not manipulating
+      clearSnapHelper(); state.snapped = false;
     }
 
   // Passive push disabled; object only responds when grabbing

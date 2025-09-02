@@ -1,4 +1,5 @@
 import * as localStore from './local-store.js';
+import * as communityApi from './services/community-api.js';
 
 // Pannable/zoomable 2D grid with draggable tiles representing scenes
 const canvas = document.getElementById('gridStage');
@@ -247,10 +248,54 @@ async function createOverlay3D(tile, rect){
       try {
         const rec = await localStore.getScene(tile.id);
         if (!rec || !rec.json) { alert('Could not read scene.'); return; }
-        // Save to community store (enforcing 20-cap in store logic)
-        await localStore.saveCommunityScene({ name: (rec.name||'Untitled').replace(/^gallery:/,''), json: rec.json, thumb: rec.thumb });
-        await showTradePicker();
-      } catch (e) { console.error(e); alert('Failed to share.'); }
+        const name = (rec.name||'Untitled').replace(/^gallery:/,'');
+        // Build a small inline dialog to choose Public vs FFE and enter password if needed
+        const dlg = document.createElement('div');
+        Object.assign(dlg.style, {
+          position:'absolute', right:'12px', bottom:'48px', background:'#222', color:'#ddd',
+          border:'1px solid rgba(255,255,255,0.18)', borderRadius:'10px', padding:'12px',
+          display:'grid', gap:'8px', zIndex:'20', minWidth:'240px', boxShadow:'0 10px 24px rgba(0,0,0,0.45)'
+        });
+        const title = document.createElement('div'); title.textContent = 'Upload to Community'; title.style.font = '600 13px system-ui, sans-serif'; title.style.color = '#fff';
+        const row = document.createElement('label'); row.style.display='flex'; row.style.alignItems='center'; row.style.gap='8px';
+        const cb = document.createElement('input'); cb.type='checkbox'; cb.id = 'ffeToggle';
+        const lab = document.createElement('span'); lab.textContent = 'Upload to FFE (requires password)';
+        row.append(cb, lab);
+        const pwd = document.createElement('input'); pwd.type='password'; pwd.placeholder='FFE password'; Object.assign(pwd.style,{ width:'100%', padding:'6px 8px', borderRadius:'6px', border:'1px solid rgba(255,255,255,0.16)', background:'#111', color:'#ddd' }); pwd.disabled = true; pwd.autocomplete = 'off';
+        const foot = document.createElement('div'); foot.style.display='flex'; foot.style.gap='8px'; foot.style.justifyContent='flex-end';
+        const cancel = document.createElement('button'); cancel.textContent='Cancel'; Object.assign(cancel.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer' });
+        const upload = document.createElement('button'); upload.textContent='Upload'; Object.assign(upload.style,{ background:'linear-gradient(180deg,#ff2cff,#b500b5)', color:'#111', border:'1px solid rgba(255,0,255,0.35)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', fontWeight:'600' });
+        foot.append(cancel, upload);
+        dlg.append(title, row, pwd, foot);
+        container.appendChild(dlg);
+        const closeDlg = () => { try { dlg.remove(); } catch {} };
+        cancel.addEventListener('click', closeDlg);
+        cb.addEventListener('change', () => { pwd.disabled = !cb.checked; if (cb.checked) { pwd.focus(); } else { pwd.value=''; } });
+        upload.addEventListener('click', async () => {
+          try {
+            const isFFE = cb.checked;
+            const password = isFFE ? (pwd.value || '').trim() : null;
+            if (isFFE && password !== 'CLINT') { alert('Incorrect FFE password.'); return; }
+            upload.disabled = true; upload.textContent = 'Uploading…';
+            // Generate a thumbnail if missing
+            let thumb = rec.thumb || null;
+            if (!thumb) {
+              try { const mod = await import('./community.js'); thumb = await mod.generateSceneThumbnail(rec.json).catch(()=>null); } catch {}
+            }
+            const group = isFFE ? 'FFE' : null;
+            const res = await communityApi.saveCommunityScene({ name, json: rec.json, thumb, group, password });
+            try { sessionStorage.setItem('sketcher:tradeToken', crypto.randomUUID?.() || String(Date.now())); } catch {}
+            const url = new URL('./community.html', location.href);
+            url.searchParams.set('trade', '1');
+            try { if (res && res.id) url.searchParams.set('just', res.id); } catch {}
+            if (group) url.searchParams.set('group', group);
+            document.body.classList.add('page-leave');
+            setTimeout(()=>{ window.location.href = url.toString(); }, 170);
+          } catch (e) {
+            console.error(e); alert(e?.message || 'Failed to upload.');
+          } finally { closeDlg(); }
+        });
+      } catch (e) { console.error(e); alert('Failed to prepare upload.'); }
     });
     // Animate
     let raf = 0; function loop(){ raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); }

@@ -155,7 +155,8 @@ export async function init() {
 		try {
 			root.updateMatrixWorld(true);
 				const box = new THREE.Box3().setFromObject(root);
-			arBaseBox = box;
+			arBaseBox = box; 
+			try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 			const size = box.getSize(new THREE.Vector3());
 			arBaseDiagonal = Math.max(1e-4, Math.max(size.x, size.y, size.z));
 		} catch { arBaseBox = null; arBaseDiagonal = 1; }
@@ -2729,6 +2730,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					prepareModelForAR(root); // converts to meters and recenters to ground
 					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 					arContent = root; scene.add(arContent);
+					try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 					// Place origin 1 foot in front of the user on the ground (local-floor y=0), using camera facing
 					try {
 						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
@@ -3709,6 +3711,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 						arContent = root;
 						scene.add(arContent);
+						try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 						computeArBaseMetrics(arContent);
 						// Ensure 1:1 scale in meters after feet->meters conversion in prepareModelForAR
 						try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}
