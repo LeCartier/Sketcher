@@ -818,7 +818,35 @@ export async function init() {
 			if (hl) hl.visible = !!on;
 		} catch{}
 	}
-	function getTeleportDiscs(){ return teleportDiscs.filter(d => (d?.userData?.__teleportDisc?.active !== false)).slice(); }
+	function getTeleportDiscs(){
+		try {
+			// If in an XR session and an AR/VR clone exists, prefer discs under the clone,
+			// since originals may be hidden while presenting. This ensures rays hit visible targets.
+			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
+			if (session && arContent) {
+				const list = [];
+				try {
+					arContent.traverse(o => {
+						if (!o) return;
+						// Match by explicit marker or canonical name; normalize to the disc root
+						const isDisc = (__isTeleportDisc(o) || (o.name === '__TeleportDisc'));
+						if (!isDisc) return;
+						const root = __getTeleportDiscRoot(o) || o;
+						// Honor active flag when present
+						const active = (root?.userData?.__teleportDisc?.active !== false);
+						if (active) list.push(root);
+					});
+				} catch {}
+				// De-duplicate while preserving order
+				const uniq = [];
+				const seen = new Set();
+				for (const d of list){ if (d && !seen.has(d)) { uniq.push(d); seen.add(d); } }
+				return uniq;
+			}
+		} catch {}
+		// Non-XR (desktop) or no clone: use registered originals
+		return teleportDiscs.filter(d => (d?.userData?.__teleportDisc?.active !== false)).slice();
+	}
 	function teleportToDisc(disc){
 		if (!disc) return;
 		disc.updateMatrixWorld(true);
@@ -1976,6 +2004,144 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			document.dispatchEvent(new CustomEvent('sketcher:materials-ready'));
 		} catch {}
 	})();
+
+	// --- Apply material to a single face (safe overlay approach) ---
+	let __lastPickedFace = null; // { mesh, faceIndex }
+	let __lastFacePreview = null; // temporary highlight overlay
+
+	function __disposeFacePreview(){
+		if (!__lastFacePreview) return;
+		try { __lastFacePreview.parent && __lastFacePreview.parent.remove(__lastFacePreview); } catch {}
+		try {
+			__lastFacePreview.geometry && __lastFacePreview.geometry.dispose && __lastFacePreview.geometry.dispose();
+			const mm = __lastFacePreview.material;
+			if (Array.isArray(mm)) mm.forEach(m=>m && m.dispose && m.dispose()); else mm && mm.dispose && mm.dispose();
+		} catch {}
+		__lastFacePreview = null;
+	}
+
+	function __makeFaceOverlayMesh(mesh, faceIndex, material){
+		try {
+			const geom = mesh.geometry; if (!geom || !geom.isBufferGeometry) return null;
+			const pos = geom.getAttribute('position'); if (!pos) return null;
+			const idxAttr = geom.getIndex();
+			let ia, ib, ic;
+			if (idxAttr) { const a = idxAttr.getX(faceIndex*3+0), b = idxAttr.getX(faceIndex*3+1), c = idxAttr.getX(faceIndex*3+2); ia=a; ib=b; ic=c; }
+			else { ia = faceIndex*3+0; ib = faceIndex*3+1; ic = faceIndex*3+2; if (ic >= pos.count) return null; }
+			const pA = new THREE.Vector3(pos.getX(ia), pos.getY(ia), pos.getZ(ia));
+			const pB = new THREE.Vector3(pos.getX(ib), pos.getY(ib), pos.getZ(ib));
+			const pC = new THREE.Vector3(pos.getX(ic), pos.getY(ic), pos.getZ(ic));
+			const uvs = geom.getAttribute('uv');
+			let uvArr = null;
+			if (uvs) {
+				uvArr = new Float32Array(6);
+				const uA = uvs.getX(ia), vA = uvs.getY(ia);
+				const uB = uvs.getX(ib), vB = uvs.getY(ib);
+				const uC = uvs.getX(ic), vC = uvs.getY(ic);
+				uvArr.set([uA,vA, uB,vB, uC,vC]);
+			}
+			const g = new THREE.BufferGeometry();
+			g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array([
+				pA.x,pA.y,pA.z,
+				pB.x,pB.y,pB.z,
+				pC.x,pC.y,pC.z,
+			]), 3));
+			// Flat normal for stable lighting
+			const n = new THREE.Vector3().subVectors(pB, pA).cross(new THREE.Vector3().subVectors(pC, pA)).normalize();
+			g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array([n.x,n.y,n.z, n.x,n.y,n.z, n.x,n.y,n.z]), 3));
+			if (uvArr) g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
+			// Pick material, clone to enable polygon offset without touching shared mats
+			let mat = material;
+			if (!mat) mat = getActiveSharedMaterial(currentMaterialStyle) || material;
+			mat = mat && mat.clone ? mat.clone() : new THREE.MeshStandardMaterial({ color: 0xffffff });
+			mat.side = THREE.DoubleSide; mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;
+			const child = new THREE.Mesh(g, mat);
+			child.userData.__materialOverride = true; // respect global overrides
+			return child;
+		} catch { return null; }
+	}
+
+	function applyMaterialToPickedFace(customMaterial=null){
+		if (!__lastPickedFace) return false;
+		const { mesh, faceIndex } = __lastPickedFace;
+		const child = __makeFaceOverlayMesh(mesh, faceIndex, customMaterial);
+		if (!child) return false;
+		__disposeFacePreview();
+		try { mesh.add(child); } catch {}
+		// Clear pick state but keep ability to re-apply later
+		__lastPickedFace = null;
+		return true;
+	}
+
+	function clearAllFaceOverrides(){
+		try {
+			const toRemove = [];
+			scene.traverse((node)=>{ if (node && node.userData && node.userData.__materialOverride && node.parent) toRemove.push(node); });
+			toRemove.forEach(n=>{ try { n.parent.remove(n); } catch{} try { n.geometry && n.geometry.dispose && n.geometry.dispose(); } catch{} try { const mm=n.material; if(Array.isArray(mm)) mm.forEach(m=>m&&m.dispose&&m.dispose()); else mm&&mm.dispose&&mm.dispose(); } catch{} });
+			__disposeFacePreview();
+		} catch {}
+	}
+
+	// Auto-pick face on click when Texture Editor target is set to "face"
+	window.addEventListener('pointerdown', (e)=>{
+		try {
+			const target = (document.querySelector('input[name="teTarget"]:checked')?.value) || 'object';
+			if (target !== 'face') { __disposeFacePreview(); __lastPickedFace = null; return; }
+			getPointer(e); raycaster.setFromCamera(pointer, camera);
+			const hits = raycaster.intersectObjects(selectableTargets(), true) || [];
+			const hit = hits.find(h => h.object && h.object.isMesh && Number.isInteger(h.faceIndex));
+			__disposeFacePreview(); __lastPickedFace = null;
+			if (hit) {
+				__lastPickedFace = { mesh: hit.object, faceIndex: hit.faceIndex };
+				const previewMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.35, depthTest: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 });
+				__lastFacePreview = __makeFaceOverlayMesh(hit.object, hit.faceIndex, previewMat);
+				if (__lastFacePreview) try { hit.object.add(__lastFacePreview); } catch {}
+			}
+		} catch {}
+	}, true);
+
+	// Apply from texture editor: build a material from provided files when target=face
+	document.addEventListener('sketcher:texture-editor:apply', async (ev)=>{
+		try {
+			const detail = ev.detail || {}; const target = detail.target || 'object';
+			if (target !== 'face') return;
+			// Build a MeshStandardMaterial from files if any; else use current shared
+			const files = detail.files || {};
+			async function texFromFile(f){
+				if (!f) return null; return new Promise((resolve)=>{
+					try {
+						const url = URL.createObjectURL(f);
+						new THREE.TextureLoader().load(url, (tex)=>{ try { tex.wrapS = tex.wrapT = THREE.RepeatWrapping; URL.revokeObjectURL(url); } catch {} resolve(tex); }, undefined, ()=>{ try { URL.revokeObjectURL(url); } catch {} resolve(null); });
+					} catch { resolve(null); }
+				});
+			}
+			let mat = null;
+			if (files && (files.base || files.normal || files.roughness || files.metalness || files.ao || files.emissive || files.alpha)){
+				mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+				const [map, normalMap, roughnessMap, metalnessMap, aoMap, emissiveMap, alphaMap] = await Promise.all([
+					texFromFile(files.base), texFromFile(files.normal), texFromFile(files.roughness), texFromFile(files.metalness), texFromFile(files.ao), texFromFile(files.emissive), texFromFile(files.alpha)
+				]);
+				if (map) mat.map = map;
+				if (normalMap) { mat.normalMap = normalMap; mat.normalScale = new THREE.Vector2(detail.normalScale || 1, detail.normalScale || 1); }
+				if (roughnessMap) { mat.roughnessMap = roughnessMap; }
+				if (metalnessMap) { mat.metalnessMap = metalnessMap; }
+				if (aoMap) { mat.aoMap = aoMap; }
+				if (emissiveMap) { mat.emissiveMap = emissiveMap; mat.emissive = new THREE.Color(0xffffff); }
+				if (alphaMap) { mat.alphaMap = alphaMap; mat.transparent = true; }
+				// Repeats/offsets/rotation
+				const rep = detail.repeat || {x:1,y:1}; const off = detail.offset || {x:0,y:0}; const rot = detail.rotation || 0;
+				[mat.map, mat.normalMap, mat.roughnessMap, mat.metalnessMap, mat.aoMap, mat.emissiveMap, mat.alphaMap].forEach(t=>{
+					if (t) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep.x||1, rep.y||1); t.offset.set(off.x||0, off.y||0); t.rotation = rot||0; t.needsUpdate = true; }
+				});
+				if (typeof detail.scalars?.roughness === 'number') mat.roughness = detail.scalars.roughness;
+				if (typeof detail.scalars?.metalness === 'number') mat.metalness = detail.scalars.metalness;
+			}
+			const ok = applyMaterialToPickedFace(mat);
+			if (!ok) alert('Pick a face first (Pick Face), then Apply.');
+		} catch (e) { console.error('Face apply failed', e); }
+	});
+
+	document.addEventListener('sketcher:texture-editor:clear', ()=>{ try { clearAllFaceOverrides(); } catch {} });
 
 	// Texture library folder (File System Access API)
 	let __textureLibHandle = null;

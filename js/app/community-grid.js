@@ -9,9 +9,9 @@ let offsetX = 0, offsetY = 0, scale = 1;
 const MIN_SCALE = 0.4, MAX_SCALE = 2.5;
 const CELL = 200, TILE_INSET = 12, MAJOR_EVERY = 5;
 let tiles = []; const thumbCache = new Map();
-let ffeAllowed = false; // gated by sessionStorage password
-let currentGroup = null; // 'FFE' to show only FFE; 'public' to show only public; null to show both
-let ffeHeaderRow = null; // row index for the FFE header band; null when not shown
+let secretAllowed = false; // gated by sessionStorage password
+let currentGroup = null; // 'SECRET' to show only Secret Space; 'public' to show only public; null to show both
+let secretHeaderRow = null; // row index for the Secret Space header band; null when not shown
 let isPanning = false, panPointerId = null, startPanX = 0, startPanY = 0;
 let expandedId = null, animStart = 0, isCollapsing = false; const ANIM_MS = 160;
 let pulseIds = new Set(); // ids of tiles to subtly expand for trade
@@ -141,21 +141,21 @@ function drawTiles(){
       ctx.fillText(dateStr, dx + 10*scale, dy + h - Math.max(8*scale, 6));
     }
     // Group badge (bottom-right)
-    if (t.group === 'FFE') {
+    if (t.group === 'SECRET') {
       const badgePad = 8 * Math.max(1, scale);
       const bh = Math.max(18 * scale, 14), bw = Math.max(44 * scale, 38);
       const bx = dx + w - bw - badgePad, by = dy + h - bh - badgePad - Math.max(10*scale, 8);
       ctx.save(); ctx.globalAlpha = 0.95; ctx.fillStyle = 'rgba(255,0,255,0.85)'; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.0; roundRect(ctx, bx, by, bw, bh, 6*Math.max(0.75,scale)); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#111'; ctx.font = `${Math.max(11, 11*scale)}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('FFE', bx + bw/2, by + bh/2 + 0.5);
+      ctx.fillStyle = '#111'; ctx.font = `${Math.max(11, 11*scale)}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Secret', bx + bw/2, by + bh/2 + 0.5);
       ctx.restore();
     }
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
     ctx.restore();
   }
-  // Draw FFE header band between lists (1 minor square gap above and below)
-  if (ffeHeaderRow !== null) {
+  // Draw Secret Space header band between lists (1 minor square gap above and below)
+  if (secretHeaderRow !== null) {
     const dpr = DPR(); const vw = canvas.width / dpr; const vh = canvas.height / dpr;
-    const worldY = ffeHeaderRow * CELL; // top-left world Y of the header band
+    const worldY = secretHeaderRow * CELL; // top-left world Y of the header band
     const topLeft = worldToScreen(0, worldY);
     const headerW = 5 * CELL * scale; // span all 5 columns
     const headerH = CELL * scale; // 1 minor square tall
@@ -175,7 +175,7 @@ function drawTiles(){
       ctx.font = `${Math.max(14, 14*scale)}px system-ui, sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2;
-      ctx.fillText('FFE', x + headerW/2, y + headerH/2 + 0.5);
+  ctx.fillText('Secret Space', x + headerW/2, y + headerH/2 + 0.5);
       ctx.restore();
     }
   }
@@ -184,9 +184,9 @@ function drawTiles(){
     const dpr = DPR(); const vw = canvas.width / dpr, vh = canvas.height / dpr;
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = '14px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const msg = (currentGroup === 'FFE' && !ffeAllowed) ? 'Enter the FFE password in the side panel to view this collection' : 'No community scenes yet';
+  const msg = (currentGroup === 'SECRET' && !secretAllowed) ? 'Enter the Secret Space password in the side panel to view this collection' : 'No community scenes yet';
     ctx.fillText(msg, vw/2, vh/2 - 10);
-    if (!(currentGroup === 'FFE' && !ffeAllowed)) {
+  if (!(currentGroup === 'SECRET' && !secretAllowed)) {
       ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.font = '12px system-ui, sans-serif';
       ctx.fillText('Upload from the editor to share yours', vw/2, vh/2 + 12);
     }
@@ -216,20 +216,20 @@ function drawTiles(){
     const ovName = expandedTile.name || 'Untitled';
     ctx.fillText(ovName, sX+14, sY+sH-16);
     // Group badge in overlay footer
-    if (expandedTile.group === 'FFE') {
+    if (expandedTile.group === 'SECRET') {
       const bh = 22, bw = 58; const bx = sX + sW - bw - 12, by = sY + sH - bh - 12;
       ctx.save(); ctx.globalAlpha = 0.98; ctx.fillStyle = 'rgba(255,0,255,0.88)'; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.0; roundRect(ctx, bx, by, bw, bh, 8); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#111'; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('FFE', bx + bw/2, by + bh/2 + 0.5);
+      ctx.fillStyle = '#111'; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Secret', bx + bw/2, by + bh/2 + 0.5);
       ctx.restore();
     }
     ctx.shadowBlur = 0;
-    const isFFE = expandedTile.group === 'FFE';
-    const showAdd = isFFE || !!(tradeMode && tradeToken && pulseIds.has(expandedTile.id));
+    const isSecret = expandedTile.group === 'SECRET';
+    const showAdd = isSecret || !!(tradeMode && tradeToken && pulseIds.has(expandedTile.id));
     expandedTile.btnOpen = null;
     if (showAdd) {
       const btnW = 84, btnH = 30, by = sY + sH - btnH - 12, bxOpen = sX + sW - btnW - 12;
       expandedTile.btnOpen = { x: bxOpen, y: by, w: btnW, h: btnH };
-      drawButton(expandedTile.btnOpen, isFFE ? 'Download' : 'Add');
+      drawButton(expandedTile.btnOpen, isSecret ? 'Download' : 'Add');
     }
     ctx.restore(); ctx.restore(); if (tAnim < 1) requestAnimationFrame(draw);
   }
@@ -276,7 +276,8 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   const t = tileAt(sx, sy);
   if (t) {
-    const allowFree = t.group === 'FFE';
+  // Secret Space items are always freely accessible regardless of trade gating
+  const allowFree = t.group === 'SECRET';
     if (!allowFree && tradeMode && tradeToken && pulseIds.size && !pulseIds.has(t.id)) { // only restrict when in active trade with token
       isPanning = true; panPointerId = e.pointerId; startPanX = sx - offsetX; startPanY = sy - offsetY; canvas.classList.add('grabbing'); return;
     }
@@ -329,13 +330,13 @@ canvas.addEventListener('click', (e) => {
     // Add to personal collection: fetch full record then save locally
     (async () => { const rec = await communityApi.getCommunityScene(t.id).catch(()=>null); if (rec) {
       const local = await import('./local-store.js');
-  const isFFE = (rec.group === 'FFE');
-  // For FFE group, allow free download without trade token; otherwise require token
-  if (!isFFE && !tradeToken) { alert('Upload a scene to trade from the community.'); return; }
+  const isSecret = (rec.group === 'SECRET');
+  // For Secret Space, allow free download without trade token; otherwise require token
+  if (!isSecret && !tradeToken) { alert('Upload a scene to trade from the community.'); return; }
   const newId = await local.saveScene({ name: rec.name, json: rec.json, thumb: rec.thumb });
   try { sessionStorage.setItem('sketcher:lastTradePick', t.id); } catch {}
   try { sessionStorage.setItem('sketcher:newSceneId', newId); } catch {}
-  try { if (!isFFE) sessionStorage.removeItem('sketcher:tradeToken'); } catch {}
+  try { if (!isSecret) sessionStorage.removeItem('sketcher:tradeToken'); } catch {}
   window.location.href = './columbarium.html';
     } })();
     return;
@@ -346,26 +347,26 @@ canvas.addEventListener('click', (e) => {
 });
 
 async function loadTiles(){
-  // Load both public and FFE; allow ?group= to override
+  // Load both public and Secret Space; allow ?group= to override
   const cols = 5; const spacing = CELL;
-  let listPublic = []; let listFFE = [];
+  let listPublic = []; let listSecret = [];
   try {
-    if (currentGroup === 'FFE') {
-      if (ffeAllowed) {
-        listFFE = await communityApi.listLatestCommunity(20, { group: 'FFE' });
+    if (currentGroup === 'SECRET') {
+      if (secretAllowed) {
+        listSecret = await communityApi.listLatestCommunity(20, { group: 'SECRET' });
       } else {
-        listFFE = [];
+        listSecret = [];
       }
     } else if (currentGroup === 'public') {
       const all = await communityApi.listLatestCommunity(20, { group: null });
-      listPublic = (all || []).filter(it => (it.group || null) !== 'FFE');
+      listPublic = (all || []).filter(it => (it.group || null) !== 'SECRET');
     } else {
-      const [all, ffe] = await Promise.all([
+      const [all, secret] = await Promise.all([
         communityApi.listLatestCommunity(20, { group: null }),
-        ffeAllowed ? communityApi.listLatestCommunity(20, { group: 'FFE' }) : Promise.resolve([])
+        secretAllowed ? communityApi.listLatestCommunity(20, { group: 'SECRET' }) : Promise.resolve([])
       ]);
-      listPublic = (all || []).filter(it => (it.group || null) !== 'FFE');
-      listFFE = Array.isArray(ffe) ? ffe : [];
+      listPublic = (all || []).filter(it => (it.group || null) !== 'SECRET');
+      listSecret = Array.isArray(secret) ? secret : [];
     }
   } catch (e) { console.warn('Community lists failed', e); }
 
@@ -375,14 +376,14 @@ async function loadTiles(){
     const r = Math.floor(idx / cols); const c = idx % cols;
     tilesOut.push({ id: it.id, name: it.name, created_at: it.created_at, x: (c * spacing) + CELL/2, y: (r * spacing) + CELL/2, w: CELL, h: CELL, thumb: it.thumb || null, group: it.group || null });
   });
-  // Compute header row and FFE start row, with 1-row gap before and after the header
+  // Compute header row and Secret Space start row, with 1-row gap before and after the header
   const pubRows = Math.ceil((listPublic.length || 0) / cols);
   const gapAfterPublic = listPublic.length ? 1 : 0;
-  const showHeader = (currentGroup === null) && ffeAllowed && listPublic.length && listFFE.length;
-  ffeHeaderRow = showHeader ? (pubRows + gapAfterPublic) : null;
+  const showHeader = (currentGroup === null) && secretAllowed && listPublic.length && listSecret.length;
+  secretHeaderRow = showHeader ? (pubRows + gapAfterPublic) : null;
   const gapAfterHeader = showHeader ? 1 : 0;
   const startRow = pubRows + gapAfterPublic + (showHeader ? (1 + gapAfterHeader) : 0);
-  listFFE.forEach((it, idx) => {
+  listSecret.forEach((it, idx) => {
     const r = startRow + Math.floor(idx / cols); const c = idx % cols;
     tilesOut.push({ id: it.id, name: it.name, created_at: it.created_at, x: (c * spacing) + CELL/2, y: (r * spacing) + CELL/2, w: CELL, h: CELL, thumb: it.thumb || null, group: it.group || null });
   });
@@ -422,8 +423,9 @@ window.addEventListener('community:trade-picks', (e) => {
     if (ids.length) { pulseIds = new Set(ids); draw(); }
   } catch {}
 });
-// React to FFE unlocks from the panel
-window.addEventListener('ffe:unlocked', () => { try { ffeAllowed = sessionStorage.getItem('sketcher:ffe:ok') === '1'; } catch {} loadTiles().then(draw); });
+// React to Secret Space unlocks from the panel (legacy event name still supported)
+window.addEventListener('secret:unlocked', () => { try { secretAllowed = (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1'); } catch {} loadTiles().then(draw); });
+window.addEventListener('ffe:unlocked', () => { try { secretAllowed = (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1'); } catch {} loadTiles().then(draw); });
 // Parse trade intent
 try {
   const qs = new URLSearchParams(location.search);
@@ -431,18 +433,18 @@ try {
   tradeJustId = qs.get('just') || null;
   tradeToken = sessionStorage.getItem('sketcher:tradeToken');
   const g = (qs.get('group') || '').toUpperCase();
-  currentGroup = g === 'FFE' ? 'FFE' : (g === 'PUBLIC' ? 'public' : null);
-  // gate FFE visibility by password flag
-  ffeAllowed = sessionStorage.getItem('sketcher:ffe:ok') === '1';
+  currentGroup = (g === 'SECRET' || g === 'FFE') ? 'SECRET' : (g === 'PUBLIC' ? 'public' : null);
+  // Gate Secret visibility by password flag (back-compat key supported)
+  secretAllowed = (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1');
 } catch {}
 resize(); loadTiles().then(()=>{ centerOnTiles(); draw(); });
 
-// If user unlocks FFE via the side panel later in the session, refresh tiles
+// If user unlocks Secret Space via the side panel later in the session, refresh tiles
 window.addEventListener('storage', (e) => {
   try {
-    if (e.key === 'sketcher:ffe:ok') {
-      const now = sessionStorage.getItem('sketcher:ffe:ok') === '1';
-      if (now !== ffeAllowed) { ffeAllowed = now; loadTiles().then(draw); }
+    if (e.key === 'sketcher:secret:ok' || e.key === 'sketcher:ffe:ok') {
+      const now = (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1');
+      if (now !== secretAllowed) { secretAllowed = now; loadTiles().then(draw); }
     }
   } catch {}
 });

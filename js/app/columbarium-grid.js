@@ -249,7 +249,7 @@ async function createOverlay3D(tile, rect){
         const rec = await localStore.getScene(tile.id);
         if (!rec || !rec.json) { alert('Could not read scene.'); return; }
         const name = (rec.name||'Untitled').replace(/^gallery:/,'');
-        // Build a small inline dialog to choose Public vs FFE and enter password if needed
+  // Build a small inline dialog to choose Public vs Secret Space and enter password if needed
         const dlg = document.createElement('div');
         Object.assign(dlg.style, {
           position:'absolute', right:'12px', bottom:'48px', background:'#222', color:'#ddd',
@@ -258,10 +258,29 @@ async function createOverlay3D(tile, rect){
         });
         const title = document.createElement('div'); title.textContent = 'Upload to Community'; title.style.font = '600 13px system-ui, sans-serif'; title.style.color = '#fff';
         const row = document.createElement('label'); row.style.display='flex'; row.style.alignItems='center'; row.style.gap='8px';
-        const cb = document.createElement('input'); cb.type='checkbox'; cb.id = 'ffeToggle';
-        const lab = document.createElement('span'); lab.textContent = 'Upload to FFE (requires password)';
-        row.append(cb, lab);
-        const pwd = document.createElement('input'); pwd.type='password'; pwd.placeholder='FFE password'; Object.assign(pwd.style,{ width:'100%', padding:'6px 8px', borderRadius:'6px', border:'1px solid rgba(255,255,255,0.16)', background:'#111', color:'#ddd' }); pwd.disabled = true; pwd.autocomplete = 'off';
+        const cb = document.createElement('input'); cb.type='checkbox'; cb.id = 'secretToggle'; cb.setAttribute('aria-label','Upload to Secret Space');
+        const lab = document.createElement('span'); lab.textContent = 'Upload to Secret Space (requires password)';
+        // Lightbulb indicator for password state (off when empty, on when filled)
+        const bulbSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        bulbSvg.setAttribute('viewBox','0 0 24 24'); bulbSvg.setAttribute('width','18'); bulbSvg.setAttribute('height','18'); bulbSvg.setAttribute('aria-hidden','true');
+        const bulbBody = document.createElementNS('http://www.w3.org/2000/svg','path');
+        bulbBody.setAttribute('d','M12 2c-3.866 0-7 3.134-7 7 0 2.207 1.024 4.169 2.62 5.44.58.463 1.08 1.373 1.08 2.06V18h6v-.5c0-.687.5-1.597 1.08-2.06C17.976 13.169 19 11.207 19 9c0-3.866-3.134-7-7-7z');
+        const bulbBase = document.createElementNS('http://www.w3.org/2000/svg','path');
+        bulbBase.setAttribute('d','M9 19h6M9.5 21h5'); bulbBase.setAttribute('fill','none'); bulbBase.setAttribute('stroke-linecap','round'); bulbBase.setAttribute('stroke-width','2');
+        bulbSvg.appendChild(bulbBody); bulbSvg.appendChild(bulbBase);
+        const setBulb = (on) => {
+          if (on) {
+            bulbBody.setAttribute('fill','#ffeb3b'); bulbBody.setAttribute('stroke','#ffeb3b'); bulbBody.setAttribute('stroke-width','1.5');
+            bulbBase.setAttribute('stroke','#ffeb3b');
+            bulbSvg.setAttribute('title','Secret password entered');
+          } else {
+            bulbBody.setAttribute('fill','none'); bulbBody.setAttribute('stroke','#888'); bulbBody.setAttribute('stroke-width','2');
+            bulbBase.setAttribute('stroke','#888');
+            bulbSvg.setAttribute('title','Enter Secret Space password');
+          }
+        };
+        row.append(cb, lab, bulbSvg);
+        const pwd = document.createElement('input'); pwd.type='password'; pwd.placeholder='Secret Space password'; Object.assign(pwd.style,{ width:'100%', padding:'6px 8px', borderRadius:'6px', border:'1px solid rgba(255,255,255,0.16)', background:'#111', color:'#ddd' }); pwd.disabled = true; pwd.autocomplete = 'off';
         const foot = document.createElement('div'); foot.style.display='flex'; foot.style.gap='8px'; foot.style.justifyContent='flex-end';
         const cancel = document.createElement('button'); cancel.textContent='Cancel'; Object.assign(cancel.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer' });
         const upload = document.createElement('button'); upload.textContent='Upload'; Object.assign(upload.style,{ background:'linear-gradient(180deg,#ff2cff,#b500b5)', color:'#111', border:'1px solid rgba(255,0,255,0.35)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', fontWeight:'600' });
@@ -270,19 +289,22 @@ async function createOverlay3D(tile, rect){
         container.appendChild(dlg);
         const closeDlg = () => { try { dlg.remove(); } catch {} };
         cancel.addEventListener('click', closeDlg);
-        cb.addEventListener('change', () => { pwd.disabled = !cb.checked; if (cb.checked) { pwd.focus(); } else { pwd.value=''; } });
+  const updateBulb = () => { const on = cb.checked && (pwd.value || '').trim().length > 0; setBulb(on); };
+  setBulb(false);
+  cb.addEventListener('change', () => { pwd.disabled = !cb.checked; if (cb.checked) { pwd.focus(); } else { pwd.value=''; } updateBulb(); });
+  pwd.addEventListener('input', updateBulb);
         upload.addEventListener('click', async () => {
           try {
-            const isFFE = cb.checked;
-            const password = isFFE ? (pwd.value || '').trim() : null;
-            if (isFFE && password !== 'CLINT') { alert('Incorrect FFE password.'); return; }
+            const isSecret = cb.checked;
+            const password = isSecret ? (pwd.value || '').trim() : null;
+            if (isSecret && password !== 'CLINT') { alert('Incorrect Secret Space password.'); return; }
             upload.disabled = true; upload.textContent = 'Uploading…';
             // Generate a thumbnail if missing
             let thumb = rec.thumb || null;
             if (!thumb) {
               try { const mod = await import('./community.js'); thumb = await mod.generateSceneThumbnail(rec.json).catch(()=>null); } catch {}
             }
-            const group = isFFE ? 'FFE' : null;
+            const group = isSecret ? 'SECRET' : null;
             const res = await communityApi.saveCommunityScene({ name, json: rec.json, thumb, group, password });
             try { sessionStorage.setItem('sketcher:tradeToken', crypto.randomUUID?.() || String(Date.now())); } catch {}
             const url = new URL('./community.html', location.href);

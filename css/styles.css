@@ -210,6 +210,11 @@ canvas { z-index: 0; }
 #textureEditor.compact input[type="number"],
 #textureEditor.compact input[type="file"] { padding: 3px 5px; }
 #textureEditor.compact .te-grid-2 { gap:6px; grid-template-columns: repeat( auto-fit, minmax(100px, 1fr) ); }
+/* Hide text labels and tighten header in compact mode */
+#textureEditor.compact .te-label { display: none !important; }
+#textureEditor.compact .te-header { padding:6px 8px !important; }
+#textureEditor.compact .te-header .btn { padding: 0 6px; height:22px; }
+#textureEditor.compact .te-ico { opacity: 0.95; }
 @media (max-width: 420px) {
 	#textureEditor { width: 92vw !important; left: 4vw !important; right: 4vw !important; }
 	#textureEditor .te-body { max-height: calc(100vh - 160px); }

@@ -8,9 +8,18 @@
   const compactBtn = document.getElementById('teCompact');
   const chooseFolderBtn = document.getElementById('teChooseFolder');
   const folderNameEl = document.getElementById('teFolderName');
-  const pickFaceBtn = document.getElementById('tePickFace');
   const applyBtn = document.getElementById('teApply');
   const clearBtn = document.getElementById('teClear');
+  // New pick buttons mapping to hidden file inputs
+  const pickMap = [
+    { btn: 'teBasePick', input: 'teBaseColor' },
+    { btn: 'teNormalPick', input: 'teNormal' },
+    { btn: 'teRoughnessPick', input: 'teRoughness' },
+    { btn: 'teMetalnessPick', input: 'teMetalness' },
+    { btn: 'teAOPick', input: 'teAO' },
+    { btn: 'teEmissivePick', input: 'teEmissive' },
+    { btn: 'teAlphaPick', input: 'teAlpha' },
+  ];
 
   // Dragging
   let drag = null;
@@ -72,6 +81,15 @@
     compactBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 
+  // Hook up pick buttons to click their corresponding hidden file inputs
+  try {
+    pickMap.forEach(({ btn, input }) => {
+      const b = document.getElementById(btn);
+      const i = document.getElementById(input);
+      if (b && i) b.addEventListener('click', () => i.click());
+    });
+  } catch {}
+
   // Folder choose wiring and live name updates
   chooseFolderBtn?.addEventListener('click', ()=>{
     document.dispatchEvent(new CustomEvent('sketcher:chooseTextureFolder'));
@@ -80,10 +98,7 @@
     try { const name = (e.detail && e.detail.name) ? e.detail.name : 'No folder'; if (folderNameEl) folderNameEl.textContent = name; } catch {}
   });
 
-  // Minimal selection/face-pick toggles: dispatch events for app.js to react if needed later
-  pickFaceBtn?.addEventListener('click', ()=>{
-    document.dispatchEvent(new CustomEvent('sketcher:texture-editor:pick-face'));
-  });
+  // No explicit Pick Face button; face target applies to the last clicked face on Apply.
 
   // Apply/Clear stub: emit an event with current UI values; app.js can listen and act
   function getVals(){

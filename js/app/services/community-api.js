@@ -45,13 +45,18 @@ export async function saveCommunityScene({ name, json, thumb, group = null, pass
   if (jsonText.length > 300000) throw new Error('Scene too large');
   let thumb_url = null;
   try { thumb_url = await uploadThumbDataUrl(thumb); } catch {}
-  // Optional FFE password gate (client-side only; add RLS/policy server-side for real security)
-  if (group === 'FFE' && password !== 'CLINT') {
-    throw new Error('Invalid password for FFE upload');
+  // Optional Secret Space password gate (client-side only; add RLS/policy server-side for real security)
+  // Accept legacy 'FFE' and new 'SECRET' (canonical) identifiers
+  const isSecretGroup = (group === 'SECRET' || group === 'Secret Space' || group === 'SECRET_SPACE' || group === 'FFE');
+  if (isSecretGroup && password !== 'CLINT') {
+    throw new Error('Invalid password for Secret Space upload');
   }
   const payload = { name, json: JSON.parse(jsonText), thumb_url };
   // Use 'label' as the DB column to avoid reserved keyword issues with 'group'
-  if (group) payload.label = group;
+  if (group) {
+    // Canonicalize label to 'SECRET' (but keep backward compat on read)
+    payload.label = isSecretGroup ? 'SECRET' : group;
+  }
   // Insert, retry without group if the column doesn't exist yet
   let data = null; let error = null;
   try {
@@ -123,7 +128,10 @@ export async function getCommunityScene(id) {
       .eq('id', id)
       .single();
     if (error) throw error;
-    return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url, group: data.label || null };
+    // Map legacy 'FFE' to 'SECRET' for downstream code, but preserve UI choice elsewhere
+    const label = data.label || null;
+    const group = (label === 'FFE' || label === 'SECRET') ? 'SECRET' : (label || null);
+    return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url, group };
   } catch (e) {
     const { data, error } = await supabase
       .from('community_scenes')
@@ -145,10 +153,21 @@ export async function listLatestCommunity(limit = 10, { group = null } = {}) {
       .select('id,name,thumb_url,created_at,label')
       .order('created_at', { ascending: false })
       .limit(Math.max(1, limit));
-    if (group) q = q.eq('label', group);
+    if (group) {
+      // Back-compat: if requesting Secret Space, include legacy 'FFE' too
+      if (group === 'SECRET' || group === 'Secret Space' || group === 'SECRET_SPACE') {
+        q = q.in('label', ['SECRET', 'FFE']);
+      } else {
+        q = q.eq('label', group);
+      }
+    }
     const { data, error } = await q;
     if (error) throw error;
-    return (data || []).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at, group: r.label || null }));
+    return (data || []).map(r => {
+      const label = r.label || null;
+      const groupOut = (label === 'FFE' || label === 'SECRET') ? 'SECRET' : (label || null);
+      return { id: r.id, name: r.name, thumb: r.thumb_url || '', created_at: r.created_at, group: groupOut };
+    });
   } catch (e) {
     // Legacy schema without 'label' column: cannot represent FFE; return empty for FFE requests
     if (group) {
