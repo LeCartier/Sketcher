@@ -1,24 +1,30 @@
 // Minimal Supabase client wrapper for community scenes
-// No bundler needed; uses ESM import from Skypack CDN for @supabase/supabase-js
+// Supports multiple user-added Supabase sources while always including the default
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config/community.js';
+import { resolveCredentials } from './supabase-sources.js';
 
 // Lazy-load Supabase client to avoid cost if feature unused
-let _sb = null;
-async function getClient() {
-  if (_sb) return _sb;
-  // Use a robust ESM CDN for browsers (Skypack can be flaky/CORS-blocked)
+const _clients = new Map(); // key: sourceId or 'main'
+async function getClient(sourceId = 'main') {
+  if (_clients.has(sourceId)) return _clients.get(sourceId);
   const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
-  _sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false },
-    global: { headers: { 'x-application-name': 'Sketcher' } }
-  });
-  return _sb;
+  let url = SUPABASE_URL; let key = SUPABASE_ANON_KEY; let thumbsBucket = 'thumbs'; let table = 'community_scenes';
+  if (sourceId && sourceId !== 'main') {
+    try {
+      const creds = await resolveCredentials(sourceId);
+      if (creds) { url = creds.url; key = creds.anonKey; thumbsBucket = creds.thumbsBucket || 'thumbs'; table = creds.table || 'community_scenes'; }
+    } catch (e) { console.warn('Custom source resolution failed, falling back to main', e); }
+  }
+  const sb = createClient(url, key, { auth: { persistSession: false }, global: { headers: { 'x-application-name': 'Sketcher' } } });
+  const client = { sb, thumbsBucket, table, sourceId };
+  _clients.set(sourceId, client);
+  return client;
 }
 
 // Upload a data URL thumbnail to the public 'thumbs' bucket; return public URL
-async function uploadThumbDataUrl(dataUrl) {
+async function uploadThumbDataUrl(dataUrl, sourceId = 'main') {
   if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
-  const supabase = await getClient();
+  const { sb: supabase, thumbsBucket } = await getClient(sourceId);
   const match = dataUrl.match(/^data:(.*?);base64,(.*)$/);
   if (!match) return null;
   const mime = match[1] || 'image/png';
@@ -27,24 +33,24 @@ async function uploadThumbDataUrl(dataUrl) {
   const ext = mime.includes('jpeg') ? 'jpg' : (mime.includes('png') ? 'png' : 'bin');
   const name = `${crypto.randomUUID?.() || (Date.now()+"-"+Math.random().toString(36).slice(2))}.${ext}`;
   const path = name; // flat namespace in thumbs bucket
-  const { data, error } = await supabase.storage.from('thumbs').upload(path, bytes, {
+  const { data, error } = await supabase.storage.from(thumbsBucket).upload(path, bytes, {
     contentType: mime,
     cacheControl: '31536000',
     upsert: false
   });
   if (error) { console.warn('Thumb upload failed', error); return null; }
-  const { data: pub } = supabase.storage.from('thumbs').getPublicUrl(path);
+  const { data: pub } = supabase.storage.from(thumbsBucket).getPublicUrl(path);
   return pub?.publicUrl || null;
 }
 
-export async function saveCommunityScene({ name, json, thumb, group = null, password = null }) {
-  const supabase = await getClient();
+export async function saveCommunityScene({ name, json, thumb, group = null, password = null, sourceId = 'main' }) {
+  const { sb: supabase, table, thumbsBucket } = await getClient(sourceId);
   // Enforce simple client-side size checks (defense-in-depth with DB constraints)
   if (!name || name.length > 80) name = (name || 'Untitled').slice(0, 80);
   const jsonText = typeof json === 'string' ? json : JSON.stringify(json || {});
   if (jsonText.length > 300000) throw new Error('Scene too large');
   let thumb_url = null;
-  try { thumb_url = await uploadThumbDataUrl(thumb); } catch {}
+  try { thumb_url = await uploadThumbDataUrl(thumb, sourceId); } catch {}
   // Optional Secret Space password gate (client-side only; add RLS/policy server-side for real security)
   // Accept legacy 'FFE' and new 'SECRET' (canonical) identifiers
   const isSecretGroup = (group === 'SECRET' || group === 'Secret Space' || group === 'SECRET_SPACE' || group === 'FFE');
@@ -60,20 +66,20 @@ export async function saveCommunityScene({ name, json, thumb, group = null, pass
   // Insert, retry without group if the column doesn't exist yet
   let data = null; let error = null;
   try {
-    ({ data, error } = await supabase.from('community_scenes').insert(payload).select('id').single());
+    ({ data, error } = await supabase.from(table).insert(payload).select('id').single());
     if (error) throw error;
   } catch (e) {
     // Fallback: remove group and try again for older schema
     try {
   const legacy = { ...payload }; delete legacy.label;
-      ({ data, error } = await supabase.from('community_scenes').insert(legacy).select('id').single());
+      ({ data, error } = await supabase.from(table).insert(legacy).select('id').single());
       if (error) throw error;
     } catch (e2) { throw e2; }
   }
   // Backend cap: keep only latest 20 (best-effort) and remove orphaned thumbs
   try {
     const { data: rows } = await supabase
-      .from('community_scenes')
+      .from(table)
       .select('id,created_at,thumb_url')
       .order('created_at', { ascending: false })
       .limit(100);
@@ -91,20 +97,23 @@ export async function saveCommunityScene({ name, json, thumb, group = null, pass
           })
           .filter(Boolean);
         if (paths.length) {
-          await supabase.storage.from('thumbs').remove(paths);
+          // remove from the configured bucket and attempt common legacy names
+          try { await supabase.storage.from(thumbsBucket).remove(paths); } catch {}
+          try { await supabase.storage.from('thumbs').remove(paths); } catch {}
+          try { await supabase.storage.from('thumbs_public').remove(paths); } catch {}
         }
       } catch (err) { console.warn('Thumb cleanup failed', err); }
-      if (toDelete.length) { await supabase.from('community_scenes').delete().in('id', toDelete); }
+      if (toDelete.length) { await supabase.from(table).delete().in('id', toDelete); }
     }
   } catch {}
   return { id: data.id, name, thumb_url };
 }
 
-export async function pickRandomCommunity(n = 5) {
-  const supabase = await getClient();
+export async function pickRandomCommunity(n = 5, { sourceId = 'main' } = {}) {
+  const { sb: supabase, table } = await getClient(sourceId);
   // Use RPC-like random ordering via SQL function; fallback to LIMIT if needed
   const { data, error } = await supabase
-    .from('community_scenes')
+    .from(table)
     .select('id,name,thumb_url')
     .order('created_at', { ascending: false })
     .limit(200);
@@ -118,12 +127,12 @@ export async function pickRandomCommunity(n = 5) {
   return list.slice(0, Math.max(1, n)).map(r => ({ id: r.id, name: r.name, thumb: r.thumb_url || '' }));
 }
 
-export async function getCommunityScene(id) {
-  const supabase = await getClient();
+export async function getCommunityScene(id, { sourceId = 'main' } = {}) {
+  const { sb: supabase, table } = await getClient(sourceId);
   // Try selecting with group column; fallback to legacy schema
   try {
     const { data, error } = await supabase
-      .from('community_scenes')
+      .from(table)
       .select('id,name,json,thumb_url,label')
       .eq('id', id)
       .single();
@@ -134,7 +143,7 @@ export async function getCommunityScene(id) {
     return { id: data.id, name: data.name, json: data.json, thumb: data.thumb_url, group };
   } catch (e) {
     const { data, error } = await supabase
-      .from('community_scenes')
+  .from(table)
       .select('id,name,json,thumb_url')
       .eq('id', id)
       .single();
@@ -143,13 +152,13 @@ export async function getCommunityScene(id) {
   }
 }
 
-export async function listLatestCommunity(limit = 10, { group = null } = {}) {
-  const supabase = await getClient();
+export async function listLatestCommunity(limit = 10, { group = null, sourceId = 'main' } = {}) {
+  const { sb: supabase, table } = await getClient(sourceId);
   // Prefer created_at only to avoid errors if updated_at is absent
   // Try with group column present; if it fails, fallback to legacy query without group filtering
   try {
     let q = supabase
-      .from('community_scenes')
+      .from(table)
       .select('id,name,thumb_url,created_at,label')
       .order('created_at', { ascending: false })
       .limit(Math.max(1, limit));
@@ -174,7 +183,7 @@ export async function listLatestCommunity(limit = 10, { group = null } = {}) {
       return [];
     }
     const { data, error } = await supabase
-      .from('community_scenes')
+  .from(table)
       .select('id,name,thumb_url,created_at')
       .order('created_at', { ascending: false })
       .limit(Math.max(1, limit));

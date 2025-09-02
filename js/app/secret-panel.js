@@ -1,5 +1,6 @@
 // Secret Space panel controller: prompt for password, then list Secret items in a side panel
 import * as communityApi from './services/community-api.js';
+import { getActiveSourceId } from './ui/sources.js';
 
 const btn = document.getElementById('secretAccessBtn');
 const panel = document.getElementById('secretPanel');
@@ -36,7 +37,7 @@ function card(rec){
   const dl = document.createElement('button'); dl.textContent = 'Download';
   dl.addEventListener('click', async () => {
     try {
-      const full = await communityApi.getCommunityScene(rec.id);
+  const full = await communityApi.getCommunityScene(rec.id, { sourceId: getActiveSourceId() });
       const { saveScene } = await import('./local-store.js');
       const newId = await saveScene({ name: full.name, json: full.json, thumb: full.thumb });
       try { sessionStorage.setItem('sketcher:newSceneId', newId); } catch {}
@@ -52,7 +53,7 @@ async function loadSecret(){
   try {
     if (!listEl) return;
     listEl.innerHTML = '';
-    const items = await communityApi.listLatestCommunity(20, { group: 'SECRET' });
+  const items = await communityApi.listLatestCommunity(20, { group: 'SECRET', sourceId: getActiveSourceId() });
     if (!Array.isArray(items) || !items.length) {
       const empty = document.createElement('div'); empty.textContent = 'No Secret Space items yet.'; empty.style.color = '#aaa'; empty.style.padding = '10px';
       listEl.appendChild(empty); return;
@@ -62,10 +63,32 @@ async function loadSecret(){
 }
 
 function wire(){
+  // Render bulb icon and state
+  const renderBulb = () => {
+    if (!btn) return;
+    const ok = (()=>{ try { return (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1'); } catch { return false; } })();
+    btn.innerHTML = '';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true'); svg.style.width='24px'; svg.style.height='24px';
+    const body = document.createElementNS('http://www.w3.org/2000/svg','path'); body.setAttribute('d','M12 2c-3.866 0-7 3.134-7 7 0 2.207 1.024 4.169 2.62 5.44.58.463 1.08 1.373 1.08 2.06V18h6v-.5c0-.687.5-1.597 1.08-2.06C17.976 13.169 19 11.207 19 9c0-3.866-3.134-7-7-7z');
+    const base = document.createElementNS('http://www.w3.org/2000/svg','path'); base.setAttribute('d','M9 19h6M9.5 21h5'); base.setAttribute('fill','none'); base.setAttribute('stroke-linecap','round'); base.setAttribute('stroke-width','2');
+    if (ok) { body.setAttribute('fill','#ffeb3b'); body.setAttribute('stroke','#ffeb3b'); body.setAttribute('stroke-width','1.5'); base.setAttribute('stroke','#ffeb3b'); }
+    else { body.setAttribute('fill','none'); body.setAttribute('stroke','#888'); body.setAttribute('stroke-width','2'); base.setAttribute('stroke','#888'); }
+    svg.appendChild(body); svg.appendChild(base); btn.appendChild(svg);
+    btn.title = ok ? 'Secret Space (unlocked)' : 'Secret Space (locked)';
+  };
+  renderBulb();
+  window.addEventListener('storage', (e)=>{ if (e.key === 'sketcher:secret:ok' || e.key === 'sketcher:ffe:ok') renderBulb(); });
   if (btn) btn.addEventListener('click', async () => {
+    const wasUnlocked = (()=>{ try { return (sessionStorage.getItem('sketcher:secret:ok') === '1') || (sessionStorage.getItem('sketcher:ffe:ok') === '1'); } catch { return false; } })();
     const ok = await ensurePassword(); if (!ok) return;
-    setOpen(panel && !panel.classList.contains('open'));
-    if (panel && panel.classList.contains('open')) loadSecret();
+    // Only toggle panel if it was already unlocked; unlocking shouldn’t auto-open
+    if (wasUnlocked) {
+      setOpen(panel && !panel.classList.contains('open'));
+      if (panel && panel.classList.contains('open')) loadSecret();
+    }
+    // reflect bulb state and ask grid to refresh header visibility
+    renderBulb();
+    try { window.dispatchEvent(new Event('secret:unlocked')); } catch {}
   });
   if (closeBtn) closeBtn.addEventListener('click', () => setOpen(false));
 }

@@ -18,7 +18,10 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     prevCam: null,
     cleanup: [],
     maxAniso: (renderer?.capabilities?.getMaxAnisotropy && renderer.capabilities.getMaxAnisotropy()) || 1,
-    prevPixelRatio: null,
+  prevPixelRatio: null,
+  prevToneMapping: null,
+  prevToneExposure: null,
+  prevOutputCS: null,
   // Colliders cache for walk-mode collisions
   colliders: [],
   colliderRefreshTimer: 0,
@@ -54,9 +57,28 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     // Modest supersampling on desktop
     try { state.prevPixelRatio = renderer.getPixelRatio ? renderer.getPixelRatio() : null; } catch{}
     try { renderer.setPixelRatio && renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); } catch{}
+    // Tone mapping suitable for HDR backgrounds
+    try {
+      state.prevToneMapping = renderer.toneMapping;
+      state.prevToneExposure = renderer.toneMappingExposure;
+      state.prevOutputCS = renderer.outputColorSpace || renderer.outputEncoding;
+      renderer.outputColorSpace = (THREE.SRGBColorSpace || renderer.outputColorSpace);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.85;
+    } catch{}
   }
 
-  function restoreQuality(){ try { if (state.prevPixelRatio != null) renderer.setPixelRatio(state.prevPixelRatio); } catch{} }
+  function restoreQuality(){
+    try { if (state.prevPixelRatio != null) renderer.setPixelRatio(state.prevPixelRatio); } catch{}
+    try { if (state.prevToneMapping != null) renderer.toneMapping = state.prevToneMapping; } catch{}
+    try { if (state.prevToneExposure != null) renderer.toneMappingExposure = state.prevToneExposure; } catch{}
+    try {
+      if (state.prevOutputCS != null) {
+        if ('outputColorSpace' in renderer) renderer.outputColorSpace = state.prevOutputCS;
+        else if ('outputEncoding' in renderer) renderer.outputEncoding = state.prevOutputCS;
+      }
+    } catch{}
+  }
 
   function onKey(e, down){
     if (!state.active) return; const k = e.key;
@@ -461,7 +483,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     return false;
   }
 
-  // ---- Desktop AR environment (sun/ground/sky) ----
+  // ---- Desktop environment (sun/ground/sky + optional HDRI) ----
   function initDesktopEnv(){
     if (state.env) return;
     const group = new THREE.Group(); group.name = '__fp_env';
@@ -495,23 +517,29 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   const params = { azimuth: 135, elevation: 45, intensity: 1.2, color: '#ffffff', shadows: true };
     applySun(params, sun);
     // Cache and expose
-  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null };
+  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'sky' };
   // Enable shadow casting on scene meshes (store previous)
   try { enableSceneShadows(); } catch{}
   // Subtle hemisphere light for better separation
   try { const hemi = new THREE.HemisphereLight(0xdfe8ff, 0xf0efe9, 0.35); state.env.hemi = hemi; scene.add(hemi); } catch{}
+  // HDRI is optional; user can enable it from the Sun panel. We lazy-load when toggled.
   }
 
   function disposeDesktopEnv(){
     const e = state.env; if (!e) return; state.env = null;
   try { restoreMaterialsAndShadows(e); } catch{}
-    try { scene.background = e.prevBg || null; } catch{}
+  try { scene.background = e.prevBg || null; } catch{}
+  try { scene.environment = null; } catch{}
     try { if (e.skyTex && e.skyTex.dispose) e.skyTex.dispose(); } catch{}
     try { if (e.ground && e.ground.geometry) e.ground.geometry.dispose(); if (e.ground && e.ground.material && e.ground.material.dispose) e.ground.material.dispose(); } catch{}
   try { if (e.sun && e.sun.parent) e.sun.parent.remove(e.sun); } catch{}
   try { if (e.hemi && e.hemi.parent) e.hemi.parent.remove(e.hemi); } catch{}
     try { if (e.group && e.group.parent) e.group.parent.remove(e.group); } catch{}
     try { if (Array.isArray(e.hiddenGrids)) e.hiddenGrids.forEach(g=>{ try { g.visible = true; } catch{} }); } catch{}
+  // Dispose PMREM/HDR resources
+  try { if (e.pmrem && e.pmrem.dispose) e.pmrem.dispose(); } catch{}
+  try { if (e.hdrEquirect && e.hdrEquirect.dispose) e.hdrEquirect.dispose(); } catch{}
+  try { if (e.envMap && e.envMap.dispose) e.envMap.dispose(); } catch{}
   }
 
   function makeSkyTexture(top, bottom){
@@ -546,16 +574,36 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
       background:'#111a', color:'#fff', border:'1px solid #666', borderRadius:'10px', padding:'10px 12px',
       backdropFilter:'blur(6px)', display:'grid', gridTemplateColumns:'auto 1fr', gap:'6px 10px', minWidth:'260px'
     });
-    const mkLabel = (t)=>{ const l=document.createElement('label'); l.textContent=t; l.style.alignSelf='center'; return l; };
+  const mkLabel = (t)=>{ const l=document.createElement('label'); l.textContent=t; l.style.alignSelf='center'; return l; };
     const mkRange = (min,max,step,val)=>{ const r=document.createElement('input'); r.type='range'; r.min=min; r.max=max; r.step=step; r.value=val; r.style.width='140px'; return r; };
     const mkColor = (val)=>{ const i=document.createElement('input'); i.type='color'; i.value=val; return i; };
-    const mkCheck = (val)=>{ const i=document.createElement('input'); i.type='checkbox'; i.checked=val; return i; };
-    const s = state.env.params; const sun = state.env.sun;
+  const mkCheck = (val)=>{ const i=document.createElement('input'); i.type='checkbox'; i.checked=val; return i; };
+  const s = state.env.params; const sun = state.env.sun;
     const az = mkRange(0,360,1,s.azimuth);
     const el = mkRange(0,90,1,s.elevation);
     const it = mkRange(0,5,0.1,s.intensity);
     const col = mkColor(s.color);
     const sh = mkCheck(s.shadows);
+    // Background mode toggle (HDR vs Sky)
+    const bgLabel = mkLabel('Background');
+    const bgSel = document.createElement('select'); bgSel.innerHTML = '<option value="sky">Sky</option><option value="hdr">HDRI</option>'; bgSel.value = (state.env.bgMode || 'sky');
+    bgSel.addEventListener('change', ()=>{
+      try { state.env.bgMode = bgSel.value; applyBackgroundMode(); } catch{}
+    });
+    // HDRI file picker (accept .hdr); lazy-loads and switches to HDR mode
+    const fileLabel = mkLabel('HDRI File');
+    const fileBtn = document.createElement('button'); fileBtn.textContent = 'Choose…'; fileBtn.style.padding='6px 10px'; fileBtn.style.borderRadius='8px'; fileBtn.style.border='1px solid #666'; fileBtn.style.background='#222'; fileBtn.style.color='#fff';
+    const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.hdr'; fileInput.style.display='none';
+    fileBtn.addEventListener('click', ()=> fileInput.click());
+    fileInput.addEventListener('change', ()=>{
+      const f = fileInput.files && fileInput.files[0]; if (!f) return;
+      try {
+        // Switch to HDR mode BEFORE loading so applyBackgroundMode() uses HDR when the texture resolves
+        state.env.bgMode = 'hdr';
+        bgSel.value = 'hdr';
+        loadHDRIFromFile(f);
+      } catch{}
+    });
     const close = document.createElement('button'); close.textContent='Close'; close.style.gridColumn='1 / span 2'; close.style.marginTop='6px';
     close.style.padding='6px 10px'; close.style.borderRadius='8px'; close.style.border='1px solid #666'; close.style.background='#222'; close.style.color='#fff';
     // Wire events
@@ -569,9 +617,71 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
       mkLabel('Intensity'), it,
       mkLabel('Color'), col,
       mkLabel('Shadows'), sh,
+      bgLabel, bgSel,
+      fileLabel, fileBtn,
       close
     );
     document.body.appendChild(p);
+    // Attach hidden input after appending panel
+    p.appendChild(fileInput);
+  }
+
+  // ---- HDRI environment ----
+  async function loadHDRI(url){
+    try {
+      const [{ RGBELoader }] = await Promise.all([
+        import('../../vendor/RGBELoader.js')
+      ]);
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      const loader = new RGBELoader();
+      loader.setDataType(THREE.UnsignedByteType);
+    loader.load(url, (hdrTex)=>{
+        try {
+      hdrTex.mapping = THREE.EquirectangularReflectionMapping;
+          // RGBELoader provides linear data; leave colorSpace at default for accurate HDR background
+      try { hdrTex.magFilter = THREE.LinearFilter; hdrTex.minFilter = THREE.LinearFilter; hdrTex.generateMipmaps = false; } catch{}
+          const envMap = pmrem.fromEquirectangular(hdrTex).texture;
+          // Cache resources for cleanup
+          if (state.env){
+            // Dispose previous HDR resources if replacing
+            try { if (state.env.pmrem && state.env.pmrem !== pmrem) state.env.pmrem.dispose(); } catch{}
+            try { if (state.env.envMap && state.env.envMap !== envMap) state.env.envMap.dispose(); } catch{}
+            try { if (state.env.hdrEquirect && state.env.hdrEquirect !== hdrTex) state.env.hdrEquirect.dispose(); } catch{}
+            try { if (state.env.hdrObjectUrl) { URL.revokeObjectURL(state.env.hdrObjectUrl); state.env.hdrObjectUrl = null; } } catch{}
+            state.env.pmrem = pmrem;
+            state.env.hdrEquirect = hdrTex;
+            state.env.envMap = envMap;
+            scene.environment = envMap;
+            applyBackgroundMode();
+    try { console.info('[FP] HDRI loaded:', url); } catch{}
+          }
+        } catch{}
+  }, undefined, (err)=>{ try { pmrem.dispose(); } catch{} try { console.warn('[FP] HDRI load failed:', url, err); } catch{} });
+    } catch{}
+  }
+
+  function loadHDRIFromFile(file){
+    try {
+      const url = URL.createObjectURL(file);
+      // Stash so we can revoke later on replacement or dispose
+      if (state.env) state.env.hdrObjectUrl = url;
+      loadHDRI(url);
+    } catch{}
+  }
+
+  function applyBackgroundMode(){
+    const e = state.env; if (!e) return;
+  const mode = e.bgMode || 'sky';
+    if (mode === 'hdr'){
+      if (!e.envMap && !e.hdrEquirect){ try { loadHDRI('assets/Base.hdr'); } catch{} }
+      // Prefer the sharp equirectangular HDR for background, PMREM env for lighting
+      try { scene.background = e.hdrEquirect || e.envMap || e.skyTex || null; } catch{}
+      try { scene.environment = e.envMap || null; } catch{}
+    } else {
+      try { scene.background = e.skyTex || null; } catch{}
+      try { scene.environment = null; } catch{}
+    }
   }
 
   // ---- Materials and shadows management ----

@@ -1,6 +1,7 @@
 import * as THREE from '../vendor/three.module.js';
 import * as localStore from './local-store.js';
 import * as communityApi from './services/community-api.js';
+import { getActiveSourceId } from './ui/sources.js';
 
 // Re-export selected APIs so community.html stays simple
 export const listCommunityScenes = localStore.listCommunityScenes;
@@ -42,7 +43,7 @@ let overlay = null;
 async function openPreviewById(id){
   // Try backend first, fallback to local
   let rec = null;
-  try { rec = await communityApi.getCommunityScene(id); } catch {}
+  try { rec = await communityApi.getCommunityScene(id, { sourceId: getActiveSourceId() }); } catch {}
   if (!rec) { try { rec = await localStore.getCommunityScene(id); } catch {} }
   if (!rec) return;
   await openPreviewRecord(rec);

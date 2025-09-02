@@ -1,5 +1,6 @@
 // Community grid: same behavior as personal columbarium-grid, but reads from backend and uses magenta accent
 import * as communityApi from './services/community-api.js';
+import { getActiveSourceId } from './ui/sources.js';
 
 const canvas = document.getElementById('communityGridStage');
 const ctx = canvas.getContext('2d');
@@ -9,9 +10,11 @@ let offsetX = 0, offsetY = 0, scale = 1;
 const MIN_SCALE = 0.4, MAX_SCALE = 2.5;
 const CELL = 200, TILE_INSET = 12, MAJOR_EVERY = 5;
 let tiles = []; const thumbCache = new Map();
+let currentSourceId = 'main';
 let secretAllowed = false; // gated by sessionStorage password
 let currentGroup = null; // 'SECRET' to show only Secret Space; 'public' to show only public; null to show both
 let secretHeaderRow = null; // row index for the Secret Space header band; null when not shown
+let secretHeaderEmpty = false; // whether Secret header has no items underneath
 let isPanning = false, panPointerId = null, startPanX = 0, startPanY = 0;
 let expandedId = null, animStart = 0, isCollapsing = false; const ANIM_MS = 160;
 let pulseIds = new Set(); // ids of tiles to subtly expand for trade
@@ -175,7 +178,14 @@ function drawTiles(){
       ctx.font = `${Math.max(14, 14*scale)}px system-ui, sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2;
-  ctx.fillText('Secret Space', x + headerW/2, y + headerH/2 + 0.5);
+      ctx.fillText('Secret Space', x + headerW/2, y + headerH/2 + 0.5);
+      // Subtle empty hint when there are no Secret items
+      if (secretHeaderEmpty) {
+        ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = `${Math.max(12, 12*scale)}px system-ui, sans-serif`;
+        ctx.fillText('(empty)', x + headerW/2, y + headerH/2 + Math.max(18, 18*scale));
+      }
       ctx.restore();
     }
   }
@@ -328,7 +338,7 @@ canvas.addEventListener('click', (e) => {
   const { x, y, w, h } = t.overlayRect; const bxOpen = t.btnOpen;
   if (bxOpen && sx >= bxOpen.x && sx <= bxOpen.x + bxOpen.w && sy >= bxOpen.y && sy <= bxOpen.y + bxOpen.h) {
     // Add to personal collection: fetch full record then save locally
-    (async () => { const rec = await communityApi.getCommunityScene(t.id).catch(()=>null); if (rec) {
+  (async () => { const rec = await communityApi.getCommunityScene(t.id, { sourceId: currentSourceId }).catch(()=>null); if (rec) {
       const local = await import('./local-store.js');
   const isSecret = (rec.group === 'SECRET');
   // For Secret Space, allow free download without trade token; otherwise require token
@@ -347,23 +357,25 @@ canvas.addEventListener('click', (e) => {
 });
 
 async function loadTiles(){
+  // Resolve current source id each load in case it changed
+  try { currentSourceId = getActiveSourceId(); } catch { currentSourceId = 'main'; }
   // Load both public and Secret Space; allow ?group= to override
   const cols = 5; const spacing = CELL;
   let listPublic = []; let listSecret = [];
   try {
     if (currentGroup === 'SECRET') {
       if (secretAllowed) {
-        listSecret = await communityApi.listLatestCommunity(20, { group: 'SECRET' });
+        listSecret = await communityApi.listLatestCommunity(20, { group: 'SECRET', sourceId: currentSourceId });
       } else {
         listSecret = [];
       }
     } else if (currentGroup === 'public') {
-      const all = await communityApi.listLatestCommunity(20, { group: null });
+      const all = await communityApi.listLatestCommunity(20, { group: null, sourceId: currentSourceId });
       listPublic = (all || []).filter(it => (it.group || null) !== 'SECRET');
     } else {
       const [all, secret] = await Promise.all([
-        communityApi.listLatestCommunity(20, { group: null }),
-        secretAllowed ? communityApi.listLatestCommunity(20, { group: 'SECRET' }) : Promise.resolve([])
+        communityApi.listLatestCommunity(20, { group: null, sourceId: currentSourceId }),
+        secretAllowed ? communityApi.listLatestCommunity(20, { group: 'SECRET', sourceId: currentSourceId }) : Promise.resolve([])
       ]);
       listPublic = (all || []).filter(it => (it.group || null) !== 'SECRET');
       listSecret = Array.isArray(secret) ? secret : [];
@@ -379,9 +391,11 @@ async function loadTiles(){
   // Compute header row and Secret Space start row, with 1-row gap before and after the header
   const pubRows = Math.ceil((listPublic.length || 0) / cols);
   const gapAfterPublic = listPublic.length ? 1 : 0;
-  const showHeader = (currentGroup === null) && secretAllowed && listPublic.length && listSecret.length;
+  // Show the Secret Space header whenever unlocked and viewing both sections, even if empty
+  const showHeader = (currentGroup === null) && secretAllowed;
   secretHeaderRow = showHeader ? (pubRows + gapAfterPublic) : null;
-  const gapAfterHeader = showHeader ? 1 : 0;
+  secretHeaderEmpty = !!(showHeader && listSecret.length === 0);
+  const gapAfterHeader = (showHeader && listSecret.length) ? 1 : 0;
   const startRow = pubRows + gapAfterPublic + (showHeader ? (1 + gapAfterHeader) : 0);
   listSecret.forEach((it, idx) => {
     const r = startRow + Math.floor(idx / cols); const c = idx % cols;
@@ -400,7 +414,7 @@ async function loadTiles(){
     if ((!t.thumb || t.thumb === '') && !thumbCache.has(t.id)) {
       (async () => {
         try {
-          const rec = await communityApi.getCommunityScene(t.id);
+          const rec = await communityApi.getCommunityScene(t.id, { sourceId: currentSourceId });
           if (!rec || !rec.json) return;
           const mod = await import('./community.js');
           const dataUrl = await mod.generateSceneThumbnail(rec.json).catch(()=>null);
@@ -448,6 +462,9 @@ window.addEventListener('storage', (e) => {
     }
   } catch {}
 });
+
+// React to source changes
+window.addEventListener('sources:active-changed', () => { loadTiles().then(draw); });
 
 // Trade flow: if URL has ?trade=1, highlight 5 random unique choices
 (async () => {

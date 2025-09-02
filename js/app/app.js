@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace }, { createCollab }, { createAlignmentTile }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -28,6 +28,8 @@ export async function init() {
 			import('./services/ar-edit.js'),
 			import('./services/xr-hud.js'),
 			import('./services/ar-materials.js'),
+			import('./services/collab.js'),
+			import('./features/alignment-tile.js'),
 		]);
 
 	// Version badge
@@ -43,6 +45,24 @@ export async function init() {
 			const el = document.getElementById('version-badge');
 			if (el && !el.textContent) el.textContent = 'v1.1.0';
 		}
+	})();
+
+	// Inject Room parent toggle and group into the toolbox DOM (buttons wired later)
+	(function ensureRoomToolboxDOM(){
+		try {
+			const tb = document.getElementById('toolbox'); if (!tb) return;
+			if (document.getElementById('toggleRoom')) return; // already added
+			const btn = document.createElement('button');
+			btn.id = 'toggleRoom'; btn.className = 'icon-btn toggle-btn';
+			btn.title = 'Room'; btn.setAttribute('aria-label','Room'); btn.setAttribute('aria-pressed','false');
+			btn.innerHTML = '<span class="sr-only">Room</span><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#222" stroke-width="2"><circle cx="12" cy="7" r="3"/><path d="M4 20c0-3 3-5 8-5s8 2 8 5"/></g></svg>';
+			tb.appendChild(btn);
+			const group = document.createElement('div');
+			group.id = 'roomGroup'; group.className = 'collapse'; group.setAttribute('aria-hidden','true');
+			group.innerHTML = '<button id="hostRoom" class="icon-btn" title="Host Room" aria-label="Host Room">Host Room</button>\
+			<button id="joinRoom" class="icon-btn" title="Join Room" aria-label="Join Room">Join Room</button>';
+			tb.appendChild(group);
+		} catch {}
 	})();
 
 	// Global error banner to surface runtime failures
@@ -65,6 +85,8 @@ export async function init() {
 			show(m);
 		});
 	})();
+
+
 
 
 
@@ -290,13 +312,26 @@ export async function init() {
 					);
 				} catch {}
 			});
+			// Room controls in XR: dispatch to app-level handler
+			const bRoomHost = createHudButton('Host', ()=>{
+				try {
+					const r = prompt('Enter room to host'); if (!r) return;
+					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
+				} catch {}
+			});
+			const bRoomJoin = createHudButton('Join', ()=>{
+				try {
+					const r = prompt('Enter room to join'); if (!r) return;
+					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
+				} catch {}
+			});
 			// Initialize to default style
 			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
 				// Initialize interaction button visuals
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bLite, bHands];
+			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bLite, bHands, bRoomHost, bRoomJoin];
 			return xrHudButtons;
 		}
 	});
@@ -1317,7 +1352,7 @@ export async function init() {
 		else { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); }
 	}
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
-	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); }
+	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) { selectedObjects.forEach(o=>{ try { collab.onTransform(o); } catch{} }); } } catch{} }
 	transformControls.addEventListener('dragging-changed', e => { if(e.value && transformControls.object===multiSelectPivot) captureMultiStart(); });
 	transformControls.addEventListener('dragging-changed', e => { if (!e.value) { snapVisuals.hide(); saveSessionDraftSoon(); } });
 	transformControls.addEventListener('objectChange', () => {
@@ -1343,6 +1378,13 @@ export async function init() {
 			} catch{}
 			obj.updateMatrixWorld(true);
 		}
+		// Broadcast transform for single-object moves/rotates when applicable
+		try {
+			const tgt = (selectedObjects.length===1 && transformControls.object===selectedObjects[0]) ? selectedObjects[0] : null;
+			if (tgt && collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) {
+				collab.onTransform(tgt);
+			}
+		} catch {}
 		// Soft snap for single-object translate moves
 		if (SNAP_ENABLED && selectedObjects.length===1 && transformControls.object===selectedObjects[0]){
 			const target = selectedObjects[0];
@@ -1365,7 +1407,17 @@ export async function init() {
 	});
 	transformControlsRotate.addEventListener('dragging-changed', e => { if(e.value && transformControlsRotate.object===multiSelectPivot) captureMultiStart(); });
 	transformControlsRotate.addEventListener('dragging-changed', e => { if (!e.value) saveSessionDraftSoon(); });
-	transformControlsRotate.addEventListener('objectChange', () => { if(transformControlsRotate.object===multiSelectPivot) applyMultiDelta(); saveSessionDraftSoon(); });
+	transformControlsRotate.addEventListener('objectChange', () => { 
+		if(transformControlsRotate.object===multiSelectPivot) { applyMultiDelta(); saveSessionDraftSoon(); return; }
+		// Broadcast transform for single-object rotates
+		try {
+			const tgt = (selectedObjects.length===1 && transformControlsRotate.object===selectedObjects[0]) ? selectedObjects[0] : null;
+			if (tgt && collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) {
+				collab.onTransform(tgt);
+			}
+		} catch {}
+		saveSessionDraftSoon(); 
+	});
 
 	// UI refs
 const viewPerspectiveBtn = document.getElementById('viewPerspective');
@@ -1376,10 +1428,31 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const toolbox=document.getElementById('toolbox');
 	const togglePrimsBtn = document.getElementById('togglePrims');
 	const primsGroup = document.getElementById('primsGroup');
+
+	// --- Collaboration and alignment tile init (URL: ?room=abc&host=1) ---
+	(async () => {
+		try {
+			const params = new URLSearchParams(location.search);
+			const room = params.get('room');
+			const asHost = params.has('host');
+			if (room && createCollab) {
+				collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData });
+				if (asHost) await collab.host(room); else await collab.join(room);
+				// Tiny status badge in version area
+				try {
+					const el = document.getElementById('version-badge');
+					if (el) el.textContent = (el.textContent || 'v') + `  ·  Room:${room}${asHost?' (host)':''}`;
+				} catch {}
+			}
+		} catch {}
+	})();
+
 	const toggleDrawCreateBtn = document.getElementById('toggleDrawCreate');
 	const drawCreateGroup = document.getElementById('drawCreateGroup');
 	const toggleUtilsBtn = document.getElementById('toggleUtils');
 	const utilsGroup = document.getElementById('utilsGroup');
+	const toggleRoomBtn = document.getElementById('toggleRoom');
+	const roomGroup = document.getElementById('roomGroup');
 	const toggleSceneManagerBtn = document.getElementById('toggleSceneManager');
 	const sceneManagerGroup = document.getElementById('sceneManagerGroup');
 	const toggleImportBtn = document.getElementById('toggleImport');
@@ -1466,6 +1539,66 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// Expose a safe global accessor for current scene JSON (used by share-to-community flow)
 	try { window.sketcherSerializeScene = serializeScene; window.sketcherObjectCount = () => getPersistableObjects().length; } catch {}
+
+	// --- Realtime Collaboration wiring (lazy/optional) ---
+	let collab = null;
+	function findObjectByUUID(uuid){ try { return scene.getObjectByProperty('uuid', uuid) || null; } catch { return null; } }
+	function loadSceneFromJSON(json){
+		try {
+			const loader = new THREE.ObjectLoader();
+			const root = loader.parse(json);
+			[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
+			updateCameraClipping();
+		} catch(e){ console.warn('Collab loadSceneFromJSON failed', e); }
+	}
+	async function getSnapshot(){
+		try {
+			const json = serializeScene();
+			let overlay = null;
+			try { const raw = sessionStorage.getItem('sketcher:2d'); overlay = raw ? JSON.parse(raw) : null; } catch{}
+			return { json, overlay };
+		} catch { return null; }
+	}
+	function applyOverlayData(data){
+		try {
+			const d = data ? { ...data } : null;
+			if (d && d.meta){ d.meta.updatedAt = Date.now(); }
+			sessionStorage.setItem('sketcher:2d', JSON.stringify(d));
+			// The overlay loader polls sessionStorage and will pick this up within 500ms.
+		} catch{}
+	}
+
+	// Live 2D overlay sync across devices while in a room: forward local overlay changes to collab
+	(function wireOverlayCollabBridge(){
+		try {
+			const forward = (data)=>{
+				try {
+					if (!collab || !collab.isActive || !collab.isActive()) return;
+					if (collab.isApplyingRemote && collab.isApplyingRemote()) return;
+					// Guard: if this overlay update came from remote (collab), don't re-broadcast
+					try {
+						const stamp = data && data.meta && (data.meta.updatedAt || data.meta.createdAt);
+						const lastRemote = sessionStorage.getItem('sketcher:2d:last-remote');
+						if (stamp && lastRemote && String(stamp) === String(lastRemote)) return;
+					} catch {}
+					if (typeof collab.onOverlay === 'function') collab.onOverlay(data);
+				} catch{}
+			};
+			// Same-device events via BroadcastChannel
+			const bc = (typeof window !== 'undefined' && 'BroadcastChannel' in window) ? new BroadcastChannel('sketcher-2d') : null;
+			if (bc){ bc.onmessage = (ev)=>{ try { const d = ev.data; if (d && Array.isArray(d.objects)) forward(d); } catch{} }; }
+			// Storage polling fallback
+			let lastStampX = 0;
+			setInterval(()=>{
+				try {
+					const raw = localStorage.getItem('sketcher:2d') || sessionStorage.getItem('sketcher:2d'); if(!raw) return;
+					const d = JSON.parse(raw); if(!d || !Array.isArray(d.objects)) return;
+					const stamp = d && d.meta && (d.meta.updatedAt || d.meta.createdAt) ? (d.meta.updatedAt || d.meta.createdAt) : 0;
+					if (stamp && stamp !== lastStampX){ lastStampX = stamp; forward(d); }
+				} catch{}
+			}, 600);
+		} catch{}
+	})();
 
 	// --- Picking helpers ---
 	function __isHelperChain(node){
@@ -1640,7 +1773,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
 			const toDelete = toDeleteRaw.filter(o=>!__isOverlayOrChild(o));
 			if (!toDelete.length) return;
-			toDelete.forEach(sel=>{ scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); });
+			toDelete.forEach(sel=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onDelete(sel); } catch{} scene.remove(sel); const idx=objects.indexOf(sel); if(idx>-1)objects.splice(idx,1); });
 			selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 		});
 	}
@@ -2507,6 +2640,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 	if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
 	if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
+	if (toggleRoomBtn && roomGroup) togglePanel(toggleRoomBtn, roomGroup);
 	// On resize, keep the delete bar docked too
 	window.addEventListener('resize', () => { placeMobileDeleteBar(); });
 	if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
@@ -2514,6 +2648,33 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
 	if (toggleViewsBtn && viewsGroup) togglePanel(toggleViewsBtn, viewsGroup);
 	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
+
+	// Room: wire Host/Join buttons
+	(function wireRoomButtons(){
+		try{
+			const hostBtn = document.getElementById('hostRoom');
+			const joinBtn = document.getElementById('joinRoom');
+			const ensure = (hint)=>{ let r = prompt(hint||'Enter room name'); if (r) r=r.trim(); return r||null; };
+			const updateBadge = (room, isHost)=>{ try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); if(room){ vb.textContent += `  ·  Room:${room}${isHost?' (host)':''}`; } } } catch{} };
+			if (hostBtn) hostBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+				if (collab?.isActive?.()){ alert('Already in a room'); return; }
+				const r = ensure('Enter room name to host'); if(!r) return; await collab.host(r); updateBadge(r, true); } catch{} });
+			if (joinBtn) joinBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+				if (collab?.isActive?.()){ alert('Already in a room'); return; }
+				const r = ensure('Enter room name to join'); if(!r) return; await collab.join(r); updateBadge(r, false); } catch{} });
+		} catch{}
+	})();
+
+	// Handle room actions from XR HUD
+	window.addEventListener('sketcher:room', async (ev)=>{
+		try{
+			const d = ev && ev.detail || {}; const action = d.action; const room = (d.room||'').trim(); if (!action || !room) return;
+			if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+			if (collab?.isActive?.()){ alert('Already in a room'); return; }
+			if (action === 'host') await collab.host(room); else if (action === 'join') await collab.join(room);
+			try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); vb.textContent += `  ·  Room:${room}${action==='host'?' (host)':''}`; } } catch{}
+		} catch{}
+	});
 	// Camera view logic for standard views
 	function setCameraView(type) {
 		// If Plan View Lock is active, force 'plan' regardless of requested type
@@ -3267,6 +3428,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 		}
 		updateVisibilityUI(); updateCameraClipping();
+		// Broadcast adds to collaborators (ignore during remote apply)
+		try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) { collab.onAdd(obj); } } catch{}
 		if (select){ selectedObjects = [obj]; attachTransformForSelection(); rebuildSelectionOutlines(); }
 		saveSessionDraftNow();
 	}
@@ -3718,7 +3881,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const toDeleteRaw = selectedObjects.length ? [...selectedObjects] : (transformControls.object ? [transformControls.object] : []);
 			const toDelete = toDeleteRaw.filter(o => !__isOverlayOrChild(o));
 			if (!toDelete.length) return;
-			toDelete.forEach(sel => { scene.remove(sel); const idx = objects.indexOf(sel); if (idx > -1) objects.splice(idx, 1); });
+			toDelete.forEach(sel => { try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onDelete(sel); } catch{} scene.remove(sel); const idx = objects.indexOf(sel); if (idx > -1) objects.splice(idx, 1); });
 			selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 		}
 	});
@@ -3944,10 +4107,26 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		updateCameraClipping();
 	});
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
+	const addAlignmentTileBtn = document.getElementById('addAlignmentTile');
+	if (addAlignmentTileBtn) addAlignmentTileBtn.addEventListener('click', ()=>{
+		try {
+			const tile = createAlignmentTile ? createAlignmentTile({ THREE, feet: 1, name: 'Alignment Tile 1ft' }) : null;
+			if (!tile) return;
+			// Place in front of camera on ground (Y=0)
+			const camPos = camera.getWorldPosition(new THREE.Vector3());
+			const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+			const pos = camPos.clone().add(forward.multiplyScalar(3)); pos.y = 0;
+			tile.position.copy(pos);
+			addObjectToScene(tile, { select: true });
+		} catch {}
+	});
 
 	// Local scenes: serialize, save, list, load, delete
 	function clearSceneObjects() {
-			[...objects].forEach(o => { scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); });
+			[...objects].forEach(o => { 
+				try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onDelete(o); } catch{}
+				scene.remove(o); const idx = objects.indexOf(o); if (idx>-1) objects.splice(idx,1); 
+			});
 			// Reset teleport disc registry
 			try { teleportDiscs.splice(0, teleportDiscs.length); } catch{}
 		selectedObjects = []; transformControls.detach(); transformControlsRotate.detach(); clearSelectionOutlines(); updateVisibilityUI();

@@ -257,6 +257,20 @@ async function createOverlay3D(tile, rect){
           display:'grid', gap:'8px', zIndex:'20', minWidth:'240px', boxShadow:'0 10px 24px rgba(0,0,0,0.45)'
         });
         const title = document.createElement('div'); title.textContent = 'Upload to Community'; title.style.font = '600 13px system-ui, sans-serif'; title.style.color = '#fff';
+        // Destination picker (main + user sources)
+        const destRow = document.createElement('div'); Object.assign(destRow.style, { display:'flex', gap:'8px', alignItems:'center' });
+        const destLab = document.createElement('div'); destLab.textContent = 'Destination'; Object.assign(destLab.style, { color:'#ccc', font:'12px system-ui, sans-serif' });
+        const destSel = document.createElement('select'); Object.assign(destSel.style, { flex:'1 1 auto', background:'#111', color:'#eee', border:'1px solid #2a2a2a', borderRadius:'8px', padding:'6px 8px' });
+        try {
+          const { getSources } = await import('./services/supabase-sources.js');
+          const { getUploadDestinationId } = await import('./ui/sources.js');
+          const list = await getSources();
+          const last = getUploadDestinationId();
+          for (const s of list) {
+            const opt = document.createElement('option'); opt.value = s.id; opt.textContent = s.name || (s.isDefault ? 'Sketcher Community' : 'Custom'); if (s.id === last) opt.selected = true; destSel.appendChild(opt);
+          }
+        } catch {}
+        destRow.append(destLab, destSel);
         const row = document.createElement('label'); row.style.display='flex'; row.style.alignItems='center'; row.style.gap='8px';
         const cb = document.createElement('input'); cb.type='checkbox'; cb.id = 'secretToggle'; cb.setAttribute('aria-label','Upload to Secret Space');
         const lab = document.createElement('span'); lab.textContent = 'Upload to Secret Space (requires password)';
@@ -285,7 +299,7 @@ async function createOverlay3D(tile, rect){
         const cancel = document.createElement('button'); cancel.textContent='Cancel'; Object.assign(cancel.style,{ background:'#333', color:'#ddd', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer' });
         const upload = document.createElement('button'); upload.textContent='Upload'; Object.assign(upload.style,{ background:'linear-gradient(180deg,#ff2cff,#b500b5)', color:'#111', border:'1px solid rgba(255,0,255,0.35)', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', fontWeight:'600' });
         foot.append(cancel, upload);
-        dlg.append(title, row, pwd, foot);
+  dlg.append(title, destRow, row, pwd, foot);
         container.appendChild(dlg);
         const closeDlg = () => { try { dlg.remove(); } catch {} };
         cancel.addEventListener('click', closeDlg);
@@ -305,7 +319,9 @@ async function createOverlay3D(tile, rect){
               try { const mod = await import('./community.js'); thumb = await mod.generateSceneThumbnail(rec.json).catch(()=>null); } catch {}
             }
             const group = isSecret ? 'SECRET' : null;
-            const res = await communityApi.saveCommunityScene({ name, json: rec.json, thumb, group, password });
+            const sourceId = destSel.value || 'main';
+            try { const { setUploadDestinationId } = await import('./ui/sources.js'); setUploadDestinationId(sourceId); } catch {}
+            const res = await communityApi.saveCommunityScene({ name, json: rec.json, thumb, group, password, sourceId });
             try { sessionStorage.setItem('sketcher:tradeToken', crypto.randomUUID?.() || String(Date.now())); } catch {}
             const url = new URL('./community.html', location.href);
             url.searchParams.set('trade', '1');
