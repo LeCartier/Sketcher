@@ -1167,6 +1167,33 @@ export async function init() {
 		}
 
 	const getWorldMatrix = transforms.getWorldMatrix; const setWorldMatrix = transforms.setWorldMatrix;
+	// Apply top-level transforms from the XR clone back to original scene objects (meters -> feet)
+	function __applyXRCloneTopLevelToOriginals(root){
+		try {
+			if (!root || !root.children) return 0;
+			const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
+			let applied = 0;
+			root.updateMatrixWorld(true);
+			for (const cn of root.children){
+				if (!cn) continue;
+				const orig = cn.userData && cn.userData.__sourceRef;
+				if (!orig) continue;
+				// Skip helper overlays except the 2D Overlay which is user-visible
+				try {
+					if (orig.userData && orig.userData.__helper && orig.name !== '2D Overlay') continue;
+				} catch{}
+				cn.updateMatrixWorld(true);
+				const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+				cn.matrixWorld.decompose(pos, quat, scl);
+				pos.multiplyScalar(METERS_TO_FEET);
+				scl.multiplyScalar(METERS_TO_FEET);
+				const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
+				setWorldMatrix(orig, worldFeet);
+				applied++;
+			}
+			return applied;
+		} catch { return 0; }
+	}
 	function updateMultiSelectPivot(){
 		if(selectedObjects.length < 2) return;
 		const center = new THREE.Vector3(); const tmp = new THREE.Vector3();
@@ -2597,32 +2624,39 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					grid.visible = true;
 					// Reset scene transform after XR ends to clear any residual offsets
 					resetSceneTransform();
-					// If per-object edits occurred, offer to apply them back to the editor scene
+						// If edits occurred, offer to apply them back to the editor scene
 					try {
-						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
-						if (info.any) {
-							const ok = confirm('Apply XR object adjustments back to the 3D workspace?');
-							if (ok) {
-								const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
-								const { setWorldMatrix } = transforms;
-								for (const n of info.nodes) {
-									if (!n) continue;
-									const orig = n.userData && n.userData.__sourceRef;
-									if (!orig) continue;
-									try {
-										n.updateMatrixWorld(true);
-										const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
-										n.matrixWorld.decompose(pos, quat, scl);
-										pos.multiplyScalar(METERS_TO_FEET);
-										scl.multiplyScalar(METERS_TO_FEET);
-										const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
-										setWorldMatrix(orig, worldFeet);
-									} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+							const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
+							const hadPerObject = !!info.any;
+							const hasClone = !!arContent;
+							if (hadPerObject || hasClone) {
+								const ok = confirm('Apply XR adjustments (move/scale/rotate) back to the 3D workspace?');
+								if (ok) {
+									// First, per-object dirty nodes
+									if (hadPerObject) {
+										const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
+										const { setWorldMatrix } = transforms;
+										for (const n of info.nodes) {
+											if (!n) continue;
+											const orig = n.userData && n.userData.__sourceRef;
+											if (!orig) continue;
+											try {
+												n.updateMatrixWorld(true);
+												const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+												n.matrixWorld.decompose(pos, quat, scl);
+												pos.multiplyScalar(METERS_TO_FEET);
+												scl.multiplyScalar(METERS_TO_FEET);
+												const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
+												setWorldMatrix(orig, worldFeet);
+											} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+										}
+									}
+									// Then, whole-clone placement back to originals (handles global move/scale)
+									if (hasClone) { try { __applyXRCloneTopLevelToOriginals(arContent); } catch{} }
+									try { saveSessionDraftNow(); } catch{}
 								}
-								try { saveSessionDraftNow(); } catch{}
+								try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
 							}
-							try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
-						}
 					} catch{}
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					if (__scaleDebugGroup && __scaleDebugGroup.parent) { __scaleDebugGroup.parent.remove(__scaleDebugGroup); __scaleDebugGroup = null; }
@@ -2755,32 +2789,37 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					grid.visible = true;
 					// Reset scene transform after XR ends to clear any residual offsets
 					resetSceneTransform();
-					// Offer to apply per-object edits from XR back to originals
+						// Offer to apply XR edits back to originals (per-object and whole placement)
 					try {
-						const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
-						if (info.any) {
-							const ok = confirm('Apply XR object adjustments back to the 3D workspace?');
-							if (ok) {
-								const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
-								const { setWorldMatrix } = transforms;
-								for (const n of info.nodes) {
-									if (!n) continue;
-									const orig = n.userData && n.userData.__sourceRef;
-									if (!orig) continue;
-									try {
-										n.updateMatrixWorld(true);
-										const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
-										n.matrixWorld.decompose(pos, quat, scl);
-										pos.multiplyScalar(METERS_TO_FEET);
-										scl.multiplyScalar(METERS_TO_FEET);
-										const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
-										setWorldMatrix(orig, worldFeet);
-									} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+							const info = (typeof arEdit.getDirtyInfo === 'function') ? arEdit.getDirtyInfo() : { any:false, nodes:[] };
+							const hadPerObject = !!info.any;
+							const hasClone = !!arContent;
+							if (hadPerObject || hasClone) {
+								const ok = confirm('Apply XR adjustments (move/scale/rotate) back to the 3D workspace?');
+								if (ok) {
+									if (hadPerObject) {
+										const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
+										const { setWorldMatrix } = transforms;
+										for (const n of info.nodes) {
+											if (!n) continue;
+											const orig = n.userData && n.userData.__sourceRef;
+											if (!orig) continue;
+											try {
+												n.updateMatrixWorld(true);
+												const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+												n.matrixWorld.decompose(pos, quat, scl);
+												pos.multiplyScalar(METERS_TO_FEET);
+												scl.multiplyScalar(METERS_TO_FEET);
+												const worldFeet = new THREE.Matrix4().compose(pos, quat, scl);
+												setWorldMatrix(orig, worldFeet);
+											} catch(e){ console.warn('Apply XR edit failed for node', n, e); }
+										}
+									}
+									if (hasClone) { try { __applyXRCloneTopLevelToOriginals(arContent); } catch{} }
+									try { saveSessionDraftNow(); } catch{}
 								}
-								try { saveSessionDraftNow(); } catch{}
+								try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
 							}
-							try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
-						}
 					} catch{}
 					if (arContent) { scene.remove(arContent); arContent = null; }
 					arPlaced = false;
