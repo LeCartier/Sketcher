@@ -141,6 +141,7 @@ export async function init() {
 	let arPlaced = false;
 	let arPrevVisibility = null; // Map(object -> prevVisible) to restore after AR
 	let arPendingTeleport = null; // Vector3 meters (xz on local-floor) to apply on first AR placement
+	let xrAlignTile = null; // VR-only alignment tile helper (not persisted)
 	const FEET_TO_METERS = 0.3048;
 	// Optional visual scale debug: enable by adding '#scaleDebug' to the URL or set localStorage 'sketcher.scaleDebug' = '1'
 	const ENABLE_SCALE_DEBUG = (typeof location !== 'undefined' && location.hash && location.hash.includes('scaleDebug')) || (typeof localStorage !== 'undefined' && localStorage.getItem && localStorage.getItem('sketcher.scaleDebug') === '1');
@@ -270,7 +271,33 @@ export async function init() {
 				} catch {}
 			});
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
-			const bReset = createHudButton('Reset', ()=> resetARTransform());
+			const bReset = createHudButton('Reset', async ()=>{
+				try {
+					// Prefer restoring to the baseline scene snapshot captured after the last import commit
+					const raw = sessionStorage.getItem('sketcher:baseline');
+					if (raw){
+						const snap = JSON.parse(raw);
+						clearSceneObjects();
+						const loader = new THREE.ObjectLoader();
+						const root = loader.parse(snap.json);
+						[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
+						updateCameraClipping();
+						// Clear AR clone if present; rebuild on demand
+						if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
+						// Clear AR state flags
+						arOneToOne = false; arGroundLocked = false; arPendingTeleport = null;
+						// Restore materials to normal
+						arMatMode = 'normal';
+						// Update HUD button visual states
+						try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
+						// Ensure toolbox/visibility UI refreshed
+						updateVisibilityUI();
+						return;
+					}
+				} catch{}
+				// Fallback: if no baseline, do AR-local reset (position/quaternion/materials)
+				resetARTransform();
+			});
 			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
 	    const bInteract = createHudButton('Grab', ()=>{
 				try {
@@ -310,6 +337,23 @@ export async function init() {
 					bMatMode.setLabel(arMatMode === 'normal' ? 'Mat' : (arMatMode === 'outline' ? 'Outline' : 'Lite'));
 				} catch {}
 			});
+			const bAlign = createHudButton('Align Tile', ()=>{
+				try {
+					const session = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
+					if (!session) return; // Only in XR
+					if (xrAlignTile && xrAlignTile.parent) { scene.remove(xrAlignTile); xrAlignTile = null; return; }
+					if (!createAlignmentTile) return;
+					const tile = createAlignmentTile({ THREE, feet: 1, name: 'Alignment Tile 1ft' });
+					const xrCam = renderer.xr.getCamera && renderer.xr.getCamera(camera);
+					const camPos = new THREE.Vector3(); const camQuat = new THREE.Quaternion();
+					if (xrCam) { xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat); } else { camera.getWorldPosition(camPos); camQuat.copy(camera.quaternion); }
+					const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat);
+					const pos = camPos.clone().add(forward.multiplyScalar(1.0)); pos.y = 0;
+					tile.position.copy(pos);
+					tile.userData.__helper = true; // avoid persistence and selection noise
+					scene.add(tile); xrAlignTile = tile;
+				} catch{}
+			});
 			const bHands = createHudButton('Fingers', ()=>{
 				try {
 					// Cycle through supported styles
@@ -343,7 +387,7 @@ export async function init() {
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-				xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bHands, bRoomHost, bRoomJoin];
+				xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
 			return xrHudButtons;
 		}
 	});
@@ -2270,7 +2314,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} catch {}
 	})();
 
-	// --- Apply material to a single face (safe overlay approach) ---
+	// --- Apply material to a face or coplanar face patch (safe overlay approach) ---
 	let __lastPickedFace = null; // { mesh, faceIndex }
 	let __lastFacePreview = null; // temporary highlight overlay
 
@@ -2326,10 +2370,75 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} catch { return null; }
 	}
 
+	// Build a coplanar patch overlay: expands from the clicked triangle across adjacent triangles
+	function __makeCoplanarOverlayMesh(mesh, faceIndex, material){
+		try {
+			const geom = mesh.geometry; if (!geom || !geom.isBufferGeometry) return null;
+			const pos = geom.getAttribute('position'); const idxAttr = geom.getIndex(); if (!pos) return null;
+			const triCount = idxAttr ? (idxAttr.count / 3) : (pos.count / 3);
+			if (!Number.isFinite(triCount) || triCount < 1) return null;
+			// Helper: get vertex index for face f and corner k (0,1,2)
+			const vIdx = (f,k)=> idxAttr ? idxAttr.getX(f*3+k) : (f*3+k);
+			const vPos = (i)=> new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+			// Seed plane from picked face in local space
+			const ia=vIdx(faceIndex,0), ib=vIdx(faceIndex,1), ic=vIdx(faceIndex,2);
+			const A=vPos(ia), B=vPos(ib), C=vPos(ic);
+			const seedN = new THREE.Vector3().subVectors(B,A).cross(new THREE.Vector3().subVectors(C,A)).normalize();
+			if (!isFinite(seedN.x)) return null;
+			const seedD = -seedN.dot(A);
+			const onSeedPlane = (p)=> Math.abs(seedN.dot(p) + seedD) <= 1e-4;
+			// Build edge->faces map for adjacency
+			const edgeMap = new Map();
+			const keyEdge = (i1,i2)=>{ const a=Math.min(i1,i2), b=Math.max(i1,i2); return a+','+b; };
+			for (let f=0; f<triCount; f++){
+				const a=vIdx(f,0), b=vIdx(f,1), c=vIdx(f,2);
+				[[a,b],[b,c],[c,a]].forEach(([u,v])=>{
+					const key = keyEdge(u,v);
+					const arr = edgeMap.get(key); if (arr) arr.push(f); else edgeMap.set(key, [f]);
+				});
+			}
+			// BFS from seed over coplanar neighbors
+			const visited = new Uint8Array(triCount); const stack=[faceIndex]; visited[faceIndex]=1;
+			while(stack.length){
+				const f = stack.pop();
+				const a=vIdx(f,0), b=vIdx(f,1), c=vIdx(f,2);
+				const faces = [];
+				[[a,b],[b,c],[c,a]].forEach(([u,v])=>{ const m = edgeMap.get(keyEdge(u,v))||[]; m.forEach(ff=>{ if (ff!==f) faces.push(ff); }); });
+				for (const nb of faces){ if (visited[nb]) continue; // plane test: all three vertices lie on seed plane
+					const na=vIdx(nb,0), nb1=vIdx(nb,1), nc=vIdx(nb,2);
+					const p1=vPos(na), p2=vPos(nb1), p3=vPos(nc);
+					if (onSeedPlane(p1) && onSeedPlane(p2) && onSeedPlane(p3)) { visited[nb]=1; stack.push(nb); }
+				}
+			}
+			// Build merged geometry from visited faces
+			let positions=[]; let normals=[]; let uvs=[]; const hasUV = !!geom.getAttribute('uv');
+			for (let f=0; f<triCount; f++){
+				if (!visited[f]) continue;
+				const a=vIdx(f,0), b=vIdx(f,1), c=vIdx(f,2);
+				const pA=vPos(a), pB=vPos(b), pC=vPos(c);
+				positions.push(pA.x,pA.y,pA.z, pB.x,pB.y,pB.z, pC.x,pC.y,pC.z);
+				// Use seed normal for flat shading across the whole patch
+				normals.push(seedN.x,seedN.y,seedN.z, seedN.x,seedN.y,seedN.z, seedN.x,seedN.y,seedN.z);
+				if (hasUV){ const uv = geom.getAttribute('uv'); uvs.push(uv.getX(a),uv.getY(a), uv.getX(b),uv.getY(b), uv.getX(c),uv.getY(c)); }
+			}
+			if (positions.length === 0) return null;
+			const g = new THREE.BufferGeometry();
+			g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(positions),3));
+			g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(normals),3));
+			if (hasUV) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(uvs),2));
+			let mat = material; if (!mat) mat = getActiveSharedMaterial(currentMaterialStyle) || material;
+			mat = mat && mat.clone ? mat.clone() : new THREE.MeshStandardMaterial({ color: 0xffffff });
+			mat.side = THREE.DoubleSide; mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;
+			const child = new THREE.Mesh(g, mat); child.userData.__materialOverride = true; return child;
+		} catch { return null; }
+	}
+
 	function applyMaterialToPickedFace(customMaterial=null){
 		if (!__lastPickedFace) return false;
 		const { mesh, faceIndex } = __lastPickedFace;
-		const child = __makeFaceOverlayMesh(mesh, faceIndex, customMaterial);
+		// Prefer coplanar patch overlay (whole side); fallback to single triangle
+		let child = __makeCoplanarOverlayMesh(mesh, faceIndex, customMaterial);
+		if (!child) child = __makeFaceOverlayMesh(mesh, faceIndex, customMaterial);
 		if (!child) return false;
 		__disposeFacePreview();
 		try { mesh.add(child); } catch {}
@@ -2356,12 +2465,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const hits = raycaster.intersectObjects(selectableTargets(), true) || [];
 			const hit = hits.find(h => h.object && h.object.isMesh && Number.isInteger(h.faceIndex));
 			__disposeFacePreview(); __lastPickedFace = null;
-			if (hit) {
-				__lastPickedFace = { mesh: hit.object, faceIndex: hit.faceIndex };
-				const previewMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.35, depthTest: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 });
-				__lastFacePreview = __makeFaceOverlayMesh(hit.object, hit.faceIndex, previewMat);
-				if (__lastFacePreview) try { hit.object.add(__lastFacePreview); } catch {}
-			}
+				if (hit) {
+					__lastPickedFace = { mesh: hit.object, faceIndex: hit.faceIndex };
+					const previewMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.35, depthTest: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 });
+					__lastFacePreview = __makeCoplanarOverlayMesh(hit.object, hit.faceIndex, previewMat) || __makeFaceOverlayMesh(hit.object, hit.faceIndex, previewMat);
+					if (__lastFacePreview) try { hit.object.add(__lastFacePreview); } catch {}
+				}
 		} catch {}
 	}, true);
 
@@ -3880,6 +3989,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const clone=loadedModel.clone();
 				clone.position.copy(dropPoint);
 				addObjectToScene(clone); saveSessionDraftNow();
+				// After committing an import, capture a baseline snapshot to enable VR Reset
+				try {
+					const json = serializeScene();
+					sessionStorage.setItem('sketcher:baseline', JSON.stringify({ json, t: Date.now(), reason: 'after-import' }));
+				} catch{}
 				// single placement complete
 				loadedModel = null;
 				if (fileInput) fileInput.value = '';
@@ -4277,6 +4391,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				})();
 				// XR HUD update via service
 				xrHud.update(frame);
+				// If XR not presenting anymore, remove alignment tile helper
+				try {
+					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
+					if (!sess && xrAlignTile && xrAlignTile.parent) { scene.remove(xrAlignTile); xrAlignTile = null; }
+				} catch{}
 				// Keep single-selection grippers aligned with the object's TR; rebuild on scale changes
 				if (handlesGroup && lastHandleTarget && selectedObjects.length === 1 && selectedObjects[0] === lastHandleTarget) {
 					lastHandleTarget.updateMatrixWorld(true);
@@ -4380,22 +4499,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		currentSceneId = null;
 		currentSceneName = '';
 		try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
+		try { sessionStorage.removeItem('sketcher:baseline'); } catch{}
 		updateCameraClipping();
 	});
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
-	const addAlignmentTileBtn = document.getElementById('addAlignmentTile');
-	if (addAlignmentTileBtn) addAlignmentTileBtn.addEventListener('click', ()=>{
-		try {
-			const tile = createAlignmentTile ? createAlignmentTile({ THREE, feet: 1, name: 'Alignment Tile 1ft' }) : null;
-			if (!tile) return;
-			// Place in front of camera on ground (Y=0)
-			const camPos = camera.getWorldPosition(new THREE.Vector3());
-			const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-			const pos = camPos.clone().add(forward.multiplyScalar(3)); pos.y = 0;
-			tile.position.copy(pos);
-			addObjectToScene(tile, { select: true });
-		} catch {}
-	});
+	// Desktop Alignment Tile button intentionally disabled; alignment tile is VR-only via XR HUD
 
 	// Local scenes: serialize, save, list, load, delete
 	function clearSceneObjects() {

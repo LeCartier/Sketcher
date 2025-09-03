@@ -43,12 +43,24 @@
     <div id="cTopIcons">
       <button id="cToggleImport" class="icon-btn toggle-btn" title="Import" aria-label="Import" aria-pressed="false">
       <span class="sr-only">Import</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Unified import icon: box with DOWN arrow; generic label below -->
+        <rect x="4" y="2" width="16" height="12" rx="2" fill="none" stroke="#222" stroke-width="1.6"/>
+        <path d="M12 6v6" stroke="#222" stroke-width="2"/>
+        <path d="M9 9l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
+  <text x="12" y="22" text-anchor="middle" font-size="9" fill="#222" font-family="Arial" font-weight="normal">JSON</text>
+      </svg>
       </button>
       <div id="cImportGroup" class="collapse" aria-hidden="true" style="width:100%;">
         <button id="importBtn" class="icon-btn" title="Import Scene JSON" aria-label="Import Scene JSON">
           <span class="sr-only">Import Scene JSON</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="#222" stroke-width="2"/><path d="M12 8v6" stroke="#222" stroke-width="2"/><path d="M9 14l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <!-- Unified import icon: box with DOWN arrow; JSON label -->
+            <rect x="4" y="2" width="16" height="12" rx="2" fill="none" stroke="#222" stroke-width="1.6"/>
+            <path d="M12 6v6" stroke="#222" stroke-width="2"/>
+            <path d="M9 9l3 3 3-3" fill="none" stroke="#222" stroke-width="2"/>
+            <text x="12" y="22" text-anchor="middle" font-size="9" fill="#222" font-family="Arial" font-weight="normal">JSON</text>
+          </svg>
         </button>
         <input id="importInput" type="file" accept="application/json,.json,.gltf,.glb,.obj" style="display:none" />
       </div>

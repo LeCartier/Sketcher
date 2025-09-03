@@ -567,12 +567,25 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   const params = { azimuth: 135, elevation: 45, intensity: 1.2, color: '#ffffff', shadows: true };
     applySun(params, sun);
     // Cache and expose
-  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'sky' };
+  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'sky', disabledLights: [] };
   // Enable shadow casting on scene meshes (store previous)
   try { enableSceneShadows(); } catch{}
   // Subtle hemisphere light for better separation
   try { const hemi = new THREE.HemisphereLight(0xdfe8ff, 0xf0efe9, 0.35); state.env.hemi = hemi; scene.add(hemi); } catch{}
   // HDRI is optional; user can enable it from the Sun panel. We lazy-load when toggled.
+  // Disable pre-existing scene lights to prevent double lighting/shadows; FP sun controls lighting here
+  try {
+    scene.traverse(o=>{
+      try {
+        if (!o || !o.isLight) return;
+        if (o === state.env.sun || o === state.env.hemi) return;
+        const rec = { light: o, intensity: (typeof o.intensity === 'number' ? o.intensity : null), castShadow: !!o.castShadow };
+        state.env.disabledLights.push(rec);
+        if (typeof o.intensity === 'number') o.intensity = 0;
+        o.castShadow = false;
+      } catch {}
+    });
+  } catch {}
   }
 
   function disposeDesktopEnv(){
@@ -590,6 +603,18 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   try { if (e.pmrem && e.pmrem.dispose) e.pmrem.dispose(); } catch{}
   try { if (e.hdrEquirect && e.hdrEquirect.dispose) e.hdrEquirect.dispose(); } catch{}
   try { if (e.envMap && e.envMap.dispose) e.envMap.dispose(); } catch{}
+  // Restore any scene lights we disabled on entry
+  try {
+    if (Array.isArray(e.disabledLights)){
+      for (const rec of e.disabledLights){
+        try {
+          if (!rec || !rec.light) continue;
+          if (typeof rec.intensity === 'number') rec.light.intensity = rec.intensity;
+          rec.light.castShadow = !!rec.castShadow;
+        } catch {}
+      }
+    }
+  } catch {}
   }
 
   function makeSkyTexture(top, bottom){

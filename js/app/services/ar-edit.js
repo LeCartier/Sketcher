@@ -67,11 +67,14 @@ export function createAREdit(THREE, scene, renderer){
   const CONTROLLER_SPHERE_R = 0.040; // ~4cm sphere for controller grip/pose
   const GRAB_NEAR_MARGIN = 0.0; // meters; 0 = require true penetration for grab
   const COLLISION_PUSH_GAIN = 0.0; // disable passive push; only interact when grabbing
-  // 1:1 snap config
-  const SNAP_ONE_TOL_REL = 0.03; // 3% relative tolerance
-  const SNAP_ONE_TOL_ABS = 0.02; // absolute tolerance fallback in 's' space
+  // 1:1 snap config (enter/exit with hysteresis for stronger hold)
+  const SNAP_ONE_ENTER_REL = 0.08; // 8% relative tolerance to engage
+  const SNAP_ONE_ENTER_ABS = 0.05; // absolute tolerance fallback to engage
+  const SNAP_ONE_EXIT_REL = 0.12;  // 12% relative tolerance to disengage (hysteresis)
+  const SNAP_ONE_EXIT_ABS = 0.08;  // absolute tolerance fallback to disengage
   // Runtime snap state
   state.snapped = false;
+  state.snapTarget = 1.0; // cached sTarget when latched
   state.snapHelper = null; // THREE.Box3Helper
 
   function clearSnapHelper(){
@@ -348,17 +351,31 @@ export function createAREdit(THREE, scene, renderer){
       const st = state.two; let s = Math.max(0.01, Math.min(50, d / st.startDist));
       // Gate scaling when 1:1 is active (keep s=1 but still allow rotate/orbit)
       if (!state.allowScale) s = 1;
-      // 1:1 snap: only for per-object scaling (no snap/highlight for whole-scene)
+      // 1:1 magnetic snap with hysteresis: works for per-object and whole-scene
       let snappedNow = false;
       try {
-        if (state.allowScale && state.perObject) {
-          // Determine absolute target scalar for 1:1 (per-object default is 1.0)
+        if (state.allowScale) {
+          // Determine absolute target scalar for 1:1. For whole-scene, use 1.0 as well.
           const startScalar = (st.startScaleLocal.x + st.startScaleLocal.y + st.startScaleLocal.z) / 3;
           const oneScalar = 1.0;
           const sTarget = Math.max(1e-6, oneScalar / Math.max(1e-6, startScalar));
           const delta = Math.abs(s - sTarget);
-          const thr = Math.max(SNAP_ONE_TOL_ABS, Math.abs(sTarget) * SNAP_ONE_TOL_REL);
-          if (delta <= thr) { s = sTarget; snappedNow = true; }
+          const enterThr = Math.max(SNAP_ONE_ENTER_ABS, Math.abs(sTarget) * SNAP_ONE_ENTER_REL);
+          const exitThr  = Math.max(SNAP_ONE_EXIT_ABS,  Math.abs(sTarget) * SNAP_ONE_EXIT_REL);
+          if (state.snapped) {
+            // While snapped, hold until exiting the wider threshold
+            if (delta <= exitThr) {
+              s = state.snapTarget; // keep locked
+              snappedNow = true;
+            }
+          } else {
+            // Not yet snapped: engage when within enter threshold
+            if (delta <= enterThr) {
+              s = sTarget;
+              snappedNow = true;
+              state.snapTarget = sTarget;
+            }
+          }
         }
       } catch{}
       const desiredLocalScale = new THREE.Vector3(st.startScaleLocal.x*s, st.startScaleLocal.y*s, st.startScaleLocal.z*s);
@@ -386,14 +403,14 @@ export function createAREdit(THREE, scene, renderer){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
         if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
       }
-      // Snap highlight + haptics (only in per-object mode)
+      // Snap highlight + haptics (highlight only in per-object mode to avoid clutter)
       try {
-        if (state.perObject && snappedNow && !state.snapped) {
+        if (snappedNow && !state.snapped) {
           // First frame snapping: pulse both sources if available
           if (p0?.src) hapticPulse(p0.src, 0.4, 40);
           if (p1?.src) hapticPulse(p1.src, 0.4, 40);
         }
-        state.snapped = state.perObject ? snappedNow : false;
+        state.snapped = snappedNow;
         if (state.snapped && state.perObject) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
       } catch{}
       state.one = null; // reset one-hand state
