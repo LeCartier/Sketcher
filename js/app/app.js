@@ -245,6 +245,60 @@ export async function init() {
 				restoreMaterialsForARInPlace(THREE, arContent);
 			}
 	}
+
+		// In-XR/VR friendly room entry panel (DOM overlay). Returns Promise<string|null> for room name.
+		async function showRoomOverlay(mode){
+			return new Promise((resolve)=>{
+				try {
+					const existing = document.getElementById('xr-room-overlay');
+					if (existing) { existing.parentNode.removeChild(existing); }
+					const wrap = document.createElement('div');
+					wrap.id = 'xr-room-overlay';
+					Object.assign(wrap.style, {
+						position: 'fixed', inset: '0', zIndex: 999999,
+						background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center'
+					});
+					const panel = document.createElement('div');
+					Object.assign(panel.style, {
+						background: 'rgba(24,24,28,0.96)', color: '#eee', borderRadius: '14px',
+						padding: '18px 18px 14px 18px', width: 'min(92vw, 440px)', boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+						font: '16px/1.25 system-ui, -apple-system, Segoe UI, Roboto, sans-serif'
+					});
+					const title = document.createElement('div'); title.textContent = (mode==='host'?'Host Room':'Join Room');
+					title.style.fontWeight = '600'; title.style.fontSize = '18px'; title.style.marginBottom = '10px';
+					const instr = document.createElement('div'); instr.textContent = 'Enter a room name'; instr.style.opacity = '0.9'; instr.style.marginBottom = '12px';
+					const input = document.createElement('input'); input.type = 'text'; input.placeholder = 'e.g. room-123';
+					Object.assign(input.style, {
+						width: '100%', fontSize: '18px', padding: '10px 12px', borderRadius: '10px',
+						border: '1px solid rgba(255,255,255,0.16)', background: '#1a1a1f', color: '#fff', outline: 'none',
+						marginBottom: '12px'
+					});
+					try { const last = sessionStorage.getItem('sketcher:last-room'); if (last) input.value = last; } catch {}
+					const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '10px'; row.style.justifyContent = 'flex-end';
+					const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+					Object.assign(cancel.style, { fontSize:'16px', padding:'10px 14px', borderRadius:'10px', border:'1px solid rgba(255,255,255,0.16)', background:'#2a2a30', color:'#ddd', cursor:'pointer' });
+					const ok = document.createElement('button'); ok.textContent = (mode==='host'?'Host':'Join');
+					Object.assign(ok.style, { fontSize:'16px', padding:'10px 14px', borderRadius:'10px', border:'1px solid rgba(255,255,255,0.18)', background:'#3a86ff', color:'#fff', cursor:'pointer' });
+					row.appendChild(cancel); row.appendChild(ok);
+					panel.appendChild(title); panel.appendChild(instr); panel.appendChild(input); panel.appendChild(row);
+					wrap.appendChild(panel); document.body.appendChild(wrap);
+					function done(val){ try { wrap.remove(); } catch{} resolve(val||null); }
+					cancel.addEventListener('click', ()=> done(null));
+					ok.addEventListener('click', ()=>{ const v=(input.value||'').trim(); if (!v) { input.focus(); return; } try { sessionStorage.setItem('sketcher:last-room', v); } catch {} done(v); });
+					input.addEventListener('keydown', (e)=>{ if (e.key==='Enter') { ok.click(); } else if (e.key==='Escape') { cancel.click(); } });
+					// Try to trigger VR keyboard in DOM overlay
+					setTimeout(()=>{ try { input.focus(); input.select?.(); input.click?.(); } catch{} }, 50);
+					// Auto-clean when XR session ends
+					try {
+						const s = renderer?.xr?.getSession?.();
+						if (s) {
+							const onEnd = ()=>{ try { s.removeEventListener('end', onEnd); } catch{} done(null); };
+							s.addEventListener('end', onEnd);
+						}
+					} catch {}
+				} catch { resolve(null); }
+			});
+		}
 	// XR HUD: build via service
 	const xrHud = createXRHud({
 		THREE,
@@ -369,15 +423,15 @@ export async function init() {
 				} catch {}
 			});
 			// Room controls in XR: dispatch to app-level handler
-			const bRoomHost = createHudButton('Host', ()=>{
+			const bRoomHost = createHudButton('Host', async ()=>{
 				try {
-					const r = prompt('Enter room to host'); if (!r) return;
+					const r = await showRoomOverlay('host'); if (!r) return;
 					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
 				} catch {}
 			});
-			const bRoomJoin = createHudButton('Join', ()=>{
+			const bRoomJoin = createHudButton('Join', async ()=>{
 				try {
-					const r = prompt('Enter room to join'); if (!r) return;
+					const r = await showRoomOverlay('join'); if (!r) return;
 					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
 				} catch {}
 			});
@@ -395,36 +449,31 @@ export async function init() {
 		// State for ground lock
 		let arGroundLocked = false;
 
-			// Helper: align model so its local up aligns with world up (make ground horizontal) and snap its min.y to 0
+			// Helper: place the model perfectly flat on the local-floor plane (y=0) and preserve heading (yaw only)
 			function alignModelToGround(root){
 				try {
 					if (!root) return;
 					root.updateMatrixWorld(true);
-					// Compute world quaternion for root
+					// Compute current world orientation and derive yaw (heading) by projecting forward onto XZ plane
 					const worldQ = new THREE.Quaternion(); root.getWorldQuaternion(worldQ);
-					// model's up in world
-					const modelUpWorld = new THREE.Vector3(0,1,0).applyQuaternion(worldQ).normalize();
-					const worldUp = new THREE.Vector3(0,1,0);
-					// If already aligned, skip
-					if (modelUpWorld.angleTo(worldUp) < 1e-3) {
-						// still snap to ground
-						const box = new THREE.Box3().setFromObject(root);
-						if (!box.isEmpty()){
-							const dy = -box.min.y;
-							root.position.y += dy;
-						}
-						return;
+					const forward = new THREE.Vector3(0,0,-1).applyQuaternion(worldQ);
+					let heading = new THREE.Vector3(forward.x, 0, forward.z);
+					if (heading.lengthSq() < 1e-6){
+						// Fallback to right vector if forward is nearly vertical
+						const right = new THREE.Vector3(1,0,0).applyQuaternion(worldQ);
+						heading.set(right.x, 0, right.z);
 					}
-					// rotation that maps modelUpWorld -> worldUp
-					const r = new THREE.Quaternion().setFromUnitVectors(modelUpWorld, worldUp);
-					// Apply rotation in parent space so world up aligns
-					root.quaternion.premultiply(r);
+					heading.normalize();
+					const yaw = (heading.lengthSq() > 1e-6) ? Math.atan2(heading.x, heading.z) : 0;
+					// Set orientation to yaw-only (no roll/pitch) so model is perfectly horizontal
+					const qYawOnly = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+					root.quaternion.copy(qYawOnly);
 					root.updateMatrixWorld(true);
-					// Snap to floor
-					const box2 = new THREE.Box3().setFromObject(root);
-					if (!box2.isEmpty()){
-						const dy2 = -box2.min.y;
-						root.position.y += dy2;
+					// Snap the model base to the local-floor plane (y=0)
+					const box = new THREE.Box3().setFromObject(root);
+					if (!box.isEmpty()){
+						const dy = -box.min.y;
+						root.position.y += dy;
 					}
 				} catch(e){ console.warn('alignModelToGround failed', e); }
 			}
@@ -758,9 +807,6 @@ export async function init() {
 						if ('linewidth' in m) { try { m.linewidth = 0.5; } catch(_){} }
 						m.needsUpdate = true;
 					}
-					// Toggle ground lock state
-					arGroundLocked = !arGroundLocked;
-					setHudButtonActiveByLabel('Lock Ground', arGroundLocked);
 				});
 			});
 		}catch{}
@@ -917,28 +963,28 @@ export async function init() {
 		if (teleportReticle) return teleportReticle;
 		try {
 			const group = new THREE.Group(); group.name = '__TeleportReticle'; group.userData.__helper = true;
-			// Outer ring
-			const outerR = 1.0, innerR = 0.85;
+			// Outer ring (smaller for VR; ~0.35m diameter)
+			const outerR = 0.18, innerR = 0.14;
 			const ring = new THREE.Mesh(
 				new THREE.RingGeometry(innerR, outerR, 64),
-				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.95, depthTest: true, depthWrite: false })
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false })
 			);
 			ring.renderOrder = 9999;
 			// Soft inner fill
 			const fill = new THREE.Mesh(
 				new THREE.CircleGeometry(innerR * 0.92, 48),
-				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.18, depthTest: true, depthWrite: false })
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.22, depthTest: false, depthWrite: false })
 			);
 			fill.renderOrder = 9998;
 			// Orient horizontal by default; placement will re-orient to surface normal
 			try { ring.rotation.x = -Math.PI/2; fill.rotation.x = -Math.PI/2; } catch{}
 			group.add(fill, ring);
-			// Tiny facing arrow to indicate forward when available
+			// Tiny facing arrow to indicate forward when available (smaller in VR)
 			const arrow = new THREE.Mesh(
-				new THREE.ConeGeometry(0.14, 0.32, 16),
-				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false })
+				new THREE.ConeGeometry(0.06, 0.14, 16),
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false })
 			);
-			arrow.position.y = 0.08 + 0.16; arrow.userData.__helper = true; arrow.renderOrder = 9999;
+			arrow.position.y = 0.02 + 0.07; arrow.userData.__helper = true; arrow.renderOrder = 9999;
 			group.add(arrow);
 			group.visible = false;
 			scene.add(group);
@@ -950,10 +996,11 @@ export async function init() {
 	function showTeleportReticleAt(point, normal){
 		const r = ensureTeleportReticle(); if (!r || !point) return;
 		try {
-			r.group.position.copy(point);
 			// Align to surface normal (default up)
 			const up = new THREE.Vector3(0,1,0);
 			const n = (normal && normal.isVector3) ? normal.clone().normalize() : up.clone();
+			// Offset slightly above the surface to avoid visual intersection
+			r.group.position.copy(point.clone().add(n.clone().multiplyScalar(0.01)));
 			const q = new THREE.Quaternion().setFromUnitVectors(up, n);
 			r.group.quaternion.copy(q);
 			// Point arrow roughly toward current view direction projected on plane
@@ -1598,6 +1645,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const asHost = params.has('host');
 			if (room && createCollab) {
 				collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData });
+				try {
+					if (collab.onStatus) collab.onStatus((status)=>{ try { window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); } catch{} });
+					if (collab.onPresence) collab.onPresence((p)=>{ try { window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); } catch{} });
+				} catch{}
 				if (asHost) await collab.host(room); else await collab.join(room);
 				// Tiny status badge in version area
 				try {
@@ -2895,14 +2946,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		try{
 			const hostBtn = document.getElementById('hostRoom');
 			const joinBtn = document.getElementById('joinRoom');
-			const ensure = (hint)=>{ let r = prompt(hint||'Enter room name'); if (r) r=r.trim(); return r||null; };
+			const ensure = async (mode)=>{ try { const r = await showRoomOverlay(mode==='host'?'host':'join'); return r? r.trim(): null; } catch { return null; } };
 			const updateBadge = (room, isHost)=>{ try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); if(room){ vb.textContent += `  ·  Room:${room}${isHost?' (host)':''}`; } } } catch{} };
-			if (hostBtn) hostBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+			if (hostBtn) hostBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 				if (collab?.isActive?.()){ alert('Already in a room'); return; }
-				const r = ensure('Enter room name to host'); if(!r) return; await collab.host(r); updateBadge(r, true); } catch{} });
-			if (joinBtn) joinBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+				const r = await ensure('host'); if(!r) return; await collab.host(r); updateBadge(r, true); } catch{} });
+			if (joinBtn) joinBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 				if (collab?.isActive?.()){ alert('Already in a room'); return; }
-				const r = ensure('Enter room name to join'); if(!r) return; await collab.join(r); updateBadge(r, false); } catch{} });
+				const r = await ensure('join'); if(!r) return; await collab.join(r); updateBadge(r, false); } catch{} });
 		} catch{}
 	})();
 
@@ -2910,7 +2961,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	window.addEventListener('sketcher:room', async (ev)=>{
 		try{
 			const d = ev && ev.detail || {}; const action = d.action; const room = (d.room||'').trim(); if (!action || !room) return;
-			if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); }
+			if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 			if (collab?.isActive?.()){ alert('Already in a room'); return; }
 			if (action === 'host') await collab.host(room); else if (action === 'join') await collab.join(room);
 			try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); vb.textContent += `  ·  Room:${room}${action==='host'?' (host)':''}`; } } catch{}
@@ -3246,7 +3297,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						const items = getPersistableObjects();
 						const anyVisible = items && items.some(o => o && o.visible !== false);
 						if (!items || items.length === 0 || !anyVisible) {
-							const raw = sessionStorage.getItem('sketcher:sessionDraft');
+									let raw = null; try { raw = sessionStorage.getItem('sketcher:sessionDraft'); } catch {}
+									if (!raw) { try { raw = localStorage.getItem('sketcher:sessionDraft'); } catch {} }
 							if (raw) {
 								const { json } = JSON.parse(raw);
 								if (json) {
@@ -3411,7 +3463,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						const items = getPersistableObjects();
 						const anyVisible = items && items.some(o => o && o.visible !== false);
 						if (!items || items.length === 0 || !anyVisible) {
-							const raw = sessionStorage.getItem('sketcher:sessionDraft');
+									let raw = null; try { raw = sessionStorage.getItem('sketcher:sessionDraft'); } catch {}
+									if (!raw) { try { raw = localStorage.getItem('sketcher:sessionDraft'); } catch {} }
 							if (raw) {
 								const { json } = JSON.parse(raw);
 								if (json) {
@@ -4285,16 +4338,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// XR controller trigger teleport (rising edge)
 				(function xrTeleportPoll(){
 					try {
-						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
-						if (!window.__teleport) return;
-						const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return;
+							const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
+							if (!window.__teleport) return;
+							const discs = (window.__teleport.getTeleportDiscs && window.__teleport.getTeleportDiscs()) || [];
 						if (!window.__xrTriggerPrev) window.__xrTriggerPrev = new WeakMap();
 						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
 							const gp = src && src.gamepad; const raySpace = src && (src.targetRaySpace || src.gripSpace);
-							// Controller trigger teleport
-							if (gp && raySpace){
+							// Controller trigger teleport (RIGHT hand only)
+							if (gp && raySpace && (src.handedness === 'right')){
 								const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
 								const prev = window.__xrTriggerPrev.get(src) === true;
 								if (pressed && !prev){
@@ -4498,7 +4551,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		clearSceneObjects();
 		currentSceneId = null;
 		currentSceneName = '';
-		try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
+			try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
+			try { localStorage.removeItem('sketcher:sessionDraft'); } catch {}
 		try { sessionStorage.removeItem('sketcher:baseline'); } catch{}
 		updateCameraClipping();
 	});
@@ -4538,6 +4592,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					currentSceneName = name || 'Untitled';
 					// Replace session draft with this loaded scene
 					try { sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json: rec.json })); } catch {}
+					try { localStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json: rec.json })); } catch {}
 				} catch(e){ alert('Failed to load scene'); console.error(e); }
 			});
 			const btnDelete = document.createElement('button'); btnDelete.textContent='Delete'; btnDelete.className='btn'; btnDelete.style.fontSize='11px'; btnDelete.addEventListener('click', async ()=>{ await localStore.deleteScene(id); if (currentSceneId === id) { currentSceneId = null; currentSceneName = ''; } refreshScenesList(); });
@@ -4605,6 +4660,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 			function saveDraft() {
 				try { const json = serializeScene(); sessionStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json })); } catch {}
+				try { const json = serializeScene(); localStorage.setItem('sketcher:sessionDraft', JSON.stringify({ json })); } catch {}
 			}
 			if (colPersonal) colPersonal.addEventListener('click', saveDraft);
 			if (colCommunity) colCommunity.addEventListener('click', saveDraft);
@@ -4637,11 +4693,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					currentSceneId = rec.id; currentSceneName = rec.name || 'Untitled';
 					// Opening a specific scene replaces any session draft
 					try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
+					try { localStorage.removeItem('sketcher:sessionDraft'); } catch {}
 				}
 			} else {
 				// No explicit scene selected: attempt to restore session draft
 				try {
-					const raw = sessionStorage.getItem('sketcher:sessionDraft');
+					let raw = null; try { raw = sessionStorage.getItem('sketcher:sessionDraft'); } catch {}
+					if (!raw) { try { raw = localStorage.getItem('sketcher:sessionDraft'); } catch {} }
 					if (raw) {
 						const { json } = JSON.parse(raw);
 						if (json) {

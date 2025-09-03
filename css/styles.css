@@ -1035,6 +1035,92 @@ body.community .page-vignette::before {
 /* Top icon stack (Import, Center, Zones) */
 #cTopIcons { display:flex; flex-direction:column; align-items:center; gap: 4px; width:100%; }
 
+/* Desktop short-height breakpoint: open child panels horizontally to avoid vertical overflow */
+@media (max-height: 700px) and (min-width: 820px) {
+	/* Below the parent (DOM order), still overlaps the toolbar, but lays out horizontally */
+	#toolbox .collapse.open,
+	#cToolbox .collapse.open {
+		width: max-content !important;                  /* size to content horizontally */
+		min-width: 0 !important;
+		max-width: none !important;                     /* allow to expand as needed */
+		height: var(--toolbox-width) !important;        /* horizontal band height matches toolbox width */
+		display: flex !important;
+		flex-direction: row !important;
+		flex-wrap: nowrap !important;                   /* keep icons in a single row */
+		align-items: center !important;
+		justify-content: flex-start !important;
+		gap: 6px !important;
+		overflow-x: visible !important;                 /* no horizontal scroll; allow overflow if it exceeds viewport */
+		overflow-y: hidden !important;                  /* no vertical scrolling in the band */
+		margin-top: 4px !important;                     /* keep visual relation "below" parent */
+		transform: translate(6px, 0) scale(1) !important; /* slight right nudge to overlap like vertical */
+		z-index: 200 !important;                        /* stay above the toolbox */
+	}
+		/* Keep icon buttons inline as fixed-size items */
+			#toolbox .collapse.open .icon-btn,
+			#cToolbox .collapse.open .icon-btn { flex: 0 0 auto !important; }
+	/* Inner rows also wrap to avoid vertical growth */
+		#toolbox .collapse .row,
+		#cToolbox .collapse .row {
+			flex-wrap: nowrap !important;
+			gap: 6px !important;
+			padding: 4px !important;
+			flex-direction: row !important;      /* override any inline column layout */
+			justify-content: flex-start !important;
+			align-items: center !important;
+		}
+		/* If buttons are direct children (no .row wrapper), remove centering margins */
+			#toolbox .collapse > .icon-btn,
+			#cToolbox .collapse > .icon-btn { margin: 0 !important; }
+
+		/* 2D: Make vertical sliders horizontal inside the horizontal band */
+		#toolbox .collapse.open .vslider {
+			appearance: auto !important;            /* reset vertical slider appearance */
+			-webkit-appearance: none !important;     /* ensure horizontal on WebKit */
+			writing-mode: horizontal-tb !important;  /* horizontal axis */
+			width: 120px !important;                 /* widen to fit band */
+			height: 16px !important;                 /* compact height */
+			margin: 0 6px !important;
+		}
+
+		/* 2D Erase: its inner container isn't a .row; force it horizontal */
+		#erase2DGroup.open > div {
+			display: flex !important;
+			flex-direction: row !important;
+			align-items: center !important;
+			gap: 6px !important;
+			padding: 4px !important;
+		}
+
+		/* 2D Style: ensure its .row becomes horizontal and compact */
+		#style2DGroup.open .row {
+			display: flex !important;
+			flex-direction: row !important;
+			align-items: center !important;
+			gap: 8px !important;
+			padding: 4px !important;
+		}
+
+	/* Extra enforcement for stubborn 3D groups: force single-row band and inline children */
+	#drawCreateGroup.open,
+	#primsGroup.open {
+		width: max-content !important;
+		height: var(--toolbox-width) !important;
+		display: flex !important;
+		flex-direction: row !important;
+		flex-wrap: nowrap !important;
+		align-items: center !important;
+		justify-content: flex-start !important;
+		gap: 6px !important;
+		overflow: visible !important;
+		margin-top: 4px !important;
+		transform: translate(6px, 0) scale(1) !important;
+		z-index: 201 !important; /* slightly above generic to win stacking */
+	}
+	#drawCreateGroup.open > *,
+	#primsGroup.open > * { flex: 0 0 auto !important; margin: 0 !important; }
+}
+
 /* Subtle grid background pattern (dark mode friendly) */
 .grid-bg {
 	background-color: #111;

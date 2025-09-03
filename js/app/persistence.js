@@ -68,5 +68,15 @@ export function buildExportRootFromObjects(THREE, objects) {
  */
 export function serializeSceneFromObjects(THREE, objects) {
   const root = buildExportRootFromObjects(THREE, objects);
+  // Strip volatile or non-serializable refs from userData to avoid circular JSON and reduce size
+  try {
+    root.traverse((node) => {
+      if (!node || !node.userData) return;
+      // Remove back-references to original nodes which are not serializable
+      if (node.userData.__sourceRef) { try { delete node.userData.__sourceRef; } catch {} }
+      // Optional: drop other transient helpers if present
+      if (node.userData.__helper) { try { delete node.userData.__helper; } catch {} }
+    });
+  } catch {}
   return root.toJSON();
 }

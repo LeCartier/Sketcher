@@ -8,7 +8,13 @@ export function createSessionDraft({ serializeScene, sessionKey = 'sketcher:sess
   function saveNow() {
     try {
       const json = serializeScene();
-      sessionStorage.setItem(sessionKey, JSON.stringify({ json }));
+      const payload = JSON.stringify({ json });
+      try {
+        sessionStorage.setItem(sessionKey, payload);
+      } catch (e1) {
+        // Meta Quest WebView may reject sessionStorage; fall back to localStorage
+        try { localStorage.setItem(sessionKey, payload); } catch (e2) { /* give up silently */ }
+      }
       if (typeof onAfterSave === 'function') onAfterSave({ json });
     } catch {
       // ignore

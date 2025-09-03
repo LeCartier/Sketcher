@@ -11,6 +11,12 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   let applying = false;
   const userId = (crypto?.randomUUID?.() || (Date.now() + '-' + Math.random().toString(36).slice(2)));
 
+  // Lightweight event listeners for UI integration
+  const listeners = { status: new Set(), presence: new Set() };
+  function onStatus(fn){ try { if (typeof fn === 'function') listeners.status.add(fn); } catch{} }
+  function onPresence(fn){ try { if (typeof fn === 'function') listeners.presence.add(fn); } catch{} }
+  function emit(kind, payload){ try { (listeners[kind]||[]).forEach(fn=>{ try { fn(payload); } catch{} }); } catch{} }
+
   // Lazy create client
   async function getClient() {
     if (sb) return sb;
@@ -57,7 +63,21 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
         channel.send({ type: 'broadcast', event: 'snapshot', payload: { from: userId, type: 'snapshot', ...snap } });
       } catch {}
     });
-    const { status } = await channel.subscribe((status) => { /* console.log('realtime status', status) */ });
+    // Presence sync: update participant count
+    try {
+      channel.on('presence', { event: 'sync' }, () => {
+        try {
+          const state = channel.presenceState?.() || {};
+          let count = 0; try { Object.values(state).forEach(arr => { count += (Array.isArray(arr) ? arr.length : 0); }); } catch{}
+          emit('presence', { count, state });
+        } catch{}
+      });
+    } catch{}
+
+    const { status } = await channel.subscribe((status) => {
+      try { emit('status', status); } catch{}
+      /* console.log('realtime status', status) */
+    });
     if (status === 'SUBSCRIBED') active = true;
     return channel;
   }
@@ -146,6 +166,8 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   function leave() {
     try { channel?.unsubscribe(); } catch {}
     channel = null; active = false; isHost = false;
+  try { emit('status', 'LEFT'); } catch{}
+  try { emit('presence', { count: 0, state: {} }); } catch{}
   }
 
   // Broadcast helpers
