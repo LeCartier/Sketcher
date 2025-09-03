@@ -438,7 +438,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           }
         }
       }
-  // Visualize right-controller pointer ray; extend to first hit among HUD, scene, or teleport discs
+  // Visualize right-controller pointer ray; extend to first hit among HUD, scene (horizontal only), or teleport discs
   // Show a right-hand/controller ray in Ray mode only (both controller and hand allowed)
   const wantRay = !!(typeof window !== 'undefined' && window.__xrInteractionRay === true);
   if (wantRay && src.handedness === 'right' && (src.gamepad || src.hand)){
@@ -454,50 +454,76 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const sceneTargets = [];
     try { scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); }); } catch{}
     raycaster.set(origin, dir);
-  let best = null;
-    const consider = (hits, tag)=>{
-      if (!hits||!hits.length) return;
-      const h = hits[0];
-      const d = (typeof h.distance==='number')? h.distance : origin.distanceTo(h.point);
-      // Bias discs to win over scene meshes at nearly equal distance, to prevent "shoot-through"
-      const bias = (tag==='disc') ? -0.01 : 0;
-      const score = d + bias;
-      if (best==null || score < best.score) best = { point: h.point.clone(), obj: h.object, dist: d, score, tag };
-    };
-  try { consider(raycaster.intersectObjects(hudTargets, true), 'hud'); } catch{}
-  try { consider(raycaster.intersectObjects(sceneTargets, true), 'scene'); } catch{}
+    const up = new THREE.Vector3(0,1,0);
+    const COS_MAX_TILT = 0.85; // allow only near-horizontal surfaces for free-aim teleport
+    // Intersections
+    let hudHit = null, discHit = null, bestScene = null; // bestScene: { point, normal, obj, dist }
     try {
-      if (discs && discs.length){
-        // Include disc children for robust intersection (plane + ring overlay)
-        const discTargets = [];
-        for (const d of discs){ if (!d) continue; d.traverse(o=>{ if (o && o.isMesh) discTargets.push(o); }); }
-        consider(raycaster.intersectObjects(discTargets, true), 'disc');
-      }
+      const hudHits = raycaster.intersectObjects(hudTargets, true);
+      if (hudHits && hudHits.length) hudHit = hudHits[0];
     } catch{}
-    const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
-    let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
-    // Default hide highlight on all discs; re-apply on target
-    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
-    // Show free-aim teleport reticle on valid scene hit (when not HUD)
     try {
-      if (best && best.tag !== 'hud' && best.point){
-        // Compute world-normal for the best scene hit if available
-        let n = null;
-        try {
-          const hlist = raycaster.intersectObjects(sceneTargets, true);
-          if (hlist && hlist.length && hlist[0].face){
-            const h = hlist[0];
+      // Build disc target list including children (plane + ring)
+      const discTargets = [];
+      if (discs && discs.length){ for (const d of discs){ if (!d) continue; d.traverse(o=>{ if (o && o.isMesh) discTargets.push(o); }); } }
+      const dHits = discTargets.length ? raycaster.intersectObjects(discTargets, true) : [];
+      if (dHits && dHits.length) discHit = dHits[0];
+    } catch{}
+    try {
+      const sHits = raycaster.intersectObjects(sceneTargets, true);
+      if (sHits && sHits.length){
+        for (const h of sHits){
+          if (!h || !h.object) continue;
+          // Skip teleport discs masquerading as scene meshes
+          let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
+          if (isDisc) continue;
+          // Require a face and upward-facing world normal
+          if (!h.face) continue;
+          let nWorld = null;
+          try {
             const nLocal = h.face.normal.clone();
             const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
-            n = nLocal.applyMatrix3(nm).normalize();
-          }
-        } catch{}
-        if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(best.point, n); }
-      } else {
-        if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle();
+            nWorld = nLocal.applyMatrix3(nm).normalize();
+          } catch{}
+          if (!nWorld || nWorld.dot(up) < COS_MAX_TILT) continue;
+          const d = (typeof h.distance==='number')? h.distance : origin.distanceTo(h.point);
+          bestScene = { point: h.point.clone(), normal: nWorld, obj: h.object, dist: d };
+          break; // first acceptable is the closest
+        }
       }
     } catch{}
-    if (best && best.point){ tip.copy(best.point); if (best.tag==='disc'){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(best.obj); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} } }
+    // Determine pointer tip: prefer HUD, then discs, then horizontal scene, else 2m ahead
+    const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
+    let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
+    if (hudHit?.point) tip.copy(hudHit.point);
+    else if (discHit?.point) tip.copy(discHit.point);
+    else if (bestScene?.point) tip.copy(bestScene.point);
+    // Default hide highlight on all discs; re-apply on target
+    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
+    // Show free-aim teleport reticle only on valid horizontal scene hits; else optionally y=0 fallback
+    try {
+      let showed = false;
+      // If HUD is targeted, never show the reticle
+      if (hudHit && hudHit.point){ /* suppress reticle while interacting with HUD */ }
+      else if (discHit && discHit.point){ /* suppress reticle; disc has its own highlight */ }
+      else if (bestScene && bestScene.point && bestScene.normal){
+        if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(bestScene.point, bestScene.normal); showed = true; }
+      }
+      if (!showed){
+        // Fallback to infinite ground plane (y=0) if ray intersects forward
+        try {
+          const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+          const ray = new THREE.Ray(origin, dir);
+          const pt = new THREE.Vector3();
+          if (ray.intersectPlane(plane, pt)){
+            if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(pt, up); showed = true; }
+          }
+        } catch{}
+      }
+      if (!showed){ if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); }
+    } catch{}
+    // Disc highlight when aiming at discs
+    if (discHit && discHit.object){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(discHit.object); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} }
     posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
     rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }
@@ -508,6 +534,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         if (rightRay && rightRayTip && !sawRightController){ rightRay.visible = false; rightRayTip.visible = false; }
   // Switch palette based on modality: blue when hands-only
         if (anyHand && !anyController) setHandVizPalette('hands-only'); else setHandVizPalette('default');
+  // When using controllers, hide fingertip dots; show them again when hands-only
+        try {
+          if (anyController) setHandVizStyle('off');
+          else if (anyHand) setHandVizStyle('fingertips');
+        } catch{}
 
   // Hand visualization per style: fingertips | skeleton | off
         try {

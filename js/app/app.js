@@ -349,8 +349,20 @@ export async function init() {
 						return;
 					}
 				} catch{}
-				// Fallback: if no baseline, do AR-local reset (position/quaternion/materials)
-				resetARTransform();
+				// Fallback: if no baseline, do AR-local reset (position/quaternion/materials) or restore AR clone initial TR if captured
+				try {
+					if (arContent && arContent.userData && arContent.userData.__initialTR){
+						const tr = arContent.userData.__initialTR;
+						arContent.position.fromArray(tr.pos);
+						arContent.quaternion.fromArray(tr.quat);
+						arContent.scale.fromArray(tr.scl);
+						arContent.updateMatrixWorld(true);
+						// Keep floor contact
+						alignModelToGround(arContent);
+					} else {
+						resetARTransform();
+					}
+				} catch { resetARTransform(); }
 			});
 			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
 	    const bInteract = createHudButton('Grab', ()=>{
@@ -398,6 +410,8 @@ export async function init() {
 					if (xrAlignTile && xrAlignTile.parent) { scene.remove(xrAlignTile); xrAlignTile = null; return; }
 					if (!createAlignmentTile) return;
 					const tile = createAlignmentTile({ THREE, feet: 1, name: 'Alignment Tile 1ft' });
+					// Convert 1ft tile to meters for VR so it measures exactly 1 foot in-world
+					try { tile.scale.setScalar(FEET_TO_METERS); } catch{}
 					const xrCam = renderer.xr.getCamera && renderer.xr.getCamera(camera);
 					const camPos = new THREE.Vector3(); const camQuat = new THREE.Quaternion();
 					if (xrCam) { xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat); } else { camera.getWorldPosition(camPos); camQuat.copy(camera.quaternion); }
@@ -448,6 +462,38 @@ export async function init() {
 
 		// State for ground lock
 		let arGroundLocked = false;
+		let __lastGroundAlignAt = 0;
+
+		// Compute a world-space bounding box excluding helper visuals
+		function __computeWorldBoxExcludingHelpers(root){
+			const box = new THREE.Box3();
+			try {
+				root.updateMatrixWorld(true);
+				root.traverse(o=>{
+					if (!o || !o.isMesh) return;
+					if (o.userData && o.userData.__helper) return;
+					const geo = o.geometry; if (!geo) return;
+					if (!geo.boundingBox) { geo.computeBoundingBox(); }
+					const bb = geo.boundingBox; if (!bb) return;
+					const v = new THREE.Vector3();
+					// Expand by all 8 corners transformed by world matrix
+					for (let xi=0; xi<=1; xi++){
+						for (let yi=0; yi<=1; yi++){
+							for (let zi=0; zi<=1; zi++){
+								v.set(
+									xi ? bb.max.x : bb.min.x,
+									yi ? bb.max.y : bb.min.y,
+									zi ? bb.max.z : bb.min.z
+								);
+								v.applyMatrix4(o.matrixWorld);
+								box.expandByPoint(v);
+							}
+						}
+					}
+				});
+			} catch{}
+			return box;
+		}
 
 			// Helper: place the model perfectly flat on the local-floor plane (y=0) and preserve heading (yaw only)
 			function alignModelToGround(root){
@@ -469,11 +515,14 @@ export async function init() {
 					const qYawOnly = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
 					root.quaternion.copy(qYawOnly);
 					root.updateMatrixWorld(true);
-					// Snap the model base to the local-floor plane (y=0)
-					const box = new THREE.Box3().setFromObject(root);
+					// Snap the model base to the local-floor plane (y=0) using helper-excluded bounds
+					const box = __computeWorldBoxExcludingHelpers(root);
 					if (!box.isEmpty()){
-						const dy = -box.min.y;
-						root.position.y += dy;
+						const minY = box.min.y;
+						if (Math.abs(minY) > 0.002){ // 2mm tolerance to avoid tiny oscillations
+							root.position.y -= minY;
+							root.updateMatrixWorld(true);
+						}
 					}
 				} catch(e){ console.warn('alignModelToGround failed', e); }
 			}
@@ -626,8 +675,7 @@ export async function init() {
 						if (pressed && !prev){
 							// Debounce: ignore toggles while in cooldown window
 							if (inCooldown){ __xrMenuPrevBySource.set(src, pressed); continue; }
-							// Require left hand palm-up before toggling HUD
-							if (!leftPalmUp){ __xrMenuPrevBySource.set(src, pressed); continue; }
+							// Controller Menu/Y should directly toggle HUD (no palm-up requirement)
 					// Rising edge: toggle HUD. Always anchor to LEFT palm.
 					try {
 						ensureXRHud3D();
@@ -3351,7 +3399,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					const root = buildExportRootFromObjects(getARCloneSourceObjects());
 					prepareModelForAR(root); // converts to meters and recenters to ground
 					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
-					arContent = root; scene.add(arContent);
+					arContent = root; try { arContent.userData.__initialTR = { pos: arContent.position.toArray(), quat: arContent.quaternion.toArray(), scl: arContent.scale.toArray() }; } catch{} scene.add(arContent);
 					try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 					// Place origin 1 foot in front of the user on the ground (local-floor y=0), using camera facing
 					try {
@@ -3400,12 +3448,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									console.log('AR/VR placed: arContent.scale=', arContent.scale, 'arBaseBox=', arBaseBox);
 								}
 							} catch(e){ console.warn('scale debug fail', e); }
-					// Now hide originals to avoid duplicate visuals
-					try {
-						arPrevVisibility = new Map();
-						for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
-						updateVisibilityUI();
-					} catch {}
+						// Now hide originals to avoid duplicate visuals (ensure already hidden; do again defensively)
+						try {
+							arPrevVisibility = new Map();
+							for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
+							updateVisibilityUI();
+						} catch {}
 				} catch {}
 				session.addEventListener('end', () => {
 					arActive = false;
@@ -4335,6 +4383,41 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				}
 				// XR controller menu button polling to toggle AR UI
 				handleXRMenuTogglePoll(frame);
+				// XR left-controller move for alignment tile: aim at ground and press trigger to place
+				(function xrAlignTileMovePoll(){
+					try {
+						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
+						if (!xrAlignTile || !xrAlignTile.parent) return;
+						if (!window.__xrLeftPrev) window.__xrLeftPrev = new WeakMap();
+						const sources = session.inputSources ? Array.from(session.inputSources) : [];
+						for (const src of sources){
+							if (!src || src.handedness !== 'left' || !src.gamepad) continue;
+							const pressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+							const prev = window.__xrLeftPrev.get(src) === true;
+							if (pressed && !prev){
+								const raySpace = src.targetRaySpace || src.gripSpace; if (!raySpace) { window.__xrLeftPrev.set(src, pressed); continue; }
+								const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+								if (pose){
+									const p = pose.transform.position; const o = pose.transform.orientation;
+									const origin = new THREE.Vector3(p.x,p.y,p.z);
+									const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+									const rc = new THREE.Raycaster(origin, dir, 0.01, 50);
+									// Intersect ground plane at y=0
+									const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+									const pt = new THREE.Vector3();
+									if (rc.ray.intersectPlane(plane, pt)){
+										xrAlignTile.position.set(pt.x, 0, pt.z);
+										// Yaw align tile to controller facing
+										const yaw = Math.atan2(dir.x, dir.z);
+										xrAlignTile.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+										xrAlignTile.updateMatrixWorld(true);
+									}
+								}
+							}
+							window.__xrLeftPrev.set(src, pressed);
+						}
+					} catch{}
+				})();
 				// XR controller trigger teleport (rising edge)
 				(function xrTeleportPoll(){
 					try {
@@ -4361,7 +4444,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										const origin = new THREE.Vector3(p.x,p.y,p.z);
 										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
 										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
-										// 1) Try free-aim surface teleport
+										const up = new THREE.Vector3(0,1,0); const COS_MAX_TILT = 0.85;
+										// 1) Try free-aim surface teleport (horizontal planes only)
 										try {
 											const sceneTargets = [];
 											scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); });
@@ -4375,13 +4459,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												const nLocal = h.face.normal.clone();
 												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
 												const nWorld = nLocal.applyMatrix3(nm).normalize();
-												if (nWorld.dot(new THREE.Vector3(0,1,0)) >= 0.64){ picked = { point:h.point.clone(), normal:nWorld }; break; }
+												if (nWorld.dot(up) >= COS_MAX_TILT){ picked = { point:h.point.clone(), normal:nWorld }; break; }
 											}
 											if (picked && window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(picked.point, picked.normal); }
 											else {
+												// Try infinite ground-plane fallback at y=0
+												const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0); const pt = new THREE.Vector3();
+												if (rc.ray.intersectPlane(plane, pt)){
+													if (window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(pt, up); }
+												} else {
 												// 2) Fallback to pre-placed discs
 												const ih = rc.intersectObjects(discs, true);
 												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+												}
 											}
 										} catch{}
 									}
@@ -4412,7 +4502,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										const origin = new THREE.Vector3(p.x,p.y,p.z);
 										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
 										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
-										// 1) Try free-aim surface teleport
+										const up = new THREE.Vector3(0,1,0); const COS_MAX_TILT = 0.85;
+										// 1) Try free-aim surface teleport (horizontal planes only)
 										try {
 											const sceneTargets = [];
 											scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); });
@@ -4426,13 +4517,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												const nLocal = h.face.normal.clone();
 												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
 												const nWorld = nLocal.applyMatrix3(nm).normalize();
-												if (nWorld.dot(new THREE.Vector3(0,1,0)) >= 0.64){ picked = { point:h.point.clone(), normal:nWorld }; break; }
+												if (nWorld.dot(up) >= COS_MAX_TILT){ picked = { point:h.point.clone(), normal:nWorld }; break; }
 											}
 											if (picked && window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(picked.point, picked.normal); }
 											else {
+												// Try infinite ground-plane fallback at y=0
+												const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0); const pt = new THREE.Vector3();
+												if (rc.ray.intersectPlane(plane, pt)){
+													if (window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(pt, up); }
+												} else {
 												// 2) Fallback to pre-placed discs
 												const ih = rc.intersectObjects(discs, true);
 												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+												}
 											}
 										} catch{}
 									}
@@ -4487,6 +4584,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (arMatMode === 'outline') applyOutlineModeForARInPlace(THREE, root);
 						else if (arMatMode === 'lite') simplifyMaterialsForARInPlace(THREE, root);
 						arContent = root;
+						// Capture initial transform for Reset fallback
+						try { arContent.userData.__initialTR = { pos: arContent.position.toArray(), quat: arContent.quaternion.toArray(), scl: arContent.scale.toArray() }; } catch{}
 						scene.add(arContent);
 						try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 						computeArBaseMetrics(arContent);
@@ -4499,7 +4598,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							updateVisibilityUI();
 						} catch {}
 					}
-					// Place relative to viewer/camera: origin 1 foot forward, on local-floor
+						// Hide originals immediately to avoid double-vision while placing
+						try {
+							arPrevVisibility = new Map();
+							for (const o of getARCloneSourceObjects()) { if (o !== arContent) { arPrevVisibility.set(o, !!o.visible); o.visible = false; } }
+							updateVisibilityUI();
+						} catch {}
+						// Place relative to viewer/camera: origin 1 foot forward, on local-floor
 					try {
 						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
 						if (xrCam) {
@@ -4523,8 +4628,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
-					// If ground lock is active, re-apply alignment each frame to enforce horizontal ground
-					try { if (arGroundLocked) alignModelToGround(arContent); } catch {}
+					// If ground lock is active, re-apply alignment at ~30 Hz to avoid jitter from tiny pose noise
+					try {
+						if (arGroundLocked) {
+							const now = (typeof performance!=='undefined'?performance.now():Date.now());
+							if (!__lastGroundAlignAt || (now - __lastGroundAlignAt) > 33) { alignModelToGround(arContent); __lastGroundAlignAt = now; }
+						}
+					} catch {}
 				}
 			}
 			renderer.render(scene, camera);
