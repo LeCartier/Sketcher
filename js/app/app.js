@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace }, { createCollab }, { createAlignmentTile }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -158,7 +158,8 @@ export async function init() {
 	let arBaseBox = null;  // Box3 in meters after prepareModelForAR
 	let arBaseDiagonal = 1; // meters
 	let arFitMaxDim = 1.6; // meters target for Fit
-	let arSimplifyMaterials = false; // AR performance mode toggle
+		let arSimplifyMaterials = false; // AR performance mode toggle
+		let arMatMode = 'normal'; // 'normal' | 'outline' | 'lite'
 	// XR interaction mode: true = Ray teleport, false = Grab (pinch)
 	let xrInteractionRay = false;
 
@@ -231,9 +232,17 @@ export async function init() {
 		try { arContent.quaternion.identity(); } catch {}
 			applyArMaterialModeOnContent();
 	}
-	function applyArMaterialModeOnContent(){
+		function applyArMaterialModeOnContent(){
 		if (!arContent) return;
-		if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent); else restoreMaterialsForARInPlace(THREE, arContent);
+			// Clear outline helpers before switching
+			try { clearOutlineModeForAR(THREE, arContent); } catch {}
+			if (arMatMode === 'outline') {
+				applyOutlineModeForARInPlace(THREE, arContent);
+			} else if (arMatMode === 'lite') {
+				simplifyMaterialsForARInPlace(THREE, arContent);
+			} else {
+				restoreMaterialsForARInPlace(THREE, arContent);
+			}
 	}
 	// XR HUD: build via service
 	const xrHud = createXRHud({
@@ -293,10 +302,13 @@ export async function init() {
 					try { applyArMaterialModeOnContent(); } catch {}
 				} catch {}
 			});
-			const bLite = createHudButton(arSimplifyMaterials ? 'Lite On' : 'Lite Off', ()=>{
-				arSimplifyMaterials = !arSimplifyMaterials;
-				applyArMaterialModeOnContent();
-				bLite.setLabel(arSimplifyMaterials ? 'Lite On' : 'Lite Off');
+			// Cycle material mode: Normal -> Outline -> Lite -> Normal
+			const bMatMode = createHudButton('Mat', ()=>{
+				try {
+					arMatMode = (arMatMode === 'normal') ? 'outline' : (arMatMode === 'outline' ? 'lite' : 'normal');
+					applyArMaterialModeOnContent();
+					bMatMode.setLabel(arMatMode === 'normal' ? 'Mat' : (arMatMode === 'outline' ? 'Outline' : 'Lite'));
+				} catch {}
 			});
 			const bHands = createHudButton('Fingers', ()=>{
 				try {
@@ -331,7 +343,7 @@ export async function init() {
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bLite, bHands, bRoomHost, bRoomJoin];
+				xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bHands, bRoomHost, bRoomJoin];
 			return xrHudButtons;
 		}
 	});
@@ -729,6 +741,8 @@ export async function init() {
 
 	// Teleport discs (jump points)
 	const teleportDiscs = [];
+	// Free-aim teleport reticle (moving circle on floor)
+	let teleportReticle = null;
 	function __isTeleportDisc(obj){ return !!(obj && obj.userData && obj.userData.__teleportDisc); }
 	function __getTeleportDiscRoot(obj){ let o=obj; while(o && !__isTeleportDisc(o)) o=o.parent; return __isTeleportDisc(o) ? o : null; }
 	// Rehydrate a disc that was loaded from JSON (no runtime registry/material refs yet)
@@ -853,6 +867,109 @@ export async function init() {
 			if (hl) hl.visible = !!on;
 		} catch{}
 	}
+
+	// ---- Free-aim Teleport: Reticle + teleport-to-point ----
+	function ensureTeleportReticle(){
+		if (teleportReticle) return teleportReticle;
+		try {
+			const group = new THREE.Group(); group.name = '__TeleportReticle'; group.userData.__helper = true;
+			// Outer ring
+			const outerR = 1.0, innerR = 0.85;
+			const ring = new THREE.Mesh(
+				new THREE.RingGeometry(innerR, outerR, 64),
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.95, depthTest: true, depthWrite: false })
+			);
+			ring.renderOrder = 9999;
+			// Soft inner fill
+			const fill = new THREE.Mesh(
+				new THREE.CircleGeometry(innerR * 0.92, 48),
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.18, depthTest: true, depthWrite: false })
+			);
+			fill.renderOrder = 9998;
+			// Orient horizontal by default; placement will re-orient to surface normal
+			try { ring.rotation.x = -Math.PI/2; fill.rotation.x = -Math.PI/2; } catch{}
+			group.add(fill, ring);
+			// Tiny facing arrow to indicate forward when available
+			const arrow = new THREE.Mesh(
+				new THREE.ConeGeometry(0.14, 0.32, 16),
+				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false })
+			);
+			arrow.position.y = 0.08 + 0.16; arrow.userData.__helper = true; arrow.renderOrder = 9999;
+			group.add(arrow);
+			group.visible = false;
+			scene.add(group);
+			teleportReticle = { group, ring, fill, arrow };
+		} catch{}
+		return teleportReticle;
+	}
+
+	function showTeleportReticleAt(point, normal){
+		const r = ensureTeleportReticle(); if (!r || !point) return;
+		try {
+			r.group.position.copy(point);
+			// Align to surface normal (default up)
+			const up = new THREE.Vector3(0,1,0);
+			const n = (normal && normal.isVector3) ? normal.clone().normalize() : up.clone();
+			const q = new THREE.Quaternion().setFromUnitVectors(up, n);
+			r.group.quaternion.copy(q);
+			// Point arrow roughly toward current view direction projected on plane
+			try {
+				const viewDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize();
+				const tangential = viewDir.clone().sub(n.clone().multiplyScalar(viewDir.dot(n))).normalize();
+				r.arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), tangential.lengthSq()>0? tangential : up);
+			} catch{}
+			r.group.visible = true;
+		} catch{}
+	}
+
+	function hideTeleportReticle(){ try { if (teleportReticle && teleportReticle.group) teleportReticle.group.visible = false; } catch{} }
+
+	function teleportToPoint(worldPoint, worldNormal){
+		if (!worldPoint) return;
+		const up = new THREE.Vector3(0,1,0);
+		const n = (worldNormal && worldNormal.isVector3) ? worldNormal.clone().normalize() : up.clone();
+		// Preserve heading/distance like disc teleport
+		let prevDir = null; let prevDist = 10;
+		try {
+			const d = new THREE.Vector3().subVectors(controls.target, camera.position);
+			const len = d.length();
+			if (len > 1e-6) { prevDir = d.normalize(); prevDist = camera.position.distanceTo(controls.target) || 10; }
+		} catch {}
+		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
+		// Desktop target: 6ft above surface
+		const target = new THREE.Vector3(worldPoint.x, worldPoint.y + 6, worldPoint.z);
+		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
+		if (session){
+			const mode = (session.environmentBlendMode || 'opaque');
+			if (mode !== 'opaque'){
+				// AR passthrough: move the model to XZ target, keep y on floor
+				try {
+					if (arContent){
+						arContent.position.set(target.x, 0, target.z);
+						try { alignModelToGround(arContent); } catch{}
+					} else {
+						arPendingTeleport = new THREE.Vector3(target.x, 0, target.z);
+					}
+				} catch {}
+				return;
+			}
+			// VR: shift only AR/VR content group
+			try {
+				const xrCam = renderer.xr.getCamera(camera);
+				const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
+				const delta = camPos.clone().sub(target);
+				if (arContent){ arContent.position.sub(delta); }
+			} catch {}
+			return;
+		}
+		// Desktop: move camera and keep heading
+		try {
+			camera.position.copy(target);
+			const look = target.clone().add(prevDir.clone().multiplyScalar(prevDist));
+			controls.target.copy(look);
+			controls.update();
+		} catch{}
+	}
 	function getTeleportDiscs(){
 		try {
 			// If in an XR session and an AR/VR clone exists, prefer discs under the clone,
@@ -938,7 +1055,7 @@ export async function init() {
 		} catch{}
 	}
 	// Expose teleport helpers for other modules (first-person, XR)
-	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc, setActive: setTeleportDiscsActive }; } catch{}
+	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc, setActive: setTeleportDiscsActive, showReticleAt: showTeleportReticleAt, hideReticle: hideTeleportReticle, teleportToPoint }; } catch{}
 	// Default: make discs active for interaction
 	try { setTeleportDiscsActive(true); } catch{}
 	// Add a UI button to place discs
@@ -1710,28 +1827,43 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Visibility UI
 	function updateVisibilityUI(){
 		objectList.innerHTML='';
-		// List regular user objects
-		objects.forEach(obj=>{
-			if (__isHelperObject(obj)) return; // skip helpers other than overlay
-			const div=document.createElement('div');
+		// Render a collapsible tree for scene objects
+		const renderNode = (obj, level=0) => {
+			if (__isHelperObject(obj)) return;
+			const row = document.createElement('div');
+			row.style.display='flex'; row.style.alignItems='center'; row.style.gap='6px';
+			row.style.paddingLeft = (8 + level*12) + 'px';
+			const hasChildren = !!(obj.children && obj.children.some(c => !__isHelperObject(c)));
+			let isOpen = !!(obj.userData && obj.userData.__visOpen);
+			const toggle = document.createElement('button');
+			toggle.textContent = hasChildren ? (isOpen ? '▾' : '▸') : ''; toggle.className='tree-toggle';
+			toggle.style.background='none'; toggle.style.border='none'; toggle.style.cursor= hasChildren ? 'pointer' : 'default'; toggle.style.width='16px'; toggle.style.padding='0';
+			toggle.addEventListener('click', (e)=>{ e.stopPropagation(); if(!hasChildren) return; isOpen = !isOpen; obj.userData = obj.userData || {}; obj.userData.__visOpen = isOpen; updateVisibilityUI(); });
 			const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=obj.visible; cb.addEventListener('change',()=>{ obj.visible=cb.checked; saveSessionDraftSoon(); });
-			const span=document.createElement('span'); span.textContent=obj.name; span.style.flex='1'; span.style.cursor='pointer';
+			const span=document.createElement('span'); span.textContent=obj.name || obj.type; span.style.flex='1'; span.style.cursor='pointer';
 			if(selectedObjects.includes(obj)) span.style.background='#ffe066';
-			span.addEventListener('dblclick',()=>{ const inp=document.createElement('input'); inp.type='text'; inp.value=obj.name; inp.style.flex='1'; inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI(); saveSessionDraftSoon();}); inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();}); div.replaceChild(inp,span); inp.focus(); });
+			span.addEventListener('dblclick',()=>{ const inp=document.createElement('input'); inp.type='text'; inp.value=obj.name; inp.style.flex='1'; inp.addEventListener('blur',()=>{obj.name=inp.value||obj.name;updateVisibilityUI(); saveSessionDraftSoon();}); inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();}); row.replaceChild(inp,span); inp.focus(); });
 			span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(obj)) selectedObjects=selectedObjects.filter(o=>o!==obj); else selectedObjects.push(obj); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[obj]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
-			div.append(cb,span); objectList.append(div);
-		});
+			row.append(toggle, cb, span); objectList.append(row);
+			if (hasChildren && isOpen){
+				for (const ch of obj.children){ renderNode(ch, level+1); }
+			}
+		};
+		// Top-level user objects
+		const roots = getPersistableObjects();
+		roots.forEach(o=>renderNode(o, 0));
 		// Add 2D Overlay as a managed row (visible toggle only; cannot delete)
 		try {
 			const ov = scene.getObjectByName('2D Overlay');
 			if (ov){
-				const div=document.createElement('div');
+				const row=document.createElement('div');
+				row.style.display='flex'; row.style.alignItems='center'; row.style.gap='6px'; row.style.paddingLeft='8px';
+				const spacer=document.createElement('span'); spacer.style.display='inline-block'; spacer.style.width='16px';
 				const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=ov.visible; cb.addEventListener('change',()=>{ ov.visible=cb.checked; saveSessionDraftSoon(); });
 				const span=document.createElement('span'); span.textContent=ov.name||'2D Overlay'; span.style.flex='1'; span.style.cursor='pointer';
 				if(selectedObjects.includes(ov)) span.style.background='#ffe066';
-				// No rename for overlay; click selects
 				span.addEventListener('click',e=>{ if(mode!=='edit') return; if(e.ctrlKey||e.metaKey||e.shiftKey){ if(selectedObjects.includes(ov)) selectedObjects=selectedObjects.filter(o=>o!==ov); else selectedObjects.push(ov); attachTransformForSelection(); rebuildSelectionOutlines(); } else { selectedObjects=[ov]; attachTransformForSelection(); rebuildSelectionOutlines(); } updateVisibilityUI(); });
-				div.append(cb,span); objectList.append(div);
+				row.append(spacer, cb, span); objectList.append(row);
 			}
 		} catch{}
 		// Toggle delete bar; always show on Meta Quest (OculusBrowser) when appropriate
@@ -2597,13 +2729,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 		// Toolbox: collapsible groups, settings panel floats right
 		function closeAllPanels() {
-			[primsGroup, drawCreateGroup, importGroup, sceneManagerGroup, utilsGroup, viewsGroup].forEach(panel => {
+			[primsGroup, drawCreateGroup, importGroup, sceneManagerGroup, utilsGroup, viewsGroup, roomGroup].forEach(panel => {
 				if(panel) {
 					panel.classList.remove('open');
 					panel.setAttribute('aria-hidden','true');
 				}
 			});
-			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleSceneManagerBtn, toggleUtilsBtn, toggleViewsBtn].forEach(btn => {
+			[togglePrimsBtn, toggleDrawCreateBtn, toggleImportBtn, toggleSceneManagerBtn, toggleUtilsBtn, toggleViewsBtn, toggleRoomBtn].forEach(btn => {
 				if(btn) btn.setAttribute('aria-pressed','false');
 			});
 			// Hide settings panel
@@ -2950,6 +3082,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					try { if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); } catch{}
 					// Reset scene transform after XR ends to clear any residual offsets
 					resetSceneTransform();
 						// If edits occurred, offer to apply them back to the editor scene
@@ -3022,7 +3155,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					modeSelect.dispatchEvent(new Event('change'));
 				});
 
-					// Defensive: restore any AR-simplified materials on the live scene
+					// Defensive: restore any AR/outline materials on the live scene
+					try { if (typeof clearOutlineModeForAR === 'function') clearOutlineModeForAR(THREE, scene); } catch {}
 					try { if (typeof restoreMaterialsForARInPlace === 'function') restoreMaterialsForARInPlace(THREE, scene); } catch {}
 
 					// When XR session ends, clear HUD active states
@@ -3116,6 +3250,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					arActive = false;
 					try { arEdit.stop(); } catch {}
 					grid.visible = true;
+					try { if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); } catch{}
 					// Reset scene transform after XR ends to clear any residual offsets
 					resetSceneTransform();
 						// Offer to apply XR edits back to originals (per-object and whole placement)
@@ -3255,9 +3390,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			}
 			return;
 		}
-		const url=URL.createObjectURL(file);
-		const loader=lower.endsWith('.obj')?new OBJLoader():new GLTFLoader();
-		if (!lower.endsWith('.obj')) showProcessing('Importing Model…', 'Preparing textures and geometry');
+	const url=URL.createObjectURL(file);
+	const loader=lower.endsWith('.obj')?new OBJLoader():new GLTFLoader();
+	// Show processing UI for all imports, including OBJ
+	showProcessing('Importing Model…', lower.endsWith('.obj') ? 'Parsing OBJ geometry' : 'Preparing textures and geometry');
 		try {
 			if (loader.setKTX2Loader){
 				const { KTX2Loader } = await import('../vendor/KTX2Loader.js');
@@ -3279,13 +3415,56 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				loader.setMeshoptDecoder(MeshoptDecoder);
 			}
 		} catch {}
-		loader.load(url,gltf=>{
-			loadedModel=gltf.scene||gltf;
-			// Show placing popup with file name
-			if (placingName) placingName.textContent = file.name;
-			if (placingPopup) placingPopup.style.display = 'block';
-			URL.revokeObjectURL(url);
-			hideProcessing();
+		loader.load(url, async gltf=>{
+			try {
+				loadedModel=gltf.scene||gltf;
+				if (lower.endsWith('.obj')){
+					// Offer optimization for large OBJs
+					const mb = Math.round((file.size/1024/1024)*10)/10;
+					let mode = 'Fast';
+					if (file.size > 25*1024*1024){
+						try {
+							mode = await askChoice('Large OBJ detected', `This OBJ is ~${mb} MB. Optimize to improve performance?`, ['Fast (weld vertices)','Aggressive (weld + simplify)','Skip']);
+							if (!mode) mode = 'Fast';
+						} catch {}
+					}
+					showProcessing('Optimizing OBJ…', 'Welding vertices'); updateProcessing(0.05);
+					const [{ optimizeObject3D }] = await Promise.all([
+						import('./services/optimize-import.js')
+					]);
+					const simplify = mode && mode.startsWith('Aggressive');
+					await optimizeObject3D(loadedModel, { weldTolerance: 1e-4, simplify, voxelSize: 0.01, onProgress: (p)=>{ try { updateProcessing(0.05 + p*0.6); } catch{} } });
+					// Optionally downscale very large textures to tame memory.
+					// Preserve quality by default; only shrink when Aggressive or low device memory / very large model.
+					const devMem = (typeof navigator !== 'undefined' && navigator.deviceMemory) ? navigator.deviceMemory : 4;
+					let maxTex = null;
+					if (simplify) {
+						maxTex = 2048; // Aggressive path favors perf
+					} else if (devMem < 4 && file.size > 15*1024*1024) {
+						maxTex = 2048; // Low-memory devices
+					} else if (file.size > 50*1024*1024) {
+						maxTex = 3072; // Very large OBJ
+					} else if (devMem >= 8) {
+						maxTex = 4096; // High-end: allow 4K
+					}
+					if (maxTex) {
+						showProcessing('Optimizing OBJ…', 'Resizing large textures'); updateProcessing(0.7);
+						try {
+							const [{ downscaleLargeTextures }] = await Promise.all([
+								import('./services/texture-utils.js')
+							]);
+							await downscaleLargeTextures(loadedModel, { maxSize: maxTex, onProgress: (p)=>{ try { updateProcessing(0.7 + p*0.25); } catch{} } });
+						} catch {}
+					}
+					updateProcessing(0.98);
+				}
+				// Show placing popup with file name
+				if (placingName) placingName.textContent = file.name;
+				if (placingPopup) placingPopup.style.display = 'block';
+			} finally {
+				URL.revokeObjectURL(url);
+				hideProcessing();
+			}
 		}, (prog)=>{ try { if (prog && prog.total) updateProcessing(prog.loaded / prog.total); } catch{} }, (err)=>{ console.error(err); alert('Model import failed: ' + (err?.message || err)); hideProcessing(); URL.revokeObjectURL(url); });
 	});
 
@@ -3358,6 +3537,60 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			alert('To create a Revit Family (RFA):\n\n1) In Revit, create a new Generic Model family.\n2) Load the OBJ using an intermediary (e.g., import OBJ to FormIt or 3ds Max, then export as SAT/DWG/FBX).\n3) In Revit, Import/Link the converted file into the family.\n4) Adjust origin/scale as needed, then Save as .rfa.');
 		}, 50);
 	});
+
+	// IFC export (Utilities group)
+	const exportIFCBtn = document.getElementById('exportIFC');
+	if (exportIFCBtn) exportIFCBtn.addEventListener('click', async ()=>{
+		try {
+			const [{ exportIFC }] = await Promise.all([
+				import('./services/ifc-export.js')
+			]);
+			// Step 1: scope selection
+			const hasSel = selectedObjects && selectedObjects.length;
+			const scope = hasSel ? await askChoice('Export IFC', 'Choose what to export:', ['Selected objects','Entire scene']) : 'Entire scene';
+			if (!scope) return;
+			const objs = (scope==='Selected objects' && hasSel) ? selectedObjects : objects;
+			if (!objs || !objs.length){ alert('Nothing to export. Create or import an object first.'); return; }
+			// Step 2: basic metadata
+			const projectName = await askPrompt('Project Name', 'Enter a project name for IFC:', 'Sketcher Project'); if (projectName===null) return;
+			const author = await askPrompt('Author', 'Your name/organization:', 'Sketcher'); if (author===null) return;
+			// Step 3: classification scheme (Revit-friendly)
+			const scheme = await askChoice('Classification', 'Choose classification mapping:', ['By name keywords (Wall/Floor/etc.)','All as Generic Model']); if (!scheme) return;
+			const classify = (scheme==='All as Generic Model') ? (()=>'IfcBuildingElementProxy') : undefined; // exporter uses defaultClassifier otherwise
+			// Step 4: export
+			showProcessing('Exporting IFC…'); updateProcessing(0.2);
+			const root = new THREE.Group(); objs.forEach(o=>root.add(o));
+			const blob = exportIFC(THREE, root, { projectName, author, classify });
+			updateProcessing(0.9);
+			const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=(projectName||'sketcher')+'.ifc'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+			hideProcessing();
+		} catch (e){ console.error(e); hideProcessing(); alert('IFC export failed: ' + (e?.message || e)); }
+	});
+
+	async function askChoice(title, msg, choices){
+		return new Promise(resolve=>{
+			const d = document.createElement('dialog');
+			d.style.padding='14px 16px'; d.style.borderRadius='10px'; d.style.border='1px solid #666';
+			d.innerHTML = `<div style="font-weight:600; margin-bottom:6px">${title}</div><div style="margin-bottom:10px">${msg}</div>`;
+			const row=document.createElement('div'); row.style.display='flex'; row.style.gap='8px';
+			choices.forEach(c=>{ const b=document.createElement('button'); b.textContent=c; b.onclick=()=>{ d.close(); d.remove(); resolve(c); }; row.appendChild(b); });
+			const cancel=document.createElement('button'); cancel.textContent='Cancel'; cancel.onclick=()=>{ d.close(); d.remove(); resolve(null); }; cancel.style.marginLeft='auto';
+			const footer=document.createElement('div'); footer.style.display='flex'; footer.style.marginTop='10px'; footer.appendChild(cancel);
+			d.appendChild(row); d.appendChild(footer); document.body.appendChild(d); d.showModal();
+		});
+	}
+	async function askPrompt(title, msg, def){
+		return new Promise(resolve=>{
+			const d=document.createElement('dialog'); d.style.padding='14px 16px'; d.style.borderRadius='10px'; d.style.border='1px solid #666';
+			d.innerHTML=`<div style="font-weight:600; margin-bottom:6px">${title}</div><div style="margin-bottom:10px">${msg}</div>`;
+			const input=document.createElement('input'); input.type='text'; input.value=def||''; input.style.width='280px';
+			const row=document.createElement('div'); row.appendChild(input);
+			const ok=document.createElement('button'); ok.textContent='OK'; ok.onclick=()=>{ const v=input.value; d.close(); d.remove(); resolve(v); };
+			const cancel=document.createElement('button'); cancel.textContent='Cancel'; cancel.onclick=()=>{ d.close(); d.remove(); resolve(null); };
+			const footer=document.createElement('div'); footer.style.display='flex'; footer.style.gap='8px'; footer.style.marginTop='10px'; footer.append(ok,cancel);
+			d.append(row, footer); document.body.appendChild(d); d.showModal(); input.select();
+		});
+	}
 
 	// Helpers
 	function getPointer(e){
@@ -3961,8 +4194,29 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										const origin = new THREE.Vector3(p.x,p.y,p.z);
 										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
 										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
-										const ih = rc.intersectObjects(discs, true);
-										if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+										// 1) Try free-aim surface teleport
+										try {
+											const sceneTargets = [];
+											scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); });
+											const hits = rc.intersectObjects(sceneTargets, true);
+											let picked = null;
+											for (const h of hits){
+												if (!h.face) continue;
+												// Skip teleport discs
+												let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
+												if (isDisc) continue;
+												const nLocal = h.face.normal.clone();
+												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
+												const nWorld = nLocal.applyMatrix3(nm).normalize();
+												if (nWorld.dot(new THREE.Vector3(0,1,0)) >= 0.64){ picked = { point:h.point.clone(), normal:nWorld }; break; }
+											}
+											if (picked && window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(picked.point, picked.normal); }
+											else {
+												// 2) Fallback to pre-placed discs
+												const ih = rc.intersectObjects(discs, true);
+												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+											}
+										} catch{}
 									}
 								}
 								window.__xrTriggerPrev.set(src, pressed);
@@ -3991,8 +4245,29 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										const origin = new THREE.Vector3(p.x,p.y,p.z);
 										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
 										const rc = new THREE.Raycaster(origin, dir, 0.01, 200);
-										const ih = rc.intersectObjects(discs, true);
-										if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+										// 1) Try free-aim surface teleport
+										try {
+											const sceneTargets = [];
+											scene.traverse(obj=>{ if (!obj || !obj.visible) return; if (obj.userData?.__helper) return; if (obj.isMesh) sceneTargets.push(obj); });
+											const hits = rc.intersectObjects(sceneTargets, true);
+											let picked = null;
+											for (const h of hits){
+												if (!h.face) continue;
+												// Skip teleport discs
+												let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
+												if (isDisc) continue;
+												const nLocal = h.face.normal.clone();
+												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
+												const nWorld = nLocal.applyMatrix3(nm).normalize();
+												if (nWorld.dot(new THREE.Vector3(0,1,0)) >= 0.64){ picked = { point:h.point.clone(), normal:nWorld }; break; }
+											}
+											if (picked && window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(picked.point, picked.normal); }
+											else {
+												// 2) Fallback to pre-placed discs
+												const ih = rc.intersectObjects(discs, true);
+												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
+											}
+										} catch{}
 									}
 									window.__xrPinchPrev.set(src, isPinch);
 								} catch{}
@@ -4037,7 +4312,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (!arContent) {
 						const root = buildExportRootFromObjects(getARCloneSourceObjects());
 						prepareModelForAR(root);
-						if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
+						if (arMatMode === 'outline') applyOutlineModeForARInPlace(THREE, root);
+						else if (arMatMode === 'lite') simplifyMaterialsForARInPlace(THREE, root);
 						arContent = root;
 						scene.add(arContent);
 						try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}

@@ -68,5 +68,5 @@ Edit `js/i18n.js` and add a new top‑level key (e.g., `fr`) in `dictionaries`. 
 
 ## License
 
-MIT — see `LICENSE` for details.
+Proprietary — permission required to re‑use code. See `LICENSE` for details. Third‑party components (e.g., three.js, example loaders) are under their own licenses.
 

@@ -101,6 +101,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     state.dragging = true; lastPX = e.clientX; lastPY = e.clientY;
     clickState.downX = e.clientX; clickState.downY = e.clientY; clickState.downT = performance.now(); clickState.moveSum = 0;
     try { domElement.style.cursor = 'grabbing'; } catch{}
+  // Hide reticle while dragging to look
+  try { if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); } catch{}
     e.preventDefault();
   }
   function onPointerUp(e){
@@ -122,7 +124,12 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   function onPointerMove(e){
     if (!state.active) return;
     // Hover highlight when not dragging
-    if (!state.dragging){ try { tryHoverHighlightAtClient(e.clientX, e.clientY); } catch{} }
+    if (!state.dragging){
+      try {
+        tryHoverHighlightAtClient(e.clientX, e.clientY);
+        tryHoverReticleAtClient(e.clientX, e.clientY);
+      } catch{}
+    }
     // Look input when dragging
     if (!state.dragging) return;
     const dx = (typeof e.movementX === 'number' ? e.movementX : (e.clientX - lastPX));
@@ -184,6 +191,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   try { disposeDesktopEnv(); } catch{}
     restoreQuality();
   try { domElement.style.cursor = ''; } catch{}
+  // Hide any free-aim reticle on exit
+  try { if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); } catch{}
   }
 
   function update(dt){
@@ -475,12 +484,53 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
   }
   function tryTeleportAtClient(clientX, clientY){
     if (!window.__teleport) return false;
+    // Prefer free-aim teleport to surface under pointer if available
+    const picked = pickTeleportPointAtClient(clientX, clientY);
+    if (picked && picked.point){ try { window.__teleport.teleportToPoint(picked.point, picked.normal); } catch{} return true; }
+    // Fallback: pre-placed discs
     const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return false;
     setPointerFromClient(clientX, clientY);
     raycaster.setFromCamera(ndc, camera);
     const ih = raycaster.intersectObjects(discs, true);
     if (ih && ih.length){ const d = __discRoot(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); window.__teleport.teleportToDisc(d); } catch{} return true; } }
     return false;
+  }
+
+  function tryHoverReticleAtClient(clientX, clientY){
+    if (!window.__teleport || !window.__teleport.showReticleAt) return;
+    const picked = pickTeleportPointAtClient(clientX, clientY);
+    if (picked && picked.point){ try { window.__teleport.showReticleAt(picked.point, picked.normal); } catch{} }
+    else { try { if (window.__teleport.hideReticle) window.__teleport.hideReticle(); } catch{} }
+  }
+
+  function pickTeleportPointAtClient(clientX, clientY){
+    try {
+      setPointerFromClient(clientX, clientY);
+      raycaster.setFromCamera(ndc, camera);
+      // Improve picking for thin geometry
+      try { raycaster.params.Line = { threshold: 0.01 }; raycaster.params.Points = { threshold: 0.02 }; } catch{}
+      // Build candidate targets: visible scene meshes excluding helpers and our FP env
+      const targets = [];
+      scene.traverse(o=>{ try { if (!o || !o.visible) return; if (isHelperLike(o)) return; if (state.env && (o===state.env.group || o.parent===state.env.group)) return; if (o.isMesh) targets.push(o); } catch{} });
+      const hits = raycaster.intersectObjects(targets, true);
+      for (const h of hits){
+        if (!h || !h.object) continue;
+        // Skip teleport discs if present in scene layer
+        try { if (h.object.userData && h.object.userData.__teleportDisc) continue; } catch{}
+        // Require a face and compute world normal
+        if (!h.face) continue;
+        const nLocal = h.face.normal.clone();
+        const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
+        const nWorld = nLocal.applyMatrix3(nm).normalize();
+        // Only allow mostly-up surfaces to feel natural (<= ~50deg tilt)
+        const up = new THREE.Vector3(0,1,0);
+        const cos = nWorld.dot(up);
+        if (cos < 0.64) continue;
+        // Use the first valid hit
+        return { point: h.point.clone(), normal: nWorld };
+      }
+    } catch{}
+    return null;
   }
 
   // ---- Desktop environment (sun/ground/sky + optional HDRI) ----

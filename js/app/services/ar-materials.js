@@ -28,3 +28,48 @@ export function restoreMaterialsForARInPlace(THREE, root) {
     });
   } catch {}
 }
+
+// Outline mode: set meshes to pure white and attach black edge lines as helper children
+export function applyOutlineModeForARInPlace(THREE, root) {
+  try {
+    const attachOutline = (mesh) => {
+      try {
+        // Build edges; threshold 1 deg to show most edges
+        const egeo = new THREE.EdgesGeometry(mesh.geometry, 1);
+        const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.95 });
+        const lines = new THREE.LineSegments(egeo, mat);
+        lines.name = '__arOutline'; lines.userData.__helper = true; lines.raycast = function(){};
+        // Keep outline in mesh-local space
+        lines.position.set(0,0,0); lines.rotation.set(0,0,0); lines.scale.set(1,1,1);
+        mesh.add(lines);
+      } catch {}
+    };
+    root.traverse((node) => {
+      if (!node || !node.isMesh) return;
+      // Record original material once
+      if (!node.userData.__arOrigMaterial) {
+        const mats = Array.isArray(node.material) ? node.material : [node.material];
+        node.userData.__arOrigMaterial = Array.isArray(node.material) ? mats.slice() : mats[0];
+      }
+      // Set to white basic for consistent shading across devices
+      const basic = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+      node.material = basic;
+      // Attach outline helper if not already present
+      const hasOutline = node.children && node.children.some(c => c && c.name === '__arOutline');
+      if (!hasOutline) attachOutline(node);
+    });
+  } catch {}
+}
+
+export function clearOutlineModeForAR(THREE, root) {
+  try {
+    root.traverse((node) => {
+      if (!node) return;
+      // Remove attached outline helpers
+      if (node.children && node.children.length){
+        const toRemove = node.children.filter(c => c && c.name === '__arOutline');
+        for (const c of toRemove){ try { node.remove(c); c.geometry?.dispose?.(); c.material?.dispose?.(); } catch {} }
+      }
+    });
+  } catch {}
+}

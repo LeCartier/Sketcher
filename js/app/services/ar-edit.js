@@ -211,30 +211,34 @@ export function createAREdit(THREE, scene, renderer){
       // When a new grab starts, try to pick a child
       const newly = grabbingPre.find(p=>p.justStarted);
       const stillGrabbing = grabbingPre.length > 0;
-      // Only consider direct children of the AR clone root as selectable "objects"
+      // Consider any visible descendant of the AR clone root as a selectable "object"
       const pickChildAt = (px,py,pz,r)=>{
-        if (!state.root || !Array.isArray(state.root.children)) return null;
-        let best = null; let bestDist = Infinity;
+        if (!state.root) return null;
+        let best = null; let bestDist = Infinity; let bestScore = Infinity;
         const tmpBox = new THREE.Box3(); const tmpCenter = new THREE.Vector3();
-        for (const ch of state.root.children){
-          if (!ch) continue;
+        state.root.traverse((ch)=>{
+          if (!ch || ch === state.root) return;
           // Skip helpers/overlays
-          if (ch.userData && ch.userData.__helper) continue;
-          if (ch.name === '2D Overlay') continue;
-          if (ch.visible === false) continue;
-          try { tmpBox.setFromObject(ch); } catch { continue; }
-          if (tmpBox.isEmpty()) continue;
+          if (ch.userData && ch.userData.__helper) return;
+          if (ch.name === '2D Overlay') return;
+          if (ch.visible === false) return;
+          // Only consider Groups/Meshes/Points as manipulable
+          if (!(ch.isMesh || ch.type === 'Group' || ch.type === 'Points')) return;
+          try { tmpBox.setFromObject(ch); } catch { return; }
+          if (tmpBox.isEmpty()) return;
           const cx = Math.max(tmpBox.min.x, Math.min(px, tmpBox.max.x));
           const cy = Math.max(tmpBox.min.y, Math.min(py, tmpBox.max.y));
           const cz = Math.max(tmpBox.min.z, Math.min(pz, tmpBox.max.z));
           const dx = cx - px, dy = cy - py, dz = cz - pz; const dist = Math.hypot(dx,dy,dz);
-          if (dist <= r){
-            tmpBox.getCenter(tmpCenter);
-            const cdx = tmpCenter.x - px, cdy = tmpCenter.y - py, cdz = tmpCenter.z - pz;
-            const cdist = Math.hypot(cdx,cdy,cdz);
-            if (cdist < bestDist){ bestDist = cdist; best = ch; }
-          }
-        }
+          if (dist > r) return;
+          tmpBox.getCenter(tmpCenter);
+          const cdx = tmpCenter.x - px, cdy = tmpCenter.y - py, cdz = tmpCenter.z - pz;
+          const cdist = Math.hypot(cdx,cdy,cdz);
+          // Prefer leaf meshes over groups by adding a small type bias
+          const typeBias = ch.isMesh ? 0 : (ch.type === 'Group' ? 0.02 : 0.01);
+          const score = cdist + typeBias;
+          if (score < bestScore){ bestScore = score; bestDist = cdist; best = ch; }
+        });
         return best;
       };
       if (newly){
