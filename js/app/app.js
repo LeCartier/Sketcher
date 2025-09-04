@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -30,6 +30,7 @@ export async function init() {
 			import('./services/ar-materials.js'),
 			import('./services/collab.js'),
 			import('./features/alignment-tile.js'),
+			import('./services/fp-quality.js')
 		]);
 
 	// Version badge
@@ -577,7 +578,9 @@ export async function init() {
 
 	// First-person desktop fallback
 	const { createFirstPerson } = await import('./services/first-person.js');
-	const firstPerson = createFirstPerson({ THREE, renderer, scene, camera, domElement: renderer.domElement });
+		let fpQuality = null;
+		try { fpQuality = createFPQuality({ THREE, renderer, scene }); } catch{}
+		const firstPerson = createFirstPerson({ THREE, renderer, scene, camera, domElement: renderer.domElement, fpQuality });
 	let __fpControlsDisabled = false;
 	let __fpEditSuppressed = false;
 	let __fpPrevToolboxDisplay = null;
@@ -1017,12 +1020,14 @@ export async function init() {
 				new THREE.RingGeometry(innerR, outerR, 64),
 				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false })
 			);
+			ring.userData.__helper = true; // exclude from scene hit tests
 			ring.renderOrder = 9999;
 			// Soft inner fill
 			const fill = new THREE.Mesh(
 				new THREE.CircleGeometry(innerR * 0.92, 48),
 				new THREE.MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.22, depthTest: false, depthWrite: false })
 			);
+			fill.userData.__helper = true; // exclude from scene hit tests
 			fill.renderOrder = 9998;
 			// Orient horizontal by default; placement will re-orient to surface normal
 			try { ring.rotation.x = -Math.PI/2; fill.rotation.x = -Math.PI/2; } catch{}
@@ -4373,7 +4378,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (!window.__fp_prev) window.__fp_prev = now;
 					const dt = Math.min(0.1, Math.max(0, (now - window.__fp_prev)/1000));
 					window.__fp_prev = now;
-            					firstPerson.update(dt);
+								firstPerson.update(dt);
+								try { if (fpQuality && fpQuality.update) fpQuality.update(dt); } catch{}
 						// If FP mode has been exited, re-enable OrbitControls and restore editing/toolbox once
 						if (__fpControlsDisabled && !firstPerson.isActive()) {
 							try { if (controls) controls.enabled = true; } catch{}

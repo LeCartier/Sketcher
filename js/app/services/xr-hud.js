@@ -492,12 +492,33 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         }
       }
     } catch{}
-    // Determine pointer tip: prefer HUD, then discs, then horizontal scene, else 2m ahead
+    // Determine pointer tip: prefer HUD, then discs, then horizontal scene, else stabilized ground / fallback
     const posAttr = rightRay.geometry.attributes.position; posAttr.setXYZ(0, origin.x, origin.y, origin.z);
     let tip = origin.clone().add(dir.clone().multiplyScalar(2.0));
-    if (hudHit?.point) tip.copy(hudHit.point);
-    else if (discHit?.point) tip.copy(discHit.point);
-    else if (bestScene?.point) tip.copy(bestScene.point);
+    // Stabilization cache
+    if (!update.__stableReticle) update.__stableReticle = { point: null, normal: null };
+    const stable = update.__stableReticle;
+    if (hudHit?.point){
+      tip.copy(hudHit.point);
+      stable.point = null; // do not persist HUD tip
+    } else if (discHit?.point){
+      tip.copy(discHit.point);
+      stable.point = null; // discs can change distance; avoid caching
+    } else if (bestScene?.point){
+      tip.copy(bestScene.point);
+      stable.point = bestScene.point.clone(); stable.normal = bestScene.normal?.clone();
+    } else {
+      // If no current horizontal hit, reuse last stable horizontal or ground-plane intersection
+      if (stable.point){
+        tip.copy(stable.point);
+      } else {
+        // Ground plane fallback (y=0) but cache it to prevent oscillation
+        const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+        const ray = new THREE.Ray(origin, dir);
+        const pt = new THREE.Vector3();
+        if (ray.intersectPlane(plane, pt)) { tip.copy(pt); stable.point = pt.clone(); stable.normal = new THREE.Vector3(0,1,0); }
+      }
+    }
     // Default hide highlight on all discs; re-apply on target
     try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
     // Show free-aim teleport reticle only on valid horizontal scene hits; else optionally y=0 fallback
@@ -510,15 +531,20 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(bestScene.point, bestScene.normal); showed = true; }
       }
       if (!showed){
-        // Fallback to infinite ground plane (y=0) if ray intersects forward
-        try {
-          const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-          const ray = new THREE.Ray(origin, dir);
-          const pt = new THREE.Vector3();
-          if (ray.intersectPlane(plane, pt)){
-            if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(pt, up); showed = true; }
-          }
-        } catch{}
+        // Use stabilized ground fallback (same as tip logic) to avoid sliding
+        if (update.__stableReticle?.point && update.__stableReticle?.normal){
+          if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(update.__stableReticle.point, update.__stableReticle.normal); showed = true; }
+        } else {
+          try {
+            const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+            const ray = new THREE.Ray(origin, dir);
+            const pt = new THREE.Vector3();
+            if (ray.intersectPlane(plane, pt)){
+              update.__stableReticle.point = pt.clone(); update.__stableReticle.normal = up.clone();
+              if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(pt, up); showed = true; }
+            }
+          } catch{}
+        }
       }
       if (!showed){ if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); }
     } catch{}

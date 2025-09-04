@@ -2,7 +2,7 @@
 // API: const fp = createFirstPerson({ THREE, renderer, scene, camera, domElement });
 // fp.start({ hFov:100, constrainHeight:true }); fp.stop(); fp.update(dt);
 
-export function createFirstPerson({ THREE, renderer, scene, camera, domElement }){
+export function createFirstPerson({ THREE, renderer, scene, camera, domElement, fpQuality }){
   const state = {
     active: false,
     fly: false,
@@ -412,6 +412,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
     });
   const mkBtn = (label)=>{ const b=document.createElement('button'); b.textContent=label; b.style.padding='8px 10px'; b.style.borderRadius='8px'; b.style.border='1px solid #666'; b.style.background='#111a'; b.style.color='#fff'; b.style.backdropFilter='blur(6px)'; b.style.cursor='pointer'; return b; };
   const toggle = mkBtn(state.constrainHeight ? 'Mode: Walk (6ft)' : 'Mode: Fly');
+  const qualityBtn = mkBtn('Quality: High');
     const exit = mkBtn('Exit');
   const sunBtn = mkBtn('Sun');
   const matBtn = mkBtn('Materials: Original');
@@ -443,7 +444,18 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement }
         next==='wire' ? 'Wireframe' : 'X-Ray'
       }`;
     });
-    ui.append(toggle, matBtn, sunBtn, exit); document.body.appendChild(ui);
+    qualityBtn.addEventListener('click', ()=>{
+      try {
+        const cur = fpQuality && fpQuality.getMode ? fpQuality.getMode() : 'high';
+        const next = (cur==='low') ? 'high' : (cur==='high' ? 'ultra' : 'low');
+        fpQuality && fpQuality.setMode && fpQuality.setMode(next);
+        qualityBtn.textContent = `Quality: ${next.charAt(0).toUpperCase()+next.slice(1)}`;
+        try { localStorage.setItem('fp.qualityMode', next); } catch{}
+      } catch{}
+    });
+    // Initialize from stored preference
+    try { const saved = localStorage.getItem('fp.qualityMode'); if (saved && fpQuality && fpQuality.setMode){ fpQuality.setMode(saved); qualityBtn.textContent = `Quality: ${saved.charAt(0).toUpperCase()+saved.slice(1)}`; } } catch{}
+    ui.append(toggle, qualityBtn, matBtn, sunBtn, exit); document.body.appendChild(ui);
     // Adjust for VisualViewport bottom offset dynamically
     const vv = window.visualViewport || null;
     function applyVV(){
