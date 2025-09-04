@@ -29,6 +29,7 @@ export function createAREdit(THREE, scene, renderer){
   perActive: null, // currently selected sub-object when perObject is true
   dirtySet: new Set(), // set of clone nodes that were transformed in per-object mode
   allowScale: true, // when false, two-hand pinch will not scale the target (used by 1:1 mode)
+  onTransform: null, // optional callback invoked with (object) after a meaningful transform change
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
@@ -36,6 +37,7 @@ export function createAREdit(THREE, scene, renderer){
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
   function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); clearSnapHelper(); }
   function setScaleEnabled(on){ state.allowScale = !!on; }
+  function setOnTransform(fn){ state.onTransform = (typeof fn === 'function') ? fn : null; }
   function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
   function clearDirty(){ state.dirtySet.clear(); }
   function start(session){ state.session = session || null; }
@@ -306,6 +308,9 @@ export function createAREdit(THREE, scene, renderer){
       try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
         try { state.dirtySet.add(targetObj); } catch{}
+        try { if (state.onTransform) state.onTransform(targetObj); } catch{}
+      } else if (!state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
+        try { if (state.onTransform) state.onTransform(targetObj); } catch{}
       }
       state.two = null; // reset two-hand state if switching modes
   } else if(grabbingPts.length>=2){
@@ -401,7 +406,11 @@ export function createAREdit(THREE, scene, renderer){
       try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
-        if (moved){ try { state.dirtySet.add(targetObj); } catch{} }
+        if (moved){ try { state.dirtySet.add(targetObj); } catch{} try { if (state.onTransform) state.onTransform(targetObj); } catch{} }
+      }
+      else if (!state.perObject && targetObj){
+        const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
+        if (moved){ try { if (state.onTransform) state.onTransform(targetObj); } catch{} }
       }
       // Snap highlight + haptics (highlight only in per-object mode to avoid clutter)
       try {
@@ -451,5 +460,5 @@ export function createAREdit(THREE, scene, renderer){
     }
   }
 
-  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, getDirtyInfo, clearDirty, start, stop, update };
+  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setOnTransform, getDirtyInfo, clearDirty, start, stop, update };
 }

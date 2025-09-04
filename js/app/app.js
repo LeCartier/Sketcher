@@ -307,6 +307,41 @@ export async function init() {
 		renderer,
 		getLocalSpace: ()=> xrLocalSpace,
 		getButtons: (createHudButton) => {
+			// Helper: capture baseline local TR for each descendant (excluding root unless needed for fallback)
+			function __captureArContentBaseline(root){
+				try {
+					if (!root) return;
+					root.traverse(n=>{
+						try {
+							if (!n.userData) n.userData = {};
+							// Only capture once per session; avoid overwriting if user presses Reset repeatedly
+							if (!n.userData.__baselineLocal){
+								n.userData.__baselineLocal = {
+									p: n.position.toArray(),
+									q: n.quaternion.toArray(),
+									s: n.scale.toArray()
+								};
+							}
+						} catch {}
+					});
+				} catch {}
+			}
+			// Helper: revert children to captured baseline (skip root so overall placement/scale stays)
+			function __revertArContentChildren(root){
+				try {
+					if (!root) return;
+					root.traverse(n=>{
+						if (n === root) return; // preserve root placement & scale
+						const bl = n.userData && n.userData.__baselineLocal;
+						if (bl){
+							try { n.position.fromArray(bl.p); } catch {}
+							try { n.quaternion.fromArray(bl.q); } catch {}
+							try { n.scale.fromArray(bl.s); } catch {}
+						}
+					});
+					try { root.updateMatrixWorld(true); } catch {}
+				} catch {}
+			}
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
 			let handStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
@@ -327,6 +362,23 @@ export async function init() {
 			});
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', async ()=>{
+				try {
+					// XR-specific lightweight revert: if in immersive session with a placed clone, revert descendants to baseline local TR
+					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
+					if (sess && arContent) {
+						// If baseline not yet captured (e.g., user entered XR before helpers existed) capture once now
+						if (!arContent.userData || !arContent.userData.__baselineCaptured){
+							__captureArContentBaseline(arContent);
+							try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__baselineCaptured = true; } catch {}
+						}
+						__revertArContentChildren(arContent);
+						// Maintain ground alignment if lock active
+						try { if (arGroundLocked) alignModelToGround(arContent); } catch {}
+						// Clear per-object dirty tracking since we've reverted
+						try { arEdit.clearDirty && arEdit.clearDirty(); } catch {}
+						return; // Skip legacy/global reset pathways
+					}
+				} catch {}
 				try {
 					// Prefer restoring to the baseline scene snapshot captured after the last import commit
 					const raw = sessionStorage.getItem('sketcher:baseline');
@@ -456,7 +508,36 @@ export async function init() {
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-				xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
+			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
+			// Add new VR Prims button that opens a primitives submenu
+			const bPrims = createHudButton('Prims', ()=>{ try { toggleVRPrimitivesMenu(); } catch{} });
+			// --- Room status feedback (VR) ---
+			(function(){
+				let currentRoom = null; let isHost = false; let userCount = 1; let lastStatus = 'IDLE';
+				function shortRoom(r){ if(!r) return ''; return r.length > 8 ? r.slice(0,8)+'…' : r; }
+				function refresh(){
+					try {
+						if (!currentRoom){
+							bRoomHost.setLabel('Host');
+							bRoomJoin.setLabel('Join');
+							return;
+						}
+						const sr = shortRoom(currentRoom);
+						// Two-word labels => stacked lines by existing texture generator
+						bRoomHost.setLabel((isHost ? 'Host' : 'Room') + ' ' + sr);
+						const cnt = Math.max(1, userCount||1);
+						if (lastStatus && lastStatus !== 'SUBSCRIBED' && lastStatus !== 'CONNECTED' && lastStatus !== 'OPEN') {
+							bRoomJoin.setLabel('Conn' + ' ' + '…');
+						} else {
+							bRoomJoin.setLabel(String(cnt) + ' ' + 'online');
+						}
+					} catch {}
+				}
+				window.addEventListener('sketcher:room', (ev)=>{ try { const d = ev.detail||{}; const r=(d.room||'').trim(); if(!r) return; currentRoom = r; isHost = d.action === 'host'; lastStatus='CONNECTING'; bRoomJoin.setLabel('Conn' + ' ' + '…'); refresh(); } catch{} });
+				window.addEventListener('sketcher:collab-presence', (ev)=>{ try { if(ev.detail && typeof ev.detail.count === 'number'){ userCount = ev.detail.count; refresh(); } } catch{} });
+				window.addEventListener('sketcher:collab-status', (ev)=>{ try { const st = ev.detail?.status; if(st){ lastStatus = st; if(st==='LEFT'){ currentRoom=null; isHost=false; userCount=1; } refresh(); } } catch{} });
+			})();
+			xrHudButtons.push(bPrims);
 			return xrHudButtons;
 		}
 	});
@@ -1102,7 +1183,11 @@ export async function init() {
 				const xrCam = renderer.xr.getCamera(camera);
 				const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
 				const delta = camPos.clone().sub(target);
-				if (arContent){ arContent.position.sub(delta); }
+				if (arContent){
+					arContent.position.sub(delta);
+					// When ground lock active, re-snap Y immediately to local floor
+					try { if (typeof arGroundLocked !== 'undefined' && arGroundLocked) { arContent.position.y = 0; alignModelToGround(arContent); } } catch{}
+				}
 			} catch {}
 			return;
 		}
@@ -1703,6 +1788,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (collab.onPresence) collab.onPresence((p)=>{ try { window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); } catch{} });
 				} catch{}
 				if (asHost) await collab.host(room); else await collab.join(room);
+				// Bridge XR/VR AR edit transforms to collaboration (live sync of object motions)
+				try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj); } catch{} }); } catch{}
 				// Tiny status badge in version area
 				try {
 					const el = document.getElementById('version-badge');
@@ -3003,10 +3090,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const updateBadge = (room, isHost)=>{ try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); if(room){ vb.textContent += `  ·  Room:${room}${isHost?' (host)':''}`; } } } catch{} };
 			if (hostBtn) hostBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 				if (collab?.isActive?.()){ alert('Already in a room'); return; }
-				const r = await ensure('host'); if(!r) return; await collab.host(r); updateBadge(r, true); } catch{} });
+				const r = await ensure('host'); if(!r) return; await collab.host(r); updateBadge(r, true);
+				try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj); } catch{} }); } catch{}
+			 } catch{} });
 			if (joinBtn) joinBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 				if (collab?.isActive?.()){ alert('Already in a room'); return; }
-				const r = await ensure('join'); if(!r) return; await collab.join(r); updateBadge(r, false); } catch{} });
+				const r = await ensure('join'); if(!r) return; await collab.join(r); updateBadge(r, false);
+				try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj); } catch{} }); } catch{}
+			 } catch{} });
 		} catch{}
 	})();
 
@@ -3017,6 +3108,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 			if (collab?.isActive?.()){ alert('Already in a room'); return; }
 			if (action === 'host') await collab.host(room); else if (action === 'join') await collab.join(room);
+			// Hook AR edit transform broadcast after HUD-based room join/host
+			try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj); } catch{} }); } catch{}
 			try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); vb.textContent += `  ·  Room:${room}${action==='host'?' (host)':''}`; } } catch{}
 		} catch{}
 	});
