@@ -1063,16 +1063,16 @@ export async function init() {
 		if (teleportDiscs.includes(group)) return;
 		// Ensure marker exists
 		const ud = (group.userData.__teleportDisc = group.userData.__teleportDisc || {});
+		// Normalize orientation: discs are always horizontal; cone always points straight up.
+		try {
+			group.quaternion.identity();
+			group.rotation.set(0, group.rotation.y || 0, 0);
+		} catch {}
 		// Normalize stored normal (plain object -> THREE.Vector3)
 		try {
-			if (ud.normal && !(ud.normal.isVector3)) {
-				ud.normal = new THREE.Vector3(ud.normal.x||0, ud.normal.y||1, ud.normal.z||0).normalize();
-			}
+			ud.normal = new THREE.Vector3(0,1,0); // force up
 		} catch{}
-		if (!ud.normal){
-			// Derive from orientation (group up rotated by group quaternion)
-			try { ud.normal = new THREE.Vector3(0,1,0).applyQuaternion(group.quaternion).normalize(); } catch { ud.normal = new THREE.Vector3(0,1,0); }
-		}
+		if (!ud.normal){ ud.normal = new THREE.Vector3(0,1,0); }
 		// Find child meshes for plane and cone (lost by JSON in userData)
 		try {
 			let plane = null, cone = null;
@@ -1084,6 +1084,8 @@ export async function init() {
 			// Reapply canonical materials to ensure consistent look
 			if (plane) {
 				ud.plane = plane; ud.top = plane;
+				// Force plane horizontal
+				try { plane.rotation.set(-Math.PI/2, 0, 0); } catch {}
 				try {
 					const m = plane.material;
 					if (m && m.isMeshStandardMaterial){
@@ -1098,6 +1100,8 @@ export async function init() {
 			}
 			if (cone) {
 				ud.cone = cone;
+				// Ensure cone points up (+Y)
+				try { cone.quaternion.identity(); cone.rotation.set(0, cone.rotation.y||0, 0); } catch {}
 				try {
 					const m = cone.material;
 					if (m && m.isMeshStandardMaterial){
@@ -1120,7 +1124,7 @@ export async function init() {
 		try { teleportDiscs.forEach(d => { if (d && d.userData){ if(!d.userData.__teleportDisc) d.userData.__teleportDisc = {}; d.userData.__teleportDisc.active = !!active; } }); } catch{}
 	}
 	function createTeleportDisc(position, normal){
-		const n = (normal && normal.isVector3) ? normal.clone().normalize() : new THREE.Vector3(0,1,0);
+		const n = new THREE.Vector3(0,1,0); // force up
 		const group = new THREE.Group(); group.name = '__TeleportDisc'; group.userData.__teleportDisc = { normal: n.clone() };
 		// Flat blue plane circle (2 ft Ø) — no thickness
 		const planeGeo = new THREE.CircleGeometry(1.0, 64);
@@ -1134,9 +1138,8 @@ export async function init() {
 		const coneGeo = new THREE.ConeGeometry(0.18, 0.45, 24);
 		const coneMat = new THREE.MeshStandardMaterial({ color: 0x2f8cff, emissive: 0x114477, emissiveIntensity: 0.5 });
 		const cone = new THREE.Mesh(coneGeo, coneMat); cone.position.y = 0.25 + 0.225; group.add(cone);
-		// Orient so +Y aligns to normal
-		const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), n);
-		group.quaternion.copy(q);
+		// Always keep disc horizontal & cone upright
+		try { group.quaternion.identity(); group.rotation.set(0,0,0); } catch {}
 		// Place at position
 		if (position && position.isVector3) group.position.copy(position);
 		// Store references for highlight
@@ -1219,19 +1222,12 @@ export async function init() {
 	function showTeleportReticleAt(point, normal){
 		const r = ensureTeleportReticle(); if (!r || !point) return;
 		try {
-			// Align to surface normal (default up)
+			// Always horizontal reticle slightly above point
 			const up = new THREE.Vector3(0,1,0);
-			const n = (normal && normal.isVector3) ? normal.clone().normalize() : up.clone();
-			// Offset slightly above the surface to avoid visual intersection
-			r.group.position.copy(point.clone().add(n.clone().multiplyScalar(0.01)));
-			const q = new THREE.Quaternion().setFromUnitVectors(up, n);
-			r.group.quaternion.copy(q);
-			// Point arrow roughly toward current view direction projected on plane
-			try {
-				const viewDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize();
-				const tangential = viewDir.clone().sub(n.clone().multiplyScalar(viewDir.dot(n))).normalize();
-				r.arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), tangential.lengthSq()>0? tangential : up);
-			} catch{}
+			r.group.position.copy(point.clone().add(up.clone().multiplyScalar(0.01)));
+			r.group.quaternion.identity(); // keep flat
+			// Arrow stays pointing up (no directional tilt)
+			try { r.arrow.quaternion.identity(); r.arrow.rotation.set(0,0,0); } catch{}
 			r.group.visible = true;
 		} catch{}
 	}
