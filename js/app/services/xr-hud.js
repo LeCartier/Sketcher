@@ -408,8 +408,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     try {
       const session = renderer.xr.getSession?.();
     if (session && frame){
-        const sources = session.inputSources ? Array.from(session.inputSources) : [];
-        const hudTargets = buttons.map(b=>b.mesh);
+  const sources = session.inputSources ? Array.from(session.inputSources) : [];
+  // Gather all current HUD button meshes dynamically (supports runtime-added submenus)
+  const hudTargets = [];
+  try { if (hud) hud.traverse(o=>{ if (o && o.isMesh && o.userData && o.userData.__hudButton) hudTargets.push(o); }); } catch{}
         const hovered = new Set();
         let anyController = false; let anyHand = false;
         let controllerHoveringHUD = false;
@@ -642,8 +644,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const ACTIVE_SHRINK_X = 0.85, ACTIVE_SHRINK_Y = 0.85; // shrink hit box to reduce boundary triggers
           const toLocal = (p, m)=> m.worldToLocal(new THREE.Vector3(p.x, p.y, p.z));
           if (idxPos){
-            for (const b of buttons){
-              const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
+            for (const m of hudTargets){
+              if (!m) continue; const st = ensurePressState(m);
               const lp = toLocal(idxPos, m);
               const halfW = BUTTON_W/2, halfH = BUTTON_H/2;
               const inX = Math.abs(lp.x) <= halfW * ACTIVE_SHRINK_X;
@@ -659,8 +661,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             }
           }
           // Animate and handle press only on the best candidate; release others
-          for (const b of buttons){
-            const m = b.mesh; if (!m) continue; const st = ensurePressState(m);
+          for (const m of hudTargets){
+            if (!m) continue; const st = ensurePressState(m);
             let targetDepth = 0; let within = false; let pressedNow = st.pressed;
             if (best && best.m === m){
               targetDepth = best.depth; within = true;

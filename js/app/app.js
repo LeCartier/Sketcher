@@ -381,6 +381,28 @@ export async function init() {
 						return; // Skip baseline/global reset pathways for AR lightweight revert
 					}
 				} catch {}
+				// NEW: Prefer true VR session-start snapshot if available so Reset always returns to initial enter-VR state.
+				// This avoids confusing behavior where later baseline updates (e.g., after imports or mode toggles) became the reset point.
+				try {
+					const rawStart = sessionStorage.getItem('sketcher:baselineStart');
+					if (rawStart){
+						const snap = JSON.parse(rawStart);
+						if (snap && snap.json){
+							clearSceneObjects();
+							const loader = new THREE.ObjectLoader();
+							const root = loader.parse(snap.json);
+							[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
+							updateCameraClipping();
+							// Clear AR clone if present; rebuild on demand
+							if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
+							// Reset AR-related flags & visual states
+							arOneToOne = false; arGroundLocked = false; arPendingTeleport = null; arMatMode = 'normal';
+							try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
+							updateVisibilityUI();
+							return; // Session-start baseline consumed; do not fall through to mutable baseline
+						}
+					}
+				} catch{}
 				try {
 					// Prefer restoring to the baseline scene snapshot captured after the last import commit
 					const raw = sessionStorage.getItem('sketcher:baseline');
@@ -3545,9 +3567,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { saveSessionDraftNow(); } catch {}
 				// Capture a baseline snapshot (full scene) for VR Reset if none exists yet
 				try {
+					const json = serializeScene();
+					// baseline: mutable mid-session reset point (updated after imports)
 					if (!sessionStorage.getItem('sketcher:baseline')) {
-						const json = serializeScene();
 						sessionStorage.setItem('sketcher:baseline', JSON.stringify({ json, t: Date.now(), reason: 'enter-vr' }));
+					}
+					// baselineStart: immutable session-start snapshot for true Reset-to-start behavior
+					if (!sessionStorage.getItem('sketcher:baselineStart')) {
+						sessionStorage.setItem('sketcher:baselineStart', JSON.stringify({ json, t: Date.now(), reason: 'enter-vr-start' }));
 					}
 				} catch {}
 				// Ensure teleport discs interactive in XR
@@ -4959,6 +4986,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			try { sessionStorage.removeItem('sketcher:sessionDraft'); } catch {}
 			try { localStorage.removeItem('sketcher:sessionDraft'); } catch {}
 		try { sessionStorage.removeItem('sketcher:baseline'); } catch{}
+		try { sessionStorage.removeItem('sketcher:baselineStart'); } catch{}
 		updateCameraClipping();
 	});
 	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
