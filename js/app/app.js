@@ -142,6 +142,15 @@ export async function init() {
 		let arPlaced = false;      // true once the AR/VR clone (arContent) has been positioned initially
 		let arContent = null;      // clone/root used in AR/VR placement workflows
 
+			// Reset any global scene/world transforms applied during XR sessions (currently no-op placeholder)
+			function resetSceneTransform(){
+				try {
+					// If future code applies offsets to a parent/group for XR alignment, clear them here.
+					// For now we just ensure scene matrix world is up to date.
+					scene.updateMatrixWorld(true);
+				} catch {}
+			}
+
 		// Compute a world-space bounding box excluding helper visuals
 		function __computeWorldBoxExcludingHelpers(root){
 			const box = new THREE.Box3();
