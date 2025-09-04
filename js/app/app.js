@@ -137,6 +137,11 @@ export async function init() {
 		let arGroundLocked = false;
 		let __lastGroundAlignAt = 0;
 
+		// AR session lifecycle flags (some code referenced these before declaration after refactor)
+		let arActive = false;      // true while an immersive-ar or immersive-vr session is active
+		let arPlaced = false;      // true once the AR/VR clone (arContent) has been positioned initially
+		let arContent = null;      // clone/root used in AR/VR placement workflows
+
 		// Compute a world-space bounding box excluding helper visuals
 		function __computeWorldBoxExcludingHelpers(root){
 			const box = new THREE.Box3();
