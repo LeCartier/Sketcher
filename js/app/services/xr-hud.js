@@ -722,3 +722,53 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
 
   return { ensure, remove, update, setAnchor, setHandVizStyle, get group(){ return hud; }, get buttons(){ return buttons; }, resetPressStates };
 }
+
+// Build application-specific HUD buttons (migrated from app.js)
+export function buildAppHud(deps){
+  const {
+    createHudButton,
+    THREE,
+    scene,
+    renderer,
+    arEdit,
+    collab,
+    createAlignmentTile,
+    FEET_TO_METERS,
+    setXRInteractionMode,
+    setARScaleOne,
+    setARScaleFit,
+    setHudButtonActiveByLabel,
+    alignModelToGround,
+    computeArBaseMetrics,
+    applyArMaterialModeOnContent,
+    vrDraw
+  } = deps || {};
+  if (!createHudButton) return [];
+  // Local state formerly in app.js
+  let arPerObject = false;
+  let handStyle = 'fingertips';
+  // Access to arContent via global (kept minimal to avoid circular import)
+  const getArContent = ()=> window.arContent;
+  const bOne = createHudButton('1:1', ()=>{ try { if (window.arOneToOne) { window.arOneToOne = false; arEdit?.setScaleEnabled(true); setHudButtonActiveByLabel?.('1:1', false); } else { setARScaleOne?.(); setHudButtonActiveByLabel?.('1:1', true); } } catch{} });
+  const bFit = createHudButton('Fit', ()=> setARScaleFit?.());
+  const bReset = createHudButton('Reset', async ()=>{ try { const arContent = getArContent(); const sess = renderer?.xr?.getSession?.(); let blend=null; try { blend = sess && sess.environmentBlendMode; } catch{}; const isAR = blend==='additive'||blend==='alpha-blend'; if (isAR && arContent){ if (arContent.userData && arContent.userData.__initialTR){ const tr=arContent.userData.__initialTR; arContent.position.fromArray(tr.pos); arContent.quaternion.fromArray(tr.quat); arContent.scale.fromArray(tr.scl); arContent.updateMatrixWorld(true); alignModelToGround?.(arContent); } } else { if (window.resetARTransform) window.resetARTransform(); try { const snap = sessionStorage.getItem('sketcher:baseline'); if (snap) window.__restoreBaselineSnapshot?.(snap); } catch{} } } catch{} });
+  const bInteract = createHudButton('Grab', ()=>{ try { window.xrInteractionRay = !window.xrInteractionRay; setXRInteractionMode?.(!window.xrInteractionRay); } catch{} });
+  const bLock = createHudButton('Lock Ground', ()=>{ try { window.arGroundLocked = !window.arGroundLocked; setHudButtonActiveByLabel?.('Lock Ground', window.arGroundLocked); if (window.arGroundLocked){ const arContent = getArContent(); if (arContent) alignModelToGround?.(arContent); computeArBaseMetrics?.(arContent); applyArMaterialModeOnContent?.(); } } catch{} });
+  const bMode = createHudButton('Objects', ()=>{ try { arPerObject = !arPerObject; arEdit?.setPerObjectEnabled?.(arPerObject); bMode.setLabel(arPerObject ? 'Scene':'Objects'); } catch{} });
+  const bMatMode = createHudButton('Mat', ()=>{ try { window.arMatMode = (window.arMatMode==='normal')?'outline':(window.arMatMode==='outline'?'lite':'normal'); applyArMaterialModeOnContent?.(); bMatMode.setLabel(window.arMatMode==='normal'?'Mat':(window.arMatMode==='outline'?'Outline':'Lite')); } catch{} });
+  const bAlign = createHudButton('Align Tile', ()=>{ try { const session=renderer?.xr?.getSession?.(); if(!session) return; if (window.xrAlignTile && window.xrAlignTile.parent){ scene.remove(window.xrAlignTile); window.xrAlignTile=null; return; } if (!createAlignmentTile) return; const tile=createAlignmentTile({ THREE, feet:1, name:'Alignment Tile 1ft' }); tile.scale.setScalar(FEET_TO_METERS||0.3048); const xrCam = renderer.xr.getCamera?.(window.camera); if (xrCam){ const camPos=new THREE.Vector3(); xrCam.getWorldPosition(camPos); tile.position.copy(camPos); tile.position.y=0; } tile.rotation.set(0,0,0); tile.quaternion.identity(); tile.updateMatrixWorld(true); scene.add(tile); window.xrAlignTile = tile; try { collab?.onAdd?.(tile); } catch{} } catch{} });
+  const bHands = createHudButton('Fingers', ()=>{ try { if (handStyle==='fingertips') handStyle='skeleton'; else if (handStyle==='skeleton') handStyle='off'; else handStyle='fingertips'; bHands.setLabel(handStyle==='fingertips'?'Fingers':(handStyle==='skeleton'?'Bones':'Hands Off')); window.xrHud?.setHandVizStyle?.(handStyle); } catch{} });
+  const bRoomHost = createHudButton('Host', async ()=>{ try { const name = await window.showRoomOverlay?.('host'); if (!name) return; collab?.host?.(name); } catch{} });
+  const bRoomJoin = createHudButton('Join', async ()=>{ try { const name = await window.showRoomOverlay?.('join'); if (!name) return; collab?.join?.(name); } catch{} });
+  // Primitives submenu state
+  let primsMenu=null; let primsButtons=[]; function cancelPrim(){ try { if (window.__xrPrim?.preview){ const pm=window.__xrPrim.preview; if (pm.parent) pm.parent.remove(pm); pm.geometry?.dispose?.(); } } catch{} window.__xrPrim=null; }
+  function buildPrimsMenu(){ if (primsMenu) return; primsMenu=new THREE.Group(); primsMenu.visible=false; primsMenu.name='XR HUD Prims Menu'; primsMenu.userData.__helper=true; const defs=[{label:'Box',tool:'box'},{label:'Sphere',tool:'sphere'},{label:'Cylinder',tool:'cylinder'},{label:'Cone',tool:'cone'},{label:'Back',tool:'__back'}]; for (const d of defs){ const btn=createHudButton(d.label, ()=>{ if (d.tool==='__back'){ togglePrims(false); return; } window.__xrPrim={ tool:d.tool, stage:0, p0:null, p1:null, preview:null, lastDims:'' }; }); primsButtons.push(btn); primsMenu.add(btn.mesh); } try { const bw=primsButtons[0]?.mesh?.geometry?.parameters?.width||0.02; const bh=bw; const gap=bw*0.32; const cols=3; const rows=Math.ceil(primsButtons.length/cols); const totalW=cols*bw+(cols-1)*gap; const totalH=rows*bh+(rows-1)*gap; for (let i=0;i<primsButtons.length;i++){ const r=Math.floor(i/cols); const c=i%cols; const x=-totalW/2 + c*(bw+gap)+bw/2; const y=totalH/2 - r*(bh+gap)-bh/2; primsButtons[i].mesh.position.set(x,y,0.0002); } } catch{} scene.add(primsMenu); }
+  function setMainMenuVisible(v){ [bOne,bFit,bReset,bInteract,bLock,bMode,bMatMode,bAlign,bHands,bRoomHost,bRoomJoin,bDraw].forEach(b=>{ try { if (b?.mesh) b.mesh.visible=v; } catch{} }); }
+  function togglePrims(force){ buildPrimsMenu(); const show = (typeof force==='boolean')?force:!primsMenu.visible; primsMenu.visible=show; setMainMenuVisible(!show); if (!show) cancelPrim(); }
+  window.toggleVRPrimitivesMenu = togglePrims; // keep for debug
+  const bPrims = createHudButton('Prims', ()=> togglePrims());
+  // Draw (pinch line) toggle
+  const bDraw = createHudButton('Draw', ()=>{ try { if (!vrDraw) return; const on=!vrDraw.isActive(); vrDraw.setEnabled(on); setHudButtonActiveByLabel?.('Draw', on); arEdit?.setEnabled?.(!on); } catch{} });
+  const buttons=[bOne,bFit,bReset,bInteract,bLock,bMode,bMatMode,bAlign,bHands,bRoomHost,bRoomJoin,bPrims,bDraw];
+  return buttons;
+}

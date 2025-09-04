@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud, buildAppHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -131,476 +131,7 @@ export async function init() {
 		renderer.physicallyCorrectLights = true;
 		if (THREE && THREE.ACESFilmicToneMapping !== undefined) renderer.toneMapping = THREE.ACESFilmicToneMapping;
 		if (THREE && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
-	// Slight foveation improves perf on Quest; 0 = full res center, 1 = aggressive peripheral reduction
-		if (renderer.xr && typeof renderer.xr.setFoveation === 'function') renderer.xr.setFoveation(0.5);
-	// Keep default framebuffer scale factor at 1.0; raise carefully if you need sharper visuals
-	if (renderer.xr && typeof renderer.xr.setFramebufferScaleFactor === 'function') renderer.xr.setFramebufferScaleFactor(1.0);
 	} catch {}
-	let arActive = false;
-	// Room Scan is now provided by a service module
-	let arContent = null; // cloned scene content for AR
-	let arPlaced = false;
-	let arPrevVisibility = null; // Map(object -> prevVisible) to restore after AR
-	let arPendingTeleport = null; // Vector3 meters (xz on local-floor) to apply on first AR placement
-	let xrAlignTile = null; // VR-only alignment tile helper (not persisted)
-	const FEET_TO_METERS = 0.3048;
-	// Optional visual scale debug: enable by adding '#scaleDebug' to the URL or set localStorage 'sketcher.scaleDebug' = '1'
-	const ENABLE_SCALE_DEBUG = (typeof location !== 'undefined' && location.hash && location.hash.includes('scaleDebug')) || (typeof localStorage !== 'undefined' && localStorage.getItem && localStorage.getItem('sketcher.scaleDebug') === '1');
-	let __scaleDebugGroup = null;
-	let xrHitTestSource = null;
-	let xrViewerSpace = null;
-	let xrLocalSpace = null;
-	// Track grab transitions per XR input source for haptics and statefulness
-	const xrGrabState = new WeakMap();
-	// AR scale helpers and XR HUD (3D ray-interactive)
-	let xrHud3D = null; // THREE.Group
-	let xrHudButtons = []; // [{ mesh, onClick }]
-	// XR HUD service instance
-	let arOneToOne = true; // last chosen scale mode
-	let arBaseBox = null;  // Box3 in meters after prepareModelForAR
-	let arBaseDiagonal = 1; // meters
-	let arFitMaxDim = 1.6; // meters target for Fit
-		let arSimplifyMaterials = false; // AR performance mode toggle
-		let arMatMode = 'normal'; // 'normal' | 'outline' | 'lite'
-	// XR interaction mode: true = Ray teleport, false = Grab (pinch)
-	let xrInteractionRay = false;
-
-	// Defensive: ensure the scene root has identity transform (no offsets/rotations/scales)
-	function resetSceneTransform(){
-		try {
-			if (!scene) return;
-			if (scene.position){ scene.position.set(0,0,0); }
-			if (scene.quaternion){ scene.quaternion.identity(); }
-			if (scene.rotation){ scene.rotation.set(0,0,0); }
-			if (scene.scale){ scene.scale.set(1,1,1); }
-			if (scene.updateMatrixWorld) scene.updateMatrixWorld(true);
-		} catch {}
-	}
-	function computeArBaseMetrics(root){
-		try {
-			root.updateMatrixWorld(true);
-				const box = new THREE.Box3().setFromObject(root);
-			arBaseBox = box; 
-			try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
-			const size = box.getSize(new THREE.Vector3());
-			arBaseDiagonal = Math.max(1e-4, Math.max(size.x, size.y, size.z));
-		} catch { arBaseBox = null; arBaseDiagonal = 1; }
-	}
-	function setARScaleOne(){
-		if (!arContent) return;
-		arOneToOne = true;
-			try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}
-			// Disable pinch scaling in AR edit while 1:1 is active
-			try { arEdit.setScaleEnabled(false); } catch {}
-			if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, arContent);
-		// Keep on floor
-		try {
-			if (arBaseBox) {
-				const y = -arBaseBox.min.y;
-				arContent.position.y += y; // nudge to rest on floor
-			} else {
-				arContent.position.y = 0;
-			}
-		} catch {}
-		// If ground lock active, ensure model is aligned to local-floor (y=0)
-		try { if (arGroundLocked) { alignModelToGround(arContent); } } catch {}
-	}
-
-	// Ensure HUD reflects 1:1 active state
-	try { setHudButtonActiveByLabel('1:1', true); } catch {}
-	function setARScaleFit(){
-		if (!arContent) return;
-		arOneToOne = false;
-		// Re-enable pinch scaling when not in 1:1
-		try { arEdit.setScaleEnabled(true); } catch {}
-		try { setHudButtonActiveByLabel('1:1', false); } catch {}
-		const box = new THREE.Box3().setFromObject(arContent);
-		const size = box.getSize(new THREE.Vector3());
-		const maxDim = Math.max(1e-4, Math.max(size.x, size.y, size.z));
-		// scale so the max dimension becomes arFitMaxDim
-		const s = Math.max(0.01, Math.min(100, arFitMaxDim / maxDim));
-		const desired = new THREE.Vector3().setScalar(s);
-		try { arContent.scale.copy(desired); } catch {}
-	}
-	function resetARTransform(){
-		if (!arContent) return;
-		setARScaleOne();
-		// Reset clears 1:1 toggle visual and re-enables pinch scaling
-		try { setHudButtonActiveByLabel('1:1', false); } catch {}
-		try { arEdit.setScaleEnabled(true); } catch {}
-		arOneToOne = false;
-		// Place 1.5m in front again, on floor
-		try { arContent.position.set(0, 0, -1.5); } catch {}
-		try { arContent.quaternion.identity(); } catch {}
-			applyArMaterialModeOnContent();
-	}
-		function applyArMaterialModeOnContent(){
-		if (!arContent) return;
-			// Clear outline helpers before switching
-			try { clearOutlineModeForAR(THREE, arContent); } catch {}
-			if (arMatMode === 'outline') {
-				applyOutlineModeForARInPlace(THREE, arContent);
-			} else if (arMatMode === 'lite') {
-				simplifyMaterialsForARInPlace(THREE, arContent);
-			} else {
-				restoreMaterialsForARInPlace(THREE, arContent);
-			}
-	}
-
-		// In-XR/VR friendly room entry panel (DOM overlay). Returns Promise<string|null> for room name.
-		async function showRoomOverlay(mode){
-			return new Promise((resolve)=>{
-				try {
-					const existing = document.getElementById('xr-room-overlay');
-					if (existing) { existing.parentNode.removeChild(existing); }
-					const wrap = document.createElement('div');
-					wrap.id = 'xr-room-overlay';
-					Object.assign(wrap.style, {
-						position: 'fixed', inset: '0', zIndex: 999999,
-						background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center'
-					});
-					const panel = document.createElement('div');
-					Object.assign(panel.style, {
-						background: 'rgba(24,24,28,0.96)', color: '#eee', borderRadius: '14px',
-						padding: '18px 18px 14px 18px', width: 'min(92vw, 440px)', boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
-						font: '16px/1.25 system-ui, -apple-system, Segoe UI, Roboto, sans-serif'
-					});
-					const title = document.createElement('div'); title.textContent = (mode==='host'?'Host Room':'Join Room');
-					title.style.fontWeight = '600'; title.style.fontSize = '18px'; title.style.marginBottom = '10px';
-					const instr = document.createElement('div'); instr.textContent = 'Enter a room name'; instr.style.opacity = '0.9'; instr.style.marginBottom = '12px';
-					const input = document.createElement('input'); input.type = 'text'; input.placeholder = 'e.g. room-123';
-					Object.assign(input.style, {
-						width: '100%', fontSize: '18px', padding: '10px 12px', borderRadius: '10px',
-						border: '1px solid rgba(255,255,255,0.16)', background: '#1a1a1f', color: '#fff', outline: 'none',
-						marginBottom: '12px'
-					});
-					try { const last = sessionStorage.getItem('sketcher:last-room'); if (last) input.value = last; } catch {}
-					const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '10px'; row.style.justifyContent = 'flex-end';
-					const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
-					Object.assign(cancel.style, { fontSize:'16px', padding:'10px 14px', borderRadius:'10px', border:'1px solid rgba(255,255,255,0.16)', background:'#2a2a30', color:'#ddd', cursor:'pointer' });
-					const ok = document.createElement('button'); ok.textContent = (mode==='host'?'Host':'Join');
-					Object.assign(ok.style, { fontSize:'16px', padding:'10px 14px', borderRadius:'10px', border:'1px solid rgba(255,255,255,0.18)', background:'#3a86ff', color:'#fff', cursor:'pointer' });
-					row.appendChild(cancel); row.appendChild(ok);
-					panel.appendChild(title); panel.appendChild(instr); panel.appendChild(input); panel.appendChild(row);
-					wrap.appendChild(panel); document.body.appendChild(wrap);
-					function done(val){ try { wrap.remove(); } catch{} resolve(val||null); }
-					cancel.addEventListener('click', ()=> done(null));
-					ok.addEventListener('click', ()=>{ const v=(input.value||'').trim(); if (!v) { input.focus(); return; } try { sessionStorage.setItem('sketcher:last-room', v); } catch {} done(v); });
-					input.addEventListener('keydown', (e)=>{ if (e.key==='Enter') { ok.click(); } else if (e.key==='Escape') { cancel.click(); } });
-					// Try to trigger VR keyboard in DOM overlay
-					setTimeout(()=>{ try { input.focus(); input.select?.(); input.click?.(); } catch{} }, 50);
-					// Auto-clean when XR session ends
-					try {
-						const s = renderer?.xr?.getSession?.();
-						if (s) {
-							const onEnd = ()=>{ try { s.removeEventListener('end', onEnd); } catch{} done(null); };
-							s.addEventListener('end', onEnd);
-						}
-					} catch {}
-				} catch { resolve(null); }
-			});
-		}
-	// XR HUD: build via service
-	const xrHud = createXRHud({
-		THREE,
-		scene,
-		renderer,
-		getLocalSpace: ()=> xrLocalSpace,
-		getButtons: (createHudButton) => {
-			// Helper: capture baseline local TR for each descendant (excluding root unless needed for fallback)
-			function __captureArContentBaseline(root){
-				try {
-					if (!root) return;
-					root.traverse(n=>{
-						try {
-							if (!n.userData) n.userData = {};
-							// Only capture once per session; avoid overwriting if user presses Reset repeatedly
-							if (!n.userData.__baselineLocal){
-								n.userData.__baselineLocal = {
-									p: n.position.toArray(),
-									q: n.quaternion.toArray(),
-									s: n.scale.toArray()
-								};
-							}
-						} catch {}
-					});
-				} catch {}
-			}
-			// Helper: revert children to captured baseline (skip root so overall placement/scale stays)
-			function __revertArContentChildren(root){
-				try {
-					if (!root) return;
-					root.traverse(n=>{
-						if (n === root) return; // preserve root placement & scale
-						const bl = n.userData && n.userData.__baselineLocal;
-						if (bl){
-							try { n.position.fromArray(bl.p); } catch {}
-							try { n.quaternion.fromArray(bl.q); } catch {}
-							try { n.scale.fromArray(bl.s); } catch {}
-						}
-					});
-					try { root.updateMatrixWorld(true); } catch {}
-				} catch {}
-			}
-			// Track per-object manipulation mode (default: whole scene)
-			let arPerObject = false;
-			let handStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
-			const bOne = createHudButton('1:1', ()=>{
-				// Toggle-only behavior: do not auto-fit; just flip 1:1 state and update HUD + scale gate
-				try {
-					if (arOneToOne) {
-						// Turning 1:1 off: keep current scale, just re-enable pinch scaling and clear highlight
-						arOneToOne = false;
-						arEdit.setScaleEnabled(true);
-						setHudButtonActiveByLabel('1:1', false);
-					} else {
-						// Turning 1:1 on: set feet->meters scale and disable pinch scaling
-						setARScaleOne();
-						setHudButtonActiveByLabel('1:1', true);
-					}
-				} catch {}
-			});
-			const bFit = createHudButton('Fit', ()=> setARScaleFit());
-			const bReset = createHudButton('Reset', async ()=>{
-				try {
-					// XR-specific lightweight revert (per-object) only for AR sessions (transparent / additive)
-					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
-					let blend = null; try { blend = sess && sess.environmentBlendMode; } catch {}
-					const isARSession = blend === 'additive' || blend === 'alpha-blend';
-					if (isARSession && arContent) {
-						// If baseline not yet captured (e.g., user entered AR before helpers existed) capture once now
-						if (!arContent.userData || !arContent.userData.__baselineCaptured){
-							__captureArContentBaseline(arContent);
-							try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__baselineCaptured = true; } catch {}
-						}
-						__revertArContentChildren(arContent);
-						// Maintain ground alignment if lock active
-						try { if (arGroundLocked) alignModelToGround(arContent); } catch {}
-						// Clear per-object dirty tracking since we've reverted
-						try { arEdit.clearDirty && arEdit.clearDirty(); } catch {}
-						return; // Skip baseline/global reset pathways for AR lightweight revert
-					}
-				} catch {}
-				try {
-					// Prefer restoring to the baseline scene snapshot captured after the last import commit
-					const raw = sessionStorage.getItem('sketcher:baseline');
-					if (raw){
-						const snap = JSON.parse(raw);
-						clearSceneObjects();
-						const loader = new THREE.ObjectLoader();
-						const root = loader.parse(snap.json);
-						[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
-						updateCameraClipping();
-						// Clear AR clone if present; rebuild on demand
-						if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
-						// Clear AR state flags
-						arOneToOne = false; arGroundLocked = false; arPendingTeleport = null;
-						// Restore materials to normal
-						arMatMode = 'normal';
-						// Update HUD button visual states
-						try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
-						// Ensure toolbox/visibility UI refreshed
-						updateVisibilityUI();
-						return;
-					}
-				} catch{}
-				// Fallback: if no baseline, do AR-local reset (position/quaternion/materials) or restore AR clone initial TR if captured
-				try {
-					if (arContent && arContent.userData && arContent.userData.__initialTR){
-						const tr = arContent.userData.__initialTR;
-						arContent.position.fromArray(tr.pos);
-						arContent.quaternion.fromArray(tr.quat);
-						arContent.scale.fromArray(tr.scl);
-						arContent.updateMatrixWorld(true);
-						// Keep floor contact
-						alignModelToGround(arContent);
-					} else {
-						resetARTransform();
-					}
-				} catch { resetARTransform(); }
-			});
-			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
-	    const bInteract = createHudButton('Grab', ()=>{
-				try {
-		    setXRInteractionMode(!xrInteractionRay);
-				} catch {}
-			});
-			// Toggle per-object vs whole-scene manipulation
-			const bMode = createHudButton('Objects', ()=>{
-				try {
-					arPerObject = !arPerObject;
-					arEdit.setPerObjectEnabled(arPerObject);
-					bMode.setLabel(arPerObject ? 'Scene' : 'Objects');
-				} catch {}
-			});
-			// Lock ground: snap AR content ground to XR local-floor (translate up, yaw align, optional scale within constraints)
-			const bLock = createHudButton('Lock Ground', ()=>{
-				try {
-					if (!arContent) return;
-					// Toggle lock state
-					arGroundLocked = !arGroundLocked;
-					// Visual HUD tint
-					try { setHudButtonActiveByLabel('Lock Ground', arGroundLocked); } catch {}
-					// If enabling lock, align model now
-					if (arGroundLocked) {
-						try { alignModelToGround(arContent); } catch {}
-					}
-					// Recompute metrics/material mode consistency
-					try { computeArBaseMetrics(arContent); } catch {}
-					try { applyArMaterialModeOnContent(); } catch {}
-				} catch {}
-			});
-			// Cycle material mode: Normal -> Outline -> Lite -> Normal
-			const bMatMode = createHudButton('Mat', ()=>{
-				try {
-					arMatMode = (arMatMode === 'normal') ? 'outline' : (arMatMode === 'outline' ? 'lite' : 'normal');
-					applyArMaterialModeOnContent();
-					bMatMode.setLabel(arMatMode === 'normal' ? 'Mat' : (arMatMode === 'outline' ? 'Outline' : 'Lite'));
-				} catch {}
-			});
-			const bAlign = createHudButton('Align Tile', ()=>{
-				try {
-					const session = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
-					if (!session) return; // Only in XR
-					if (xrAlignTile && xrAlignTile.parent) { scene.remove(xrAlignTile); xrAlignTile = null; return; }
-					if (!createAlignmentTile) return;
-					const tile = createAlignmentTile({ THREE, feet: 1, name: 'Alignment Tile 1ft' });
-					// Convert 1ft tile to meters for VR so it measures exactly 1 foot in-world
-					try { tile.scale.setScalar(FEET_TO_METERS); } catch{}
-					const xrCam = renderer.xr.getCamera && renderer.xr.getCamera(camera);
-					const camPos = new THREE.Vector3(); const camQuat = new THREE.Quaternion();
-					if (xrCam) { xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat); } else { camera.getWorldPosition(camPos); camQuat.copy(camera.quaternion); }
-					const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat);
-					const pos = camPos.clone().add(forward.multiplyScalar(1.0)); pos.y = 0;
-					tile.position.copy(pos);
-						// Lock rotation (no yaw) for consistent shared alignment reference
-						try { tile.quaternion.identity(); tile.rotation.set(0,0,0); } catch{}
-					tile.userData.__helper = true; // avoid persistence and selection noise
-					scene.add(tile); xrAlignTile = tile;
-						// Collaboration: broadcast creation once (host or any participant) so others instantiate tile
-						try { if (collab && collab.isActive && collab.isActive() && collab.onAdd) collab.onAdd(tile); } catch{}
-				} catch{}
-			});
-			const bHands = createHudButton('Fingers', ()=>{
-				try {
-					// Cycle through supported styles
-					if (handStyle === 'fingertips') handStyle = 'skeleton';
-					else if (handStyle === 'skeleton') handStyle = 'off';
-					else handStyle = 'fingertips';
-					xrHud.setHandVizStyle?.(handStyle);
-					bHands.setLabel(
-						handStyle === 'fingertips' ? 'Fingers' :
-						handStyle === 'skeleton' ? 'Skeleton' :
-						'Hands Off'
-					);
-				} catch {}
-			});
-			// Room controls in XR: dispatch to app-level handler
-			const bRoomHost = createHudButton('Host', async ()=>{
-				try {
-					const r = await showRoomOverlay('host'); if (!r) return;
-					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
-				} catch {}
-			});
-			const bRoomJoin = createHudButton('Join', async ()=>{
-				try {
-					const r = await showRoomOverlay('join'); if (!r) return;
-					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
-				} catch {}
-			});
-			// Initialize to default style
-			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
-				// Initialize interaction button visuals
-				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
-				// Also ensure AR edit initial enable state matches mode (Grab by default)
-				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
-				// --- VR Primitives submenu + multi-click placement state ---
-				let primsMenu = null; // THREE.Group holding primitive buttons
-				let primsButtons = []; // HUD button records for primitives
-				function __cancelVRPrimitiveDraft(){
-					try {
-						if (window.__xrPrim && window.__xrPrim.preview){ const pm = window.__xrPrim.preview; try { if (pm.parent) pm.parent.remove(pm); } catch{} try { pm.geometry?.dispose?.(); } catch{} }
-					} catch {}
-					try { window.__xrPrim = null; } catch {}
-				}
-				function buildPrimsMenu(){
-					if (primsMenu) return; primsMenu = new THREE.Group(); primsMenu.visible = false; primsMenu.name='XR HUD Prims Menu'; primsMenu.userData.__helper = true;
-					const defs = [
-						{ label:'Box', tool:'box' },
-						{ label:'Sphere', tool:'sphere' },
-						{ label:'Cylinder', tool:'cylinder' },
-						{ label:'Cone', tool:'cone' },
-						{ label:'Back', tool:'__back' }
-					];
-					for (const d of defs){
-						const btn = createHudButton(d.label, ()=>{
-							try {
-								if (d.tool === '__back'){ toggleVRPrimitivesMenu(false); return; }
-								// Arm primitive creation state (multi-click). stage semantics vary by tool.
-								window.__xrPrim = { tool: d.tool, stage:0, p0:null, p1:null, preview:null, lastDims:'' };
-							} catch{}
-						});
-						primsButtons.push(btn);
-						primsMenu.add(btn.mesh);
-					}
-					// Simple grid layout (reuse width of first button). Approximate original HUD spacing.
-					try {
-						const bw = primsButtons[0]?.mesh?.geometry?.parameters?.width || 0.02;
-						const bh = bw; const gap = bw * 0.32; // ~6mm when bw≈19mm
-						const cols = 3; const rows = Math.ceil(primsButtons.length / cols);
-						const totalW = cols * bw + (cols - 1) * gap;
-						const totalH = rows * bh + (rows - 1) * gap;
-						for (let i=0;i<primsButtons.length;i++){
-							const r = Math.floor(i/cols); const c = i%cols;
-							const x = -totalW/2 + c*(bw+gap) + bw/2;
-							const y = totalH/2 - r*(bh+gap) - bh/2;
-							primsButtons[i].mesh.position.set(x,y,0.0002); // slight forward bias
-						}
-					} catch {}
-					try { if (xrHud && xrHud.group) xrHud.group.add(primsMenu); } catch{}
-				}
-				function setMainMenuVisible(v){ try { for (const b of xrHudButtons){ if (b?.mesh) b.mesh.visible = v; } } catch{} }
-				function toggleVRPrimitivesMenu(force){
-					try { buildPrimsMenu(); } catch{}
-					const show = (typeof force === 'boolean') ? force : !primsMenu.visible;
-					primsMenu.visible = show; setMainMenuVisible(!show);
-					if (!show) { __cancelVRPrimitiveDraft(); }
-				}
-				// Expose toggle for debugging if needed
-				try { window.toggleVRPrimitivesMenu = toggleVRPrimitivesMenu; } catch{}
-				// Add new VR Prims button that opens a primitives submenu
-				const bPrims = createHudButton('Prims', ()=>{ try { toggleVRPrimitivesMenu(); } catch{} });
-			// --- Room status feedback (VR) ---
-			(function(){
-				let currentRoom = null; let isHost = false; let userCount = 1; let lastStatus = 'IDLE';
-				function shortRoom(r){ if(!r) return ''; return r.length > 8 ? r.slice(0,8)+'…' : r; }
-				function refresh(){
-					try {
-						if (!currentRoom){
-							bRoomHost.setLabel('Host');
-							bRoomJoin.setLabel('Join');
-							return;
-						}
-						const sr = shortRoom(currentRoom);
-						// Two-word labels => stacked lines by existing texture generator
-						bRoomHost.setLabel((isHost ? 'Host' : 'Room') + ' ' + sr);
-						const cnt = Math.max(1, userCount||1);
-						if (lastStatus && lastStatus !== 'SUBSCRIBED' && lastStatus !== 'CONNECTED' && lastStatus !== 'OPEN') {
-							bRoomJoin.setLabel('Conn' + ' ' + '…');
-						} else {
-							bRoomJoin.setLabel(String(cnt) + ' ' + 'online');
-						}
-					} catch {}
-				}
-				window.addEventListener('sketcher:room', (ev)=>{ try { const d = ev.detail||{}; const r=(d.room||'').trim(); if(!r) return; currentRoom = r; isHost = d.action === 'host'; lastStatus='CONNECTING'; bRoomJoin.setLabel('Conn' + ' ' + '…'); refresh(); } catch{} });
-				window.addEventListener('sketcher:collab-presence', (ev)=>{ try { if(ev.detail && typeof ev.detail.count === 'number'){ userCount = ev.detail.count; refresh(); } } catch{} });
-				window.addEventListener('sketcher:collab-status', (ev)=>{ try { const st = ev.detail?.status; if(st){ lastStatus = st; if(st==='LEFT'){ currentRoom=null; isHost=false; userCount=1; } refresh(); } } catch{} });
-			})();
-			xrHudButtons.push(bPrims);
-			return xrHudButtons;
-		}
-	});
 
 		// State for ground lock
 		let arGroundLocked = false;
@@ -751,6 +282,52 @@ export async function init() {
 	}
 	function ensureXRHud3D(){ const g = xrHud.ensure(); xrHud3D = xrHud.group; return g; }
 	function removeXRHud3D(){ xrHud.remove(); xrHud3D = null; xrHudButtons = []; }
+
+	// Instantiate XR HUD with dynamic button builder (migrated from legacy inline block)
+	const xrHud = createXRHud({
+		THREE,
+		scene,
+		renderer,
+		getLocalSpace: () => xrLocalSpace,
+		getButtons: (createHudButton) => {
+			// Lazily create VR draw module once
+			if (!xrHud.__vrDraw && window.createVRDraw){
+				try {
+					xrHud.__vrDraw = window.createVRDraw({
+						THREE,
+						scene,
+						shouldDraw: () => { // Only draw when HUD & prims menu hidden and no active primitive draft
+							try {
+								if (xrHud && xrHud.group && xrHud.group.visible) return false;
+								const pm = scene.getObjectByName('XR HUD Prims Menu');
+								if (pm && pm.visible) return false;
+								if (window.__xrPrim) return false;
+							} catch {}
+							return true;
+						}
+					});
+				} catch {}
+			}
+			return buildAppHud({
+				createHudButton,
+				THREE,
+				scene,
+				renderer,
+				arEdit,
+				collab,
+				createAlignmentTile,
+				FEET_TO_METERS,
+				setXRInteractionMode,
+				setARScaleOne,
+				setARScaleFit,
+				setHudButtonActiveByLabel,
+				alignModelToGround,
+				computeArBaseMetrics,
+				applyArMaterialModeOnContent,
+				vrDraw: xrHud.__vrDraw
+			});
+		}
+	});
 
 	// XR UI toggles via controller "menu"-like buttons
 	let __xrMenuPrevBySource = new WeakMap(); // inputSource -> boolean pressed last frame
@@ -4901,6 +4478,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
+					// VR draw update (independent of AR edit target)
+					try { if (vrDraw){ if (vrDraw.isActive()) { vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); } else { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(true); } } } catch{}
 					// If ground lock is active, re-apply alignment at ~30 Hz to avoid jitter from tiny pose noise
 						try {
 							if (arGroundLocked) {
