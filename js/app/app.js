@@ -4902,12 +4902,25 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
 					// If ground lock is active, re-apply alignment at ~30 Hz to avoid jitter from tiny pose noise
-					try {
-						if (arGroundLocked) {
-							const now = (typeof performance!=='undefined'?performance.now():Date.now());
-							if (!__lastGroundAlignAt || (now - __lastGroundAlignAt) > 33) { alignModelToGround(arContent); __lastGroundAlignAt = now; }
-						}
-					} catch {}
+						try {
+							if (arGroundLocked) {
+								const now = (typeof performance!=='undefined'?performance.now():Date.now());
+								// Only re-align at lower rate (8 Hz) and only if drift > threshold
+								if (!__lastGroundAlignAt) __lastGroundAlignAt = 0;
+								const needsInterval = (now - __lastGroundAlignAt) > 125; // 8 Hz
+								let needsRealign = false;
+								try {
+									// Compute minY quickly without full traversal each frame by sampling cached box if present
+									const box = arBaseBox || new THREE.Box3().setFromObject(arContent);
+									const minY = box.min.y + arContent.position.y; // approximate world minY shift
+									if (Math.abs(minY) > 0.01) needsRealign = true; // >1 cm drift
+								} catch{}
+								if (needsInterval && needsRealign) {
+									alignModelToGround(arContent);
+									__lastGroundAlignAt = now;
+								}
+							}
+						} catch {}
 				}
 			}
 			renderer.render(scene, camera);
