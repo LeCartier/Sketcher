@@ -336,7 +336,9 @@ export function createAREdit(THREE, scene, renderer){
           try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
         }
         // Do not engage two-hand orbit/scale unless both are colliding
-        return;
+  // Clear snap highlight since scaling interaction ended / not active
+  try { clearSnapHelper(); state.snapped = false; } catch {}
+  return;
       }
       const p0=both[0], p1=both[1]; const midW=new THREE.Vector3((p0.x+p1.x)/2, (p0.y+p1.y)/2, (p0.z+p1.z)/2);
       const d = Math.hypot(p0.x-p1.x, p0.y-p1.y, p0.z-p1.z);
@@ -420,7 +422,8 @@ export function createAREdit(THREE, scene, renderer){
           if (p1?.src) hapticPulse(p1.src, 0.4, 40);
         }
         state.snapped = snappedNow;
-        if (state.snapped && state.perObject) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
+        // Only show snap helper while an active grab is in progress (at least one grabbing point)
+        if (state.snapped && state.perObject && grabbingPts.length>0) updateSnapHelperForTarget(THREE, scene, targetObj); else clearSnapHelper();
       } catch{}
       state.one = null; // reset one-hand state
     } else {

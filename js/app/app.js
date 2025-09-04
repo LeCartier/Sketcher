@@ -54,7 +54,7 @@ export async function init() {
 			const tb = document.getElementById('toolbox'); if (!tb) return;
 			if (document.getElementById('toggleRoom')) return; // already added
 			const btn = document.createElement('button');
-			btn.id = 'toggleRoom'; btn.className = 'icon-btn toggle-btn';
+			btn.id = 'toggleRoom'; btn.className = 'icon-btn toggle-btn'; btn.style.display = 'none';
 			btn.title = 'Room'; btn.setAttribute('aria-label','Room'); btn.setAttribute('aria-pressed','false');
 			btn.innerHTML = '<span class="sr-only">Room</span><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#222" stroke-width="2"><circle cx="12" cy="7" r="3"/><path d="M4 20c0-3 3-5 8-5s8 2 8 5"/></g></svg>';
 			tb.appendChild(btn);
@@ -78,12 +78,12 @@ export async function init() {
 		}
 		window.addEventListener('error', (e) => {
 			const m = e && (e.message || (e.error && e.error.message)) || 'Script error';
-			show(m);
+			show(`Error: ${m}`);
 		});
 		window.addEventListener('unhandledrejection', (e) => {
 			const reason = e && e.reason;
 			const m = (reason && (reason.message || reason.stack || String(reason))) || 'Unhandled promise rejection';
-			show(m);
+			show(`Unhandled Rejection: ${m}`);
 		});
 	})();
 
@@ -363,10 +363,12 @@ export async function init() {
 			const bFit = createHudButton('Fit', ()=> setARScaleFit());
 			const bReset = createHudButton('Reset', async ()=>{
 				try {
-					// XR-specific lightweight revert: if in immersive session with a placed clone, revert descendants to baseline local TR
+					// XR-specific lightweight revert (per-object) only for AR sessions (transparent / additive)
 					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
-					if (sess && arContent) {
-						// If baseline not yet captured (e.g., user entered XR before helpers existed) capture once now
+					let blend = null; try { blend = sess && sess.environmentBlendMode; } catch {}
+					const isARSession = blend === 'additive' || blend === 'alpha-blend';
+					if (isARSession && arContent) {
+						// If baseline not yet captured (e.g., user entered AR before helpers existed) capture once now
 						if (!arContent.userData || !arContent.userData.__baselineCaptured){
 							__captureArContentBaseline(arContent);
 							try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__baselineCaptured = true; } catch {}
@@ -376,7 +378,7 @@ export async function init() {
 						try { if (arGroundLocked) alignModelToGround(arContent); } catch {}
 						// Clear per-object dirty tracking since we've reverted
 						try { arEdit.clearDirty && arEdit.clearDirty(); } catch {}
-						return; // Skip legacy/global reset pathways
+						return; // Skip baseline/global reset pathways for AR lightweight revert
 					}
 				} catch {}
 				try {
@@ -471,8 +473,12 @@ export async function init() {
 					const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat);
 					const pos = camPos.clone().add(forward.multiplyScalar(1.0)); pos.y = 0;
 					tile.position.copy(pos);
+						// Lock rotation (no yaw) for consistent shared alignment reference
+						try { tile.quaternion.identity(); tile.rotation.set(0,0,0); } catch{}
 					tile.userData.__helper = true; // avoid persistence and selection noise
 					scene.add(tile); xrAlignTile = tile;
+						// Collaboration: broadcast creation once (host or any participant) so others instantiate tile
+						try { if (collab && collab.isActive && collab.isActive() && collab.onAdd) collab.onAdd(tile); } catch{}
 				} catch{}
 			});
 			const bHands = createHudButton('Fingers', ()=>{
@@ -509,8 +515,62 @@ export async function init() {
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
 			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
-			// Add new VR Prims button that opens a primitives submenu
-			const bPrims = createHudButton('Prims', ()=>{ try { toggleVRPrimitivesMenu(); } catch{} });
+				// --- VR Primitives submenu + multi-click placement state ---
+				let primsMenu = null; // THREE.Group holding primitive buttons
+				let primsButtons = []; // HUD button records for primitives
+				function __cancelVRPrimitiveDraft(){
+					try {
+						if (window.__xrPrim && window.__xrPrim.preview){ const pm = window.__xrPrim.preview; try { if (pm.parent) pm.parent.remove(pm); } catch{} try { pm.geometry?.dispose?.(); } catch{} }
+					} catch {}
+					try { window.__xrPrim = null; } catch {}
+				}
+				function buildPrimsMenu(){
+					if (primsMenu) return; primsMenu = new THREE.Group(); primsMenu.visible = false; primsMenu.name='XR HUD Prims Menu'; primsMenu.userData.__helper = true;
+					const defs = [
+						{ label:'Box', tool:'box' },
+						{ label:'Sphere', tool:'sphere' },
+						{ label:'Cylinder', tool:'cylinder' },
+						{ label:'Cone', tool:'cone' },
+						{ label:'Back', tool:'__back' }
+					];
+					for (const d of defs){
+						const btn = createHudButton(d.label, ()=>{
+							try {
+								if (d.tool === '__back'){ toggleVRPrimitivesMenu(false); return; }
+								// Arm primitive creation state (multi-click). stage semantics vary by tool.
+								window.__xrPrim = { tool: d.tool, stage:0, p0:null, p1:null, preview:null, lastDims:'' };
+							} catch{}
+						});
+						primsButtons.push(btn);
+						primsMenu.add(btn.mesh);
+					}
+					// Simple grid layout (reuse width of first button). Approximate original HUD spacing.
+					try {
+						const bw = primsButtons[0]?.mesh?.geometry?.parameters?.width || 0.02;
+						const bh = bw; const gap = bw * 0.32; // ~6mm when bw≈19mm
+						const cols = 3; const rows = Math.ceil(primsButtons.length / cols);
+						const totalW = cols * bw + (cols - 1) * gap;
+						const totalH = rows * bh + (rows - 1) * gap;
+						for (let i=0;i<primsButtons.length;i++){
+							const r = Math.floor(i/cols); const c = i%cols;
+							const x = -totalW/2 + c*(bw+gap) + bw/2;
+							const y = totalH/2 - r*(bh+gap) - bh/2;
+							primsButtons[i].mesh.position.set(x,y,0.0002); // slight forward bias
+						}
+					} catch {}
+					try { if (xrHud && xrHud.group) xrHud.group.add(primsMenu); } catch{}
+				}
+				function setMainMenuVisible(v){ try { for (const b of xrHudButtons){ if (b?.mesh) b.mesh.visible = v; } } catch{} }
+				function toggleVRPrimitivesMenu(force){
+					try { buildPrimsMenu(); } catch{}
+					const show = (typeof force === 'boolean') ? force : !primsMenu.visible;
+					primsMenu.visible = show; setMainMenuVisible(!show);
+					if (!show) { __cancelVRPrimitiveDraft(); }
+				}
+				// Expose toggle for debugging if needed
+				try { window.toggleVRPrimitivesMenu = toggleVRPrimitivesMenu; } catch{}
+				// Add new VR Prims button that opens a primitives submenu
+				const bPrims = createHudButton('Prims', ()=>{ try { toggleVRPrimitivesMenu(); } catch{} });
 			// --- Room status feedback (VR) ---
 			(function(){
 				let currentRoom = null; let isHost = false; let userCount = 1; let lastStatus = 'IDLE';
@@ -3476,6 +3536,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// Start immersive VR for headsets; use hands/controllers for manipulation
 				// Save a restore point before entering XR
 				try { saveSessionDraftNow(); } catch {}
+				// Capture a baseline snapshot (full scene) for VR Reset if none exists yet
+				try {
+					if (!sessionStorage.getItem('sketcher:baseline')) {
+						const json = serializeScene();
+						sessionStorage.setItem('sketcher:baseline', JSON.stringify({ json, t: Date.now(), reason: 'enter-vr' }));
+					}
+				} catch {}
 				// Ensure teleport discs interactive in XR
 				try { if (window.__teleport && window.__teleport.setActive) window.__teleport.setActive(true); } catch{}
 				const vrOptions = { optionalFeatures: ['local-floor', 'bounded-floor', 'dom-overlay'], domOverlay: { root: document.body } };
@@ -4506,15 +4573,48 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									const pt = new THREE.Vector3();
 									if (rc.ray.intersectPlane(plane, pt)){
 										xrAlignTile.position.set(pt.x, 0, pt.z);
-										// Yaw align tile to controller facing
-										const yaw = Math.atan2(dir.x, dir.z);
-										xrAlignTile.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+										// Lock rotation (no yaw) so all collaborators share identical orientation
+										try { xrAlignTile.quaternion.identity(); xrAlignTile.rotation.set(0,0,0); } catch{}
 										xrAlignTile.updateMatrixWorld(true);
+										// Broadcast updated transform to collaborators
+										try { if (collab && collab.isActive && collab.isActive() && collab.onTransform) collab.onTransform(xrAlignTile); } catch{}
 									}
 								}
 							}
 							window.__xrLeftPrev.set(src, pressed);
 						}
+					} catch{}
+				})();
+				// XR two-hand (squeeze) pinch to rotate alignment tile while keeping it flat
+				(function xrAlignTileTwoHandRotatePoll(){
+					try {
+						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
+						if (!xrAlignTile || !xrAlignTile.parent) return;
+						const sources = session.inputSources ? Array.from(session.inputSources) : [];
+						let left=null,right=null;
+						for (const s of sources){ if (!s || !s.gamepad) continue; if (s.handedness==='left') left=s; else if (s.handedness==='right') right=s; }
+						if (!left || !right) return;
+						const lgp = left.gamepad, rgp = right.gamepad;
+						// Use squeeze (button[1]) when available; fall back to trigger (button[0]) if squeeze absent
+						const lPress = !!(lgp && ((lgp.buttons[1] && lgp.buttons[1].pressed) || (lgp.buttons[1]===undefined && lgp.buttons[0] && lgp.buttons[0].pressed)));
+						const rPress = !!(rgp && ((rgp.buttons[1] && rgp.buttons[1].pressed) || (rgp.buttons[1]===undefined && rgp.buttons[0] && rgp.buttons[0].pressed)));
+						if (!(lPress && rPress)) return; // need both hands squeezing
+						const leftSpace = left.gripSpace || left.targetRaySpace; const rightSpace = right.gripSpace || right.targetRaySpace; if (!leftSpace || !rightSpace) return;
+						const ref = xrLocalSpace || xrViewerSpace || (renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+						const lPose = frame.getPose(leftSpace, ref); const rPose = frame.getPose(rightSpace, ref); if (!lPose || !rPose) return;
+						const lp = lPose.transform.position; const rp = rPose.transform.position;
+						const lVec = new THREE.Vector3(lp.x, lp.y, lp.z);
+						const rVec = new THREE.Vector3(rp.x, rp.y, rp.z);
+						// Midpoint projected to ground (y=0) for tile position
+						const mid = new THREE.Vector3().addVectors(lVec, rVec).multiplyScalar(0.5);
+						xrAlignTile.position.set(mid.x, 0, mid.z);
+						// Yaw from left->right vector (flattened)
+						const delta = new THREE.Vector3().subVectors(rVec, lVec); delta.y = 0; if (delta.lengthSq() > 1e-6){
+							const yaw = Math.atan2(delta.x, delta.z);
+							xrAlignTile.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+						}
+						xrAlignTile.updateMatrixWorld(true);
+						try { if (collab && collab.isActive && collab.isActive() && collab.onTransform && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(xrAlignTile); } catch{}
 					} catch{}
 				})();
 				// XR controller trigger teleport (rising edge)
@@ -4523,11 +4623,85 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
 							if (!window.__teleport) return;
 							const discs = (window.__teleport.getTeleportDiscs && window.__teleport.getTeleportDiscs()) || [];
+							// VR Primitive creation (multi-click) shares trigger; handle before teleport consumes it
+							if (window.__xrPrim){
+								if (!window.__xrPrim.__triggerPrev) window.__xrPrim.__triggerPrev = new WeakMap();
+							}
 						if (!window.__xrTriggerPrev) window.__xrTriggerPrev = new WeakMap();
 						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
 							const gp = src && src.gamepad; const raySpace = src && (src.targetRaySpace || src.gripSpace);
+							// Handle VR primitive workflow on RIGHT hand trigger (ray mode only for placement clarity)
+							if (gp && raySpace && src.handedness==='right' && window.__xrPrim){
+								const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
+								const prev = window.__xrPrim.__triggerPrev.get(src) === true;
+								// Compute ray + ground hit for live preview even without press
+								try {
+									const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+									if (pose){
+										const p = pose.transform.position; const o = pose.transform.orientation;
+										const origin = new THREE.Vector3(p.x,p.y,p.z);
+										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
+										const rc = new THREE.Raycaster(origin, dir, 0.01, 100);
+										const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+										const hit = new THREE.Vector3();
+										if (rc.ray.intersectPlane(plane, hit)){
+											const prim = window.__xrPrim;
+											const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+											if (prim.stage===0){
+												// Just move a cursor indicator (small sphere) if we want; reuse preview
+												if (!prim.preview){ prim.preview = new THREE.Mesh(new THREE.SphereGeometry(0.05,12,10), new THREE.MeshBasicMaterial({ color:0x44bbff, transparent:true, opacity:0.6, depthTest:false, depthWrite:false })); prim.preview.userData.__helper = true; scene.add(prim.preview); }
+												prim.preview.position.set(hit.x, 0, hit.z);
+											} else if (prim.stage===1){
+												// Update size preview from p0 to current hit
+												const p0 = prim.p0; const dx = hit.x - p0.x; const dz = hit.z - p0.z;
+												const sx = Math.max(0.1, Math.abs(dx)); const sz = Math.max(0.1, Math.abs(dz)); const r = Math.max(sx, sz)/2;
+												const cy = 0; // base
+												const key = prim.tool+':'+sx.toFixed(2)+':'+sz.toFixed(2);
+												if (prim.lastDims !== key){
+													if (prim.preview){ try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{} try { prim.preview.geometry?.dispose?.(); } catch{} prim.preview = null; }
+													if (prim.tool==='box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.5, sz), activeMat);
+													else if (prim.tool==='sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), activeMat);
+													else if (prim.tool==='cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.5,20), activeMat);
+													else if (prim.tool==='cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(r,0.5,20), activeMat);
+													if (prim.preview){ prim.preview.userData.__helper = true; scene.add(prim.preview); }
+													prim.lastDims = key;
+												}
+												if (prim.preview){
+													if (prim.tool==='sphere') prim.preview.position.set((p0.x+hit.x)/2, r, (p0.z+hit.z)/2);
+													else prim.preview.position.set((p0.x+hit.x)/2, 0.25, (p0.z+hit.z)/2);
+												}
+											}
+										}
+									}
+								} catch{}
+								if (pressed && !prev){
+									const prim = window.__xrPrim;
+									// Stage transitions: 0 -> set p0; 1 -> finalize height (use drag vertical?), for now single height constant.
+									if (prim.stage === 0){
+										// Use last preview position as base corner p0
+										const p = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(); prim.p0 = new THREE.Vector3(p.x, 0, p.z); prim.stage = 1; prim.lastDims='';
+									} else if (prim.stage === 1){
+										// Finalize using p0 + preview dims
+										try {
+											const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+											const p0 = prim.p0; const pv = prim.preview; if (p0 && pv){
+												let placed = null; const nameBase = prim.tool.charAt(0).toUpperCase()+prim.tool.slice(1);
+												if (prim.tool==='box'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+												else if (prim.tool==='sphere'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+												else if (prim.tool==='cylinder'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+												else if (prim.tool==='cone'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+												if (placed){ placed.name = nameBase+' '+(objects.length+1); addObjectToScene(placed,{ select:true }); saveSessionDraftSoon && saveSessionDraftSoon(); }
+											}
+										} catch{}
+										// Reset state for another of same primitive (stay in tool) until Back pressed
+										try { if (prim.preview){ if (prim.preview.parent) prim.preview.parent.remove(prim.preview); prim.preview.geometry?.dispose?.(); prim.preview = null; } } catch{}
+										prim.stage = 0; prim.p0 = null; prim.p1 = null; prim.lastDims='';
+									}
+								}
+								window.__xrPrim.__triggerPrev.set(src, pressed);
+							}
 							// Controller trigger teleport (RIGHT hand only)
 							if (gp && raySpace && (src.handedness === 'right')){
 								const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
