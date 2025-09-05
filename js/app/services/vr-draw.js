@@ -63,15 +63,32 @@
 			// Generate unique stroke ID for collaboration
 			currentStrokeId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 			
-			points = [pt.clone()];
+			// Start with a small duplicate point to make line immediately visible
+			const startPt = pt.clone();
+			const nextPt = pt.clone();
+			nextPt.x += 0.001; // Add 1mm offset to make line visible
+			points = [startPt, nextPt];
+			
 			currentGeom = new THREE.BufferGeometry();
-			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute([pt.x, pt.y, pt.z], 3));
-			const mat = new THREE.LineBasicMaterial({ color, linewidth: lineWidth });
+			const positions = [startPt.x, startPt.y, startPt.z, nextPt.x, nextPt.y, nextPt.z];
+			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+			
+			// Note: linewidth property is not supported in WebGL, using standard LineBasicMaterial
+			const mat = new THREE.LineBasicMaterial({ 
+				color, 
+				transparent: true,
+				opacity: 0.9,
+				depthTest: false,
+				depthWrite: false
+			});
 			currentStroke = new THREE.Line(currentGeom, mat);
 			currentStroke.frustumCulled = false;
+			currentStroke.renderOrder = 1000; // Ensure lines render on top
 			// Don't mark as helper - these lines are part of the scene
 			currentStroke.name = `VRDrawLine_${currentStrokeId}`;
 			drawGroup.add(currentStroke);
+			
+			console.log('VR Draw: Started stroke with point', pt, 'color:', color.toString(16), 'drawGroup children:', drawGroup.children.length);
 			
 			// Send collaboration event for stroke start
 			if (collaborationService && collaborationService.onVRDrawStart) {
@@ -85,13 +102,27 @@
 			if (!currentGeom || !points.length) return;
 			const last = points[points.length-1];
 			if (last.distanceToSquared(pt) < minSegmentDist*minSegmentDist) return;
-			points.push(pt.clone());
+			
+			// Replace the initial dummy point with real drawing point
+			if (points.length === 2 && points[0].distanceTo(points[1]) < 0.002) {
+				points[1] = pt.clone(); // Replace dummy point with actual drawing point
+			} else {
+				points.push(pt.clone());
+			}
+			
+			console.log(`VR Draw: Added point ${points.length}:`, pt);
 			if (points.length > maxPointsPerStroke) { endStroke(); return; }
+			
 			const arr = [];
 			for (const p of points){ arr.push(p.x,p.y,p.z); }
 			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute(arr,3));
 			currentGeom.attributes.position.needsUpdate = true;
 			currentGeom.computeBoundingSphere();
+			
+			// Force geometry update
+			if (currentStroke) {
+				currentStroke.geometry = currentGeom;
+			}
 			
 			// Send collaboration event for new point
 			if (collaborationService && collaborationService.onVRDrawPoint && currentStrokeId) {

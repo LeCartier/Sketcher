@@ -174,8 +174,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
     
     if (primitiveMesh) {
-      primitiveMesh.renderOrder = 10001;
-      primitiveMesh.position.z = 0.001; // Slightly forward from background
+      primitiveMesh.renderOrder = 10003; // Higher render order than text and flash
+      primitiveMesh.position.z = 0.007; // Furthest forward - closest to user's eye (7mm)
       
       // Add subtle rotation for better 3D visibility - flipped to face user
       primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
@@ -398,6 +398,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           new THREE.BoxGeometry(iconScale * 0.4, iconScale * 0.4, iconScale * 0.4),
           new THREE.MeshBasicMaterial({ color: 0x99e6ff, depthTest: false, depthWrite: false }) // Even brighter blue
         );
+        cube1.renderOrder = 10003; // Higher than iconGroup
+        cube2.renderOrder = 10003;
         cube1.position.x = -iconScale * 0.3;
         cube2.position.x = iconScale * 0.3;
         iconGroup.add(cube1, cube2);
@@ -409,6 +411,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         const arrowMat = new THREE.MeshBasicMaterial({ color: 0x33ff66, depthTest: false, depthWrite: false }); // Much brighter green
         const arrow1 = new THREE.Mesh(arrowGeom, arrowMat);
         const arrow2 = new THREE.Mesh(arrowGeom, arrowMat);
+        arrow1.renderOrder = 10003; // Higher than iconGroup
+        arrow2.renderOrder = 10003;
         arrow1.position.x = -iconScale * 0.4; arrow1.rotation.z = Math.PI / 2;
         arrow2.position.x = iconScale * 0.4; arrow2.rotation.z = -Math.PI / 2;
         iconGroup.add(arrow1, arrow2);
@@ -676,21 +680,31 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
     
     if (iconMesh) {
+      iconMesh.renderOrder = 10003; // Ensure individual icon meshes render in front
       iconGroup.add(iconMesh);
     }
     
     if (iconGroup.children.length > 0) {
       iconGroup.position.y = BUTTON_H * 0.1; // Position above text
-      iconGroup.position.z = 0.001; // Slightly forward from background
+      iconGroup.position.z = 0.005; // Much further forward from background (5mm)
       
       // Add subtle rotation for better 3D visibility - flipped to face user
       iconGroup.rotation.x = Math.PI * 0.05;  // 9 degrees
       iconGroup.rotation.y = Math.PI * 0.08 + Math.PI; // 14.4 degrees + 180 degrees (face user)
       
-      iconGroup.renderOrder = 10001;
+      iconGroup.renderOrder = 10002; // Higher render order than background
+      
+      // Ensure all icon children have high render order
+      iconGroup.traverse((child) => {
+        if (child.isMesh) {
+          child.renderOrder = 10003;
+        }
+      });
+      
       buttonGroup.add(iconGroup);
     }
     
+    // Flash overlay for click feedback
     // Flash overlay for click feedback
     const flashGeom = bgGeom.clone();
     const flashMat = new THREE.MeshBasicMaterial({ 
@@ -912,6 +926,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     ensureHandViz();
   // Ensure draw submenu is hidden on initialization
   hideDrawSubmenu();
+  // Explicitly ensure VR draw mode is disabled during HUD initialization  
+  try {
+    if (window.vrDraw && window.vrDraw.setEnabled) {
+      window.vrDraw.setEnabled(false);
+      console.log('XR HUD: Explicitly disabled VR draw mode during initialization');
+    }
+  } catch {}
   // Both controller trigger and right index finger can activate buttons
   return hud;
   }

@@ -651,22 +651,35 @@ export async function init() {
 				const bDraw = xrHud.createDraw3DButton(()=>{ 
 					try { 
 						if (!vrDraw) return; 
-						const on = !vrDraw.isActive(); 
+						const currentlyActive = vrDraw.isActive();
+						const on = !currentlyActive; 
+						console.log(`Draw button clicked: currently ${currentlyActive ? 'ACTIVE' : 'INACTIVE'}, switching to ${on ? 'ACTIVE' : 'INACTIVE'}`);
 						if (on) {
 							// Enable draw mode and show submenu
 							vrDraw.setEnabled(true); 
 							setHudButtonActiveByLabel('Draw', true);
 							xrHud.showDrawSubmenu(vrDraw);
+							console.log('VR Draw: ENABLED via button');
 						} else {
 							// Disable draw mode and hide submenu
 							vrDraw.setEnabled(false); 
 							setHudButtonActiveByLabel('Draw', false);
 							xrHud.hideDrawSubmenu();
+							console.log('VR Draw: DISABLED via button');
 						}
 						if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); 
 					} catch{} 
 				});
 				xrHudButtons.push(bDraw);
+				
+				// Explicitly ensure draw button starts inactive
+				setTimeout(() => {
+					try {
+						setHudButtonActiveByLabel('Draw', false);
+						console.log('Draw button state explicitly set to INACTIVE at startup');
+					} catch {}
+				}, 100);
+				
 			// --- Room status feedback (VR) ---
 			(function(){
 				let currentRoom = null; let isHost = false; let userCount = 1; let lastStatus = 'IDLE';
@@ -3684,6 +3697,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (vrDraw && vrDraw.setEnabled) vrDraw.setEnabled(false);
 					if (xrHud && xrHud.hideDrawSubmenu) xrHud.hideDrawSubmenu();
 					setHudButtonActiveByLabel('Draw', false);
+					console.log('AR Session: Explicitly disabled VR draw mode and reset button state');
 				} catch {}
 				// Setup reference spaces; align to local-floor for ground alignment
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
@@ -3821,6 +3835,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (vrDraw && vrDraw.setEnabled) vrDraw.setEnabled(false);
 					if (xrHud && xrHud.hideDrawSubmenu) xrHud.hideDrawSubmenu();
 					setHudButtonActiveByLabel('Draw', false);
+					console.log('VR Session: Explicitly disabled VR draw mode and reset button state');
 				} catch {}
 				// Keep originals visible until AR clone is created (we'll hide after placement)
 				// Reference space (floor-aligned)
