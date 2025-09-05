@@ -15,6 +15,11 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   // Performance optimization maps
   const transformLerpMap = new Map(); // Store interpolation state for smooth remote transforms
   const userAvatars = new Map(); // Store avatar objects for each user
+  
+  // VR Drawing collaboration
+  const remoteVRStrokes = new Map(); // strokeId -> { line, points, color, lineWidth }
+  let vrDrawGroup = null; // Reference to VR draw group for remote lines
+  
   const cameraThrottle = createSmartThrottle((cameraData) => {
     if (applying) return;
     send('camera', cameraData);
@@ -310,6 +315,23 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
         if (obj && obj.parent) {
           try { obj.parent.remove(obj); } catch {}
         }
+        return;
+      }
+      // Handle VR drawing collaboration
+      if (kind === 'vr_draw_start' && msg.strokeId && msg.point && msg.color && msg.lineWidth) {
+        handleVRDrawStart(msg);
+        return;
+      }
+      if (kind === 'vr_draw_point' && msg.strokeId && msg.point) {
+        handleVRDrawPoint(msg);
+        return;
+      }
+      if (kind === 'vr_draw_end' && msg.strokeId) {
+        handleVRDrawEnd(msg);
+        return;
+      }
+      if (kind === 'vr_draw_clear') {
+        handleVRDrawClear();
         return;
       }
     } finally { applying = false; }
@@ -652,6 +674,121 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     }
   }
 
+  // VR Drawing collaboration handlers
+  function ensureVRDrawGroup() {
+    if (!vrDrawGroup) {
+      // Find or create the VR draw group
+      if (typeof window !== 'undefined' && window.scene) {
+        vrDrawGroup = window.scene.getObjectByName('VRDrawLines');
+        if (!vrDrawGroup) {
+          vrDrawGroup = new THREE.Group();
+          vrDrawGroup.name = 'VRDrawLines';
+          window.scene.add(vrDrawGroup);
+        }
+      }
+    }
+    return vrDrawGroup;
+  }
+
+  function handleVRDrawStart(msg) {
+    try {
+      const group = ensureVRDrawGroup();
+      if (!group) return;
+
+      const { strokeId, point, color, lineWidth, from } = msg;
+      
+      // Create initial geometry with first point
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute([point[0], point[1], point[2]], 3));
+      
+      const material = new THREE.LineBasicMaterial({ 
+        color: color || 0xff0000, 
+        linewidth: lineWidth || 2 
+      });
+      
+      const line = new THREE.Line(geometry, material);
+      line.frustumCulled = false;
+      line.name = `RemoteVRLine_${strokeId}_${from}`;
+      
+      // Store stroke data
+      remoteVRStrokes.set(strokeId, {
+        line,
+        points: [new THREE.Vector3(point[0], point[1], point[2])],
+        color: color || 0xff0000,
+        lineWidth: lineWidth || 2
+      });
+      
+      group.add(line);
+    } catch (e) {
+      console.warn('Failed to handle VR draw start:', e);
+    }
+  }
+
+  function handleVRDrawPoint(msg) {
+    try {
+      const { strokeId, point } = msg;
+      const stroke = remoteVRStrokes.get(strokeId);
+      
+      if (!stroke) return; // Stroke not found
+      
+      const newPoint = new THREE.Vector3(point[0], point[1], point[2]);
+      stroke.points.push(newPoint);
+      
+      // Update geometry with all points
+      const positions = [];
+      for (const p of stroke.points) {
+        positions.push(p.x, p.y, p.z);
+      }
+      
+      stroke.line.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      stroke.line.geometry.attributes.position.needsUpdate = true;
+      stroke.line.geometry.computeBoundingSphere();
+    } catch (e) {
+      console.warn('Failed to handle VR draw point:', e);
+    }
+  }
+
+  function handleVRDrawEnd(msg) {
+    try {
+      const { strokeId } = msg;
+      const stroke = remoteVRStrokes.get(strokeId);
+      
+      if (stroke) {
+        // Finalize the stroke - no more updates needed
+        // Keep it in the scene but remove from active tracking
+        remoteVRStrokes.delete(strokeId);
+      }
+    } catch (e) {
+      console.warn('Failed to handle VR draw end:', e);
+    }
+  }
+
+  function handleVRDrawClear() {
+    try {
+      const group = ensureVRDrawGroup();
+      if (!group) return;
+      
+      // Clear all VR draw lines
+      const linesToRemove = [];
+      group.traverse(child => {
+        if (child.name && child.name.startsWith('RemoteVRLine_')) {
+          linesToRemove.push(child);
+        }
+      });
+      
+      for (const line of linesToRemove) {
+        if (line.parent) line.parent.remove(line);
+        if (line.geometry) line.geometry.dispose();
+        if (line.material) line.material.dispose();
+      }
+      
+      // Clear tracking map
+      remoteVRStrokes.clear();
+    } catch (e) {
+      console.warn('Failed to handle VR draw clear:', e);
+    }
+  }
+
   const onTransform = createSmartThrottle((obj, context) => {
     if (!obj || applying) return;
     const u = obj.uuid;
@@ -702,5 +839,57 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   // Cleanup old avatars periodically
   setInterval(cleanupOldAvatars, 10000); // Every 10 seconds
 
-  return { host, join, leave, isActive, isApplyingRemote, onAdd, onTransform, onDelete, onOverlay, onCameraUpdate };
+  // VR Drawing collaboration functions
+  function onVRDrawStart(strokeId, point, color, lineWidth) {
+    if (applying) return;
+    try {
+      send('vr_draw_start', { 
+        strokeId, 
+        point: [point.x, point.y, point.z], 
+        color, 
+        lineWidth 
+      });
+    } catch {}
+  }
+
+  function onVRDrawPoint(strokeId, point) {
+    if (applying) return;
+    try {
+      send('vr_draw_point', { 
+        strokeId, 
+        point: [point.x, point.y, point.z] 
+      });
+    } catch {}
+  }
+
+  function onVRDrawEnd(strokeId) {
+    if (applying) return;
+    try {
+      send('vr_draw_end', { strokeId });
+    } catch {}
+  }
+
+  function onVRDrawClear() {
+    if (applying) return;
+    try {
+      send('vr_draw_clear', {});
+    } catch {}
+  }
+
+  return { 
+    host, 
+    join, 
+    leave, 
+    isActive, 
+    isApplyingRemote, 
+    onAdd, 
+    onTransform, 
+    onDelete, 
+    onOverlay, 
+    onCameraUpdate,
+    onVRDrawStart,
+    onVRDrawPoint,
+    onVRDrawEnd,
+    onVRDrawClear
+  };
 }

@@ -102,6 +102,7 @@ export async function init() {
 
 	// Scene
 	const scene = new THREE.Scene();
+	window.scene = scene; // Make scene globally accessible for collaboration
 	let cameraType = 'perspective';
 	let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 5000);
 	camera.position.set(5,5,5); camera.lookAt(0,0,0);
@@ -384,8 +385,30 @@ export async function init() {
 						return; // Skip baseline/global reset pathways for AR lightweight revert
 					}
 				} catch {}
-				// NEW: Prefer true VR session-start snapshot if available so Reset always returns to initial enter-VR state.
-				// This avoids confusing behavior where later baseline updates (e.g., after imports or mode toggles) became the reset point.
+				// Reset to the most appropriate baseline: prefer post-import snapshot, fall back to VR start
+				try {
+					// First try: baseline snapshot (captured after imports - this is what user usually wants)
+					const raw = sessionStorage.getItem('sketcher:baseline');
+					if (raw){
+						const snap = JSON.parse(raw);
+						if (snap && snap.json){
+							clearSceneObjects();
+							const loader = new THREE.ObjectLoader();
+							const root = loader.parse(snap.json);
+							[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
+							updateCameraClipping();
+							// Clear AR clone if present; rebuild on demand
+							if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
+							// Reset AR-related flags & visual states
+							arOneToOne = false; arGroundLocked = false; arPendingTeleport = null; arMatMode = 'normal';
+							try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
+							try { arEdit.setGroundLocked(false); } catch{}
+							updateVisibilityUI();
+							return; // Post-import baseline consumed; success
+						}
+					}
+				} catch{}
+				// Second try: VR session-start snapshot (only if no post-import baseline exists)
 				try {
 					const rawStart = sessionStorage.getItem('sketcher:baselineStart');
 					if (rawStart){
@@ -403,32 +426,8 @@ export async function init() {
 							try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
 							try { arEdit.setGroundLocked(false); } catch{}
 							updateVisibilityUI();
-							return; // Session-start baseline consumed; do not fall through to mutable baseline
+							return; // Session-start baseline consumed; success
 						}
-					}
-				} catch{}
-				try {
-					// Prefer restoring to the baseline scene snapshot captured after the last import commit
-					const raw = sessionStorage.getItem('sketcher:baseline');
-					if (raw){
-						const snap = JSON.parse(raw);
-						clearSceneObjects();
-						const loader = new THREE.ObjectLoader();
-						const root = loader.parse(snap.json);
-						[...(root.children||[])].forEach(child => { addObjectToScene(child, { select:false }); try { if (__isTeleportDisc(child)) __registerTeleportDisc(child); } catch{} });
-						updateCameraClipping();
-						// Clear AR clone if present; rebuild on demand
-						if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
-						// Clear AR state flags
-						arOneToOne = false; arGroundLocked = false; arPendingTeleport = null;
-						try { arEdit.setGroundLocked(false); } catch{}
-						// Restore materials to normal
-						arMatMode = 'normal';
-						// Update HUD button visual states
-						try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
-						// Ensure toolbox/visibility UI refreshed
-						updateVisibilityUI();
-						return;
 					}
 				} catch{}
 				// Fallback: if no baseline, do AR-local reset (position/quaternion/materials) or restore AR clone initial TR if captured
@@ -647,8 +646,29 @@ export async function init() {
 				} }); 
 					// Connect VR draw to collaboration
 					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
+					// Connect VR draw to real-time collaboration for live drawing
+					if (vrDraw && vrDraw.setCollaborationService && collab) vrDraw.setCollaborationService(collab);
+					// Make vrDraw globally accessible for XR HUD fingertip color management
+					window.vrDraw = vrDraw;
 				} catch{}
-				const bDraw = xrHud.createDraw3DButton(()=>{ try { if (!vrDraw) return; const on = !vrDraw.isActive(); vrDraw.setEnabled(on); setHudButtonActiveByLabel('Draw', on); if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); } catch{} });
+				const bDraw = xrHud.createDraw3DButton(()=>{ 
+					try { 
+						if (!vrDraw) return; 
+						const on = !vrDraw.isActive(); 
+						if (on) {
+							// Enable draw mode and show submenu
+							vrDraw.setEnabled(true); 
+							setHudButtonActiveByLabel('Draw', true);
+							xrHud.showDrawSubmenu(vrDraw);
+						} else {
+							// Disable draw mode and hide submenu
+							vrDraw.setEnabled(false); 
+							setHudButtonActiveByLabel('Draw', false);
+							xrHud.hideDrawSubmenu();
+						}
+						if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); 
+					} catch{} 
+				});
 				xrHudButtons.push(bDraw);
 			// --- Room status feedback (VR) ---
 			(function(){
@@ -813,6 +833,9 @@ export async function init() {
 				}
 			} catch(e){ }
 		}
+		
+		// Make function globally accessible for submenu
+		window.setHudButtonActiveByLabel = setHudButtonActiveByLabel;
 
 		// Helper: set XR interaction mode and update HUD visuals: true = Ray (teleport), false = Grab (pinch)
 		function setXRInteractionMode(isRay){
@@ -3764,13 +3787,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { saveSessionDraftNow(); } catch {}
 				// Capture a baseline snapshot (full scene) for VR Reset if none exists yet
 				try {
+					const persistableObjects = getPersistableObjects();
+					const hasContent = persistableObjects && persistableObjects.length > 0;
 					const json = serializeScene();
+					
 					// baseline: mutable mid-session reset point (updated after imports)
 					if (!sessionStorage.getItem('sketcher:baseline')) {
 						sessionStorage.setItem('sketcher:baseline', JSON.stringify({ json, t: Date.now(), reason: 'enter-vr' }));
 					}
-					// baselineStart: immutable session-start snapshot for true Reset-to-start behavior
-					if (!sessionStorage.getItem('sketcher:baselineStart')) {
+					// baselineStart: immutable session-start snapshot - only capture if scene has content
+					if (!sessionStorage.getItem('sketcher:baselineStart') && hasContent) {
 						sessionStorage.setItem('sketcher:baselineStart', JSON.stringify({ json, t: Date.now(), reason: 'enter-vr-start' }));
 					}
 				} catch {}
@@ -4502,10 +4528,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const clone=loadedModel.clone();
 				clone.position.copy(dropPoint);
 				addObjectToScene(clone); saveSessionDraftNow();
-				// After committing an import, capture a baseline snapshot to enable VR Reset
+				// After committing an import, capture/update baseline snapshots for VR Reset
 				try {
 					const json = serializeScene();
+					// Update the mutable baseline (primary reset target)
 					sessionStorage.setItem('sketcher:baseline', JSON.stringify({ json, t: Date.now(), reason: 'after-import' }));
+					// If this is the first import and no baselineStart exists yet, set it too
+					if (!sessionStorage.getItem('sketcher:baselineStart')) {
+						sessionStorage.setItem('sketcher:baselineStart', JSON.stringify({ json, t: Date.now(), reason: 'first-import' }));
+					}
 				} catch{}
 				// single placement complete
 				loadedModel = null;
@@ -4904,7 +4935,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 													if (thumbPose && thumbPose.transform && thumbPose.transform.position) {
 														const tp = thumbPose.transform.position;
 														const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
-														isPinching = dist < 0.03; // 3cm pinch threshold
+														isPinching = dist < 0.05; // Increased to 5cm for easier detection
 													}
 												}
 											}
@@ -4927,25 +4958,41 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									} catch(e) {}
 								}
 								
-								// Store hand data
+								// Store hand data with debug logging
 								if (handPos) {
+									const handData = { pos: handPos, pinching: isPinching };
 									if (src.handedness === 'left') {
-										prim.leftHand = { pos: handPos, pinching: isPinching };
+										prim.leftHand = handData;
 									} else if (src.handedness === 'right') {
-										prim.rightHand = { pos: handPos, pinching: isPinching };
+										prim.rightHand = handData;
+									}
+									
+									// Debug: Log hand detection for debugging
+									if (prim.stage === 'attached' && isPinching) {
+										console.log(`${src.handedness} hand pinching detected in primitive creation mode`);
 									}
 								}
 							}
 							
-							// Process primitive creation workflow after collecting both hands
-							if (window.__xrPrim && window.__xrPrim.rightHand) {
+							// Process primitive creation workflow after collecting hand data
+							if (window.__xrPrim) {
 								const prim = window.__xrPrim;
+								
+								// Need at least one hand for basic functionality
+								if (!prim.rightHand && !prim.leftHand) {
+									continue;
+								}
+								
 								const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
 								
 								if (prim.stage === 'attached') {
-									// Stage 1: Primitive attached to right index finger
+									// Stage 1: Primitive attached to available hand (prefer right, fall back to left)
+									const attachHand = prim.rightHand || prim.leftHand;
+									if (!attachHand) continue;
+									
 									if (!prim.preview) {
 										// Create initial primitive at small size
+										console.log('Creating primitive preview for tool:', prim.tool);
 										const initialScale = prim.baseScale;
 										if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(initialScale, initialScale, initialScale), activeMat);
 										else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(initialScale/2, 20, 16), activeMat);
@@ -4955,17 +5002,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										if (prim.preview) {
 											prim.preview.userData.__helper = true;
 											scene.add(prim.preview);
-											prim.initialPos = prim.rightHand.pos.clone();
+											prim.initialPos = attachHand.pos.clone();
+											console.log('Primitive preview created and added to scene');
 										}
 									}
 									
-									// Update preview position to follow right hand
-									if (prim.preview) {
-										prim.preview.position.copy(prim.rightHand.pos);
+									// Update preview position to follow primary hand
+									if (prim.preview && attachHand) {
+										prim.preview.position.copy(attachHand.pos);
 									}
 									
 									// Check if both hands are pinching to start scaling
-									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand.pinching) {
+									if (prim.leftHand && prim.rightHand && prim.leftHand.pinching && prim.rightHand.pinching) {
+										console.log('Both hands pinching - starting scaling phase');
 										prim.stage = 'scaling';
 										prim.initialDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 										prim.initialScale = prim.baseScale;
@@ -5013,7 +5062,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												const finalPrimitive = new THREE.Mesh(prim.preview.geometry.clone(), activeMat);
 												finalPrimitive.position.copy(prim.preview.position);
 												finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
-												addObjectToScene(finalPrimitive, { select: true });
+												// Add to scene WITHOUT automatic selection/gizmo
+												addObjectToScene(finalPrimitive, { select: false });
 												if (saveSessionDraftSoon) saveSessionDraftSoon();
 											}
 										} catch(e) {

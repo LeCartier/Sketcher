@@ -1,23 +1,32 @@
 // VR Draw service: simple 3D stroke drawing with hand pinch (thumb-index) in XR
-// Marks created line objects with userData.__helper so they're ignored by measurements / resets.
+// Lines are added directly to the scene and scale/rotate with scene transformations.
 (function(){
 	function createVRDraw(opts){
 		const THREE = (opts && opts.THREE) || window.THREE;
 		const scene = (opts && opts.scene);
 		if (!THREE || !scene) return null;
-		const group = new THREE.Group();
-		group.name = 'VRDrawGroup';
-		group.userData.__helper = true;
-		scene.add(group);
+		
+		// Create a dedicated group for VR draw lines that's part of the scene structure
+		let drawGroup = scene.getObjectByName('VRDrawLines');
+		if (!drawGroup) {
+			drawGroup = new THREE.Group();
+			drawGroup.name = 'VRDrawLines';
+			// Don't mark as helper - we want these lines to be part of the scene
+			scene.add(drawGroup);
+		}
+		
 		let enabled = false;
 		let currentStroke = null;
 		let currentGeom = null;
 		let points = [];
 		const triggerPrev = new WeakMap();
 		let color = 0xff0000; // red linework
+		let lineWidth = 2; // line thickness
 		let minSegmentDist = 0.01; // 1 cm
 		let maxPointsPerStroke = 5000;
 		let onLineCreated = null; // callback when new line is added
+		let currentStrokeId = null; // unique ID for current stroke
+		let collaborationService = null; // reference to collaboration service
 		// fingertip markers
 		const tipMarkers = new Map(); // src -> mesh
 		function setEnabled(v){
@@ -25,18 +34,46 @@
 			if (!enabled) endStroke();
 		}
 		function isActive(){ return !!enabled; }
-		function clear(){ try { while(group.children.length){ const c=group.children.pop(); c.geometry?.dispose?.(); c.material?.dispose?.(); } } catch{} }
+		function clear(){ 
+			try { 
+				// Send collaboration event for clear
+				if (collaborationService && collaborationService.onVRDrawClear) {
+					collaborationService.onVRDrawClear();
+				}
+				
+				// Clear all VR draw lines from the scene
+				while(drawGroup.children.length){ 
+					const c = drawGroup.children.pop(); 
+					c.geometry?.dispose?.(); 
+					c.material?.dispose?.(); 
+				} 
+			} catch{} 
+		}
 		function setColor(hex){ color = hex; }
+		function setLineWidth(width){ lineWidth = width || 2; }
+		function getColor(){ return color; }
+		function getLineWidth(){ return lineWidth; }
 		function setOnLineCreated(fn){ onLineCreated = fn; }
+		function setCollaborationService(service){ collaborationService = service; }
 		function startStroke(pt){
+			// Generate unique stroke ID for collaboration
+			currentStrokeId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			
 			points = [pt.clone()];
 			currentGeom = new THREE.BufferGeometry();
 			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute([pt.x, pt.y, pt.z], 3));
-			const mat = new THREE.LineBasicMaterial({ color, linewidth: 2 });
+			const mat = new THREE.LineBasicMaterial({ color, linewidth: lineWidth });
 			currentStroke = new THREE.Line(currentGeom, mat);
 			currentStroke.frustumCulled = false;
-			currentStroke.userData.__helper = true;
-			group.add(currentStroke);
+			// Don't mark as helper - these lines are part of the scene
+			currentStroke.name = `VRDrawLine_${currentStrokeId}`;
+			drawGroup.add(currentStroke);
+			
+			// Send collaboration event for stroke start
+			if (collaborationService && collaborationService.onVRDrawStart) {
+				collaborationService.onVRDrawStart(currentStrokeId, pt, color, lineWidth);
+			}
+			
 			// Notify callback of new line creation
 			if (onLineCreated) try { onLineCreated(currentStroke); } catch{}
 		}
@@ -51,9 +88,22 @@
 			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute(arr,3));
 			currentGeom.attributes.position.needsUpdate = true;
 			currentGeom.computeBoundingSphere();
+			
+			// Send collaboration event for new point
+			if (collaborationService && collaborationService.onVRDrawPoint && currentStrokeId) {
+				collaborationService.onVRDrawPoint(currentStrokeId, pt);
+			}
 		}
 		function endStroke(){
-			currentStroke = null; currentGeom = null; points = [];
+			// Send collaboration event for stroke end
+			if (collaborationService && collaborationService.onVRDrawEnd && currentStrokeId) {
+				collaborationService.onVRDrawEnd(currentStrokeId);
+			}
+			
+			currentStroke = null; 
+			currentGeom = null; 
+			points = [];
+			currentStrokeId = null;
 		}
 		function update(frame, session, referenceSpace){
 			if (!enabled || !session || !frame) return;
@@ -103,7 +153,19 @@
 				triggerPrev.set(src, pinching);
 			}
 		}
-		return { group, setEnabled, isActive, clear, setColor, setOnLineCreated, update };
+		return { 
+			group: drawGroup, 
+			setEnabled, 
+			isActive, 
+			clear, 
+			setColor, 
+			setLineWidth,
+			getColor,
+			getLineWidth,
+			setOnLineCreated, 
+			setCollaborationService,
+			update 
+		};
 	}
 	try { window.createVRDraw = createVRDraw; } catch{}
 })();
