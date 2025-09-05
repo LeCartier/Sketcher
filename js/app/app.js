@@ -457,9 +457,12 @@ export async function init() {
 				try {
 					arPerObject = !arPerObject;
 					arEdit.setPerObjectEnabled(arPerObject);
-					bMode.setLabel(arPerObject ? 'Scene' : 'Objects');
+					// Update button label to show current mode (not the mode we're switching to)
+					bMode.setLabel(arPerObject ? 'Objects' : 'Scene');
 				} catch {}
 			});
+			// Set initial label to reflect default state (arPerObject = false = Scene mode)
+			bMode.setLabel('Scene');
 			// Lock ground: snap AR content ground to XR local-floor (translate up, yaw align, optional scale within constraints)
 			const bLock = xrHud.createTile3DButton('Lock Ground', ()=>{
 				try {
@@ -634,10 +637,14 @@ export async function init() {
 					} catch{} 
 				});
 				// VR Draw toggle button
-				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ try { if (!xrHud3D) return true; // no hud yet
-					const hudVisible = xrHud3D.visible === true;
-					const primsOpen = (typeof primsMenu!=='undefined' && primsMenu && primsMenu.visible===true);
-					return !hudVisible && !primsOpen && !window.__xrPrim; } catch{} return true; } }); 
+				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ 
+					// Only allow drawing when explicitly enabled
+					// Check VR draw state without circular reference
+					try {
+						return vrDraw && vrDraw.isActive && vrDraw.isActive();
+					} catch{} 
+					return false; 
+				} }); 
 					// Connect VR draw to collaboration
 					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
 				} catch{}
@@ -797,7 +804,7 @@ export async function init() {
 								);
 								if (bgMesh && bgMesh.material) {
 									if (active) bgMesh.material.color.setHex(0xff8800); // Orange highlight
-									else bgMesh.material.color.setHex(0x333333); // Default dark gray
+									else bgMesh.material.color.setHex(0x2a2a2a); // Updated default background color
 									bgMesh.material.needsUpdate = true;
 								}
 							}

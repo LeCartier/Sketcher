@@ -9,6 +9,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   let isHost = false;
   let active = false;
   let applying = false;
+  let canActAsHost = false; // Flag for whether this user can respond to snapshot requests
   const userId = (crypto?.randomUUID?.() || (Date.now() + '-' + Math.random().toString(36).slice(2)));
   
   // Performance optimization maps
@@ -90,13 +91,34 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     roomId = String(id || 'default');
     channel = client.channel(`sketcher:${roomId}`, { config: { broadcast: { self: false }, presence: { key: userId } } });
     channel.on('broadcast', { event: 'sketcher' }, (payload) => { try { handleMessage(payload?.payload || {}); } catch {} });
-    // Presence: when someone joins and requests a snapshot, host responds
+    // Presence: Enhanced snapshot handling with host migration support
     channel.on('broadcast', { event: 'snapshot:request' }, async (payload) => {
-      if (!isHost) return;
       try {
-        const snap = (typeof getSnapshot === 'function') ? await getSnapshot() : null;
-        if (!snap) return;
-        channel.send({ type: 'broadcast', event: 'snapshot', payload: { from: userId, type: 'snapshot', ...snap } });
+        // Only respond if we're the original host OR if we can act as host (backup)
+        if (!isHost && !canActAsHost) return;
+        
+        // Add small random delay to prevent multiple simultaneous responses
+        // Original host responds immediately, backups wait a bit
+        const delay = isHost ? 0 : Math.random() * 500 + 200;
+        
+        setTimeout(async () => {
+          try {
+            const snap = (typeof getSnapshot === 'function') ? await getSnapshot() : null;
+            if (!snap) return;
+            
+            channel.send({ 
+              type: 'broadcast', 
+              event: 'snapshot', 
+              payload: { 
+                from: userId, 
+                type: 'snapshot', 
+                isOriginalHost: isHost,
+                isBackupHost: canActAsHost && !isHost,
+                ...snap 
+              } 
+            });
+          } catch {}
+        }, delay);
       } catch {}
     });
     // Presence sync: update participant count and clean up avatars for offline users
@@ -140,6 +162,20 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
             }
           }
           
+          // Host migration logic: if we have enough users, promote oldest to backup host
+          if (count > 1 && !isHost && !canActAsHost) {
+            // Simple heuristic: become backup host if we've been in the room for a while
+            // and there are multiple users (indicating the room is active)
+            if (!window.__roomJoinTime) window.__roomJoinTime = Date.now();
+            const timeInRoom = Date.now() - window.__roomJoinTime;
+            
+            // After 10 seconds in a multi-user room, become eligible as backup host
+            if (timeInRoom > 10000) {
+              canActAsHost = true;
+              console.log('Promoted to backup host - can respond to snapshot requests');
+            }
+          }
+          
           emit('presence', { count, state });
         } catch{}
       });
@@ -160,6 +196,25 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     try {
       if (kind === 'camera') {
       updateUserAvatar(msg.from, msg);
+    } else if (kind === 'user_leaving') {
+      // Remove avatar for user who announced they're leaving
+      const avatar = userAvatars.get(msg.from);
+      if (avatar && avatar.group) {
+        try {
+          if (avatar.group.parent) avatar.group.parent.remove(avatar.group);
+          avatar.group.traverse(obj => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach(mat => mat.dispose());
+              } else {
+                obj.material.dispose();
+              }
+            }
+          });
+        } catch(e) {}
+        userAvatars.delete(msg.from);
+      }
     } else if (kind === 'snapshot') {
         if (msg.json) {
           try { clearSceneObjects?.(); } catch {}
@@ -262,6 +317,8 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   async function host(id) {
     isHost = true;
+    canActAsHost = true; // Hosts can always act as host
+    window.__roomJoinTime = Date.now(); // Track when we joined/created room
     const ch = await ensureChannel(id);
     if (!ch) return false;
     try {
@@ -274,16 +331,45 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   async function join(id) {
     isHost = false;
+    window.__roomJoinTime = Date.now(); // Track when we joined room
     const ch = await ensureChannel(id);
     if (!ch) return false;
-    // Request a snapshot from host(s)
+    // Request a snapshot from host(s) or backup hosts
     try { ch.send({ type: 'broadcast', event: 'snapshot:request', payload: { from: userId } }); } catch {}
     return true;
   }
 
   function leave() {
-    try { channel?.unsubscribe(); } catch {}
-    channel = null; active = false; isHost = false;
+    try { 
+      // Send graceful departure notification
+      if (channel && active) {
+        try {
+          // Notify other users that we're leaving
+          channel.send({ 
+            type: 'broadcast', 
+            event: 'sketcher', 
+            payload: { 
+              from: userId, 
+              type: 'user_leaving', 
+              wasHost: isHost,
+              canActAsHost: canActAsHost
+            } 
+          });
+        } catch {}
+        
+        // Note: Don't send room shutdown - let room persist for other users
+        // If host leaves, backup hosts can take over seamlessly
+      }
+      
+      channel?.unsubscribe(); 
+    } catch {}
+    
+    channel = null; active = false; 
+    const wasHost = isHost;
+    isHost = false; canActAsHost = false;
+    
+    // Clean room join time
+    try { delete window.__roomJoinTime; } catch {}
     
     // Clean up all user avatars when leaving
     for (const [userId, avatar] of userAvatars.entries()) {
@@ -305,8 +391,8 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     }
     userAvatars.clear();
     
-  try { emit('status', 'LEFT'); } catch{}
-  try { emit('presence', { count: 0, state: {} }); } catch{}
+    try { emit('status', 'LEFT'); } catch{}
+    try { emit('presence', { count: 0, state: {} }); } catch{}
   }
 
   // Broadcast helpers

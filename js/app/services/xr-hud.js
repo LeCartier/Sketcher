@@ -118,12 +118,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label: primitiveType, onClick, base: null, hover: null };
     
-    // Background panel (similar to text button)
+    // Background panel with improved contrast
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x333333, 
+      color: 0x2a2a2a, // Darker background for better contrast
       transparent: true, 
-      opacity: 0.8, 
+      opacity: 0.95, // More opaque
       depthTest: false, 
       depthWrite: false 
     });
@@ -135,37 +135,37 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.35; // 35% of button size
     let primitiveMesh;
     
-    // Create primitive geometry based on type
+    // Create primitive geometry based on type with brighter colors
     switch(primitiveType.toLowerCase()) {
       case 'box':
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x4da6ff, depthTest: false, depthWrite: false }) // Brighter blue
         );
         break;
       case 'sphere':
         primitiveMesh = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.5, 12, 8),
-          new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false, depthWrite: false }) // Brighter red
         );
         break;
       case 'cylinder':
         primitiveMesh = new THREE.Mesh(
           new THREE.CylinderGeometry(iconScale * 0.4, iconScale * 0.4, iconScale, 12),
-          new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x44ff44, depthTest: false, depthWrite: false }) // Brighter green
         );
         break;
       case 'cone':
         primitiveMesh = new THREE.Mesh(
           new THREE.ConeGeometry(iconScale * 0.4, iconScale, 12),
-          new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xffaa00, depthTest: false, depthWrite: false }) // Brighter orange
         );
         break;
       default:
         // Fallback to a simple cube
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-          new THREE.MeshBasicMaterial({ color: 0x888888, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xbbbbbb, depthTest: false, depthWrite: false }) // Brighter gray
         );
     }
     
@@ -220,12 +220,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label: 'Draw', onClick, base: null, hover: null };
     
-    // Background panel (similar to primitive buttons)
+    // Background panel with improved contrast
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x333333, 
+      color: 0x2a2a2a, // Darker background for better contrast
       transparent: true, 
-      opacity: 0.8, 
+      opacity: 0.95, // More opaque
       depthTest: false, 
       depthWrite: false 
     });
@@ -237,22 +237,22 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.4; // 40% of button size
     const drawIconGroup = new THREE.Group();
     
-    // Pencil body (cylinder)
+    // Pencil body (cylinder) - brighter orange
     const bodyGeom = new THREE.CylinderGeometry(iconScale * 0.08, iconScale * 0.08, iconScale * 0.8, 8);
-    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffa500, depthTest: false, depthWrite: false }); // Orange
+    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xff8800, depthTest: false, depthWrite: false }); // Brighter orange
     const bodyMesh = new THREE.Mesh(bodyGeom, bodyMat);
     bodyMesh.renderOrder = 10001;
     drawIconGroup.add(bodyMesh);
     
-    // Pencil tip (cone)
+    // Pencil tip (cone) - brighter gray
     const tipGeom = new THREE.ConeGeometry(iconScale * 0.08, iconScale * 0.2, 8);
-    const tipMat = new THREE.MeshBasicMaterial({ color: 0x444444, depthTest: false, depthWrite: false }); // Dark gray
+    const tipMat = new THREE.MeshBasicMaterial({ color: 0x666666, depthTest: false, depthWrite: false }); // Brighter gray
     const tipMesh = new THREE.Mesh(tipGeom, tipMat);
     tipMesh.position.y = -iconScale * 0.5; // Position at bottom of pencil
     tipMesh.renderOrder = 10001;
     drawIconGroup.add(tipMesh);
     
-    // Small drawing line/squiggle to indicate drawing action
+    // Small drawing line/squiggle to indicate drawing action - brighter
     const linePoints = [
       new THREE.Vector3(-iconScale * 0.2, -iconScale * 0.7, 0.002),
       new THREE.Vector3(-iconScale * 0.1, -iconScale * 0.75, 0.002),
@@ -261,7 +261,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       new THREE.Vector3(iconScale * 0.2, -iconScale * 0.7, 0.002)
     ];
     const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xff6666, linewidth: 3, depthTest: false, depthWrite: false }); // Red
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 3, depthTest: false, depthWrite: false }); // Brighter red
     const lineMesh = new THREE.Line(lineGeom, lineMat);
     lineMesh.renderOrder = 10001;
     drawIconGroup.add(lineMesh);
@@ -291,10 +291,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     buttonGroup.add(flash);
     buttonGroup.userData.__flash = flash;
     
-    // Store materials for hover effects
+    // Store materials for hover effects with better contrast
     const baseBgMat = bgMat.clone();
     const hoverBgMat = bgMat.clone();
-    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    hoverBgMat.color.setHex(0x4a4a4a); // Much lighter gray on hover for better visibility
     
     buttonGroup.userData.__hudButton.base = baseBgMat;
     buttonGroup.userData.__hudButton.hover = hoverBgMat;
@@ -316,9 +316,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Tile background (maintains the existing aesthetic)
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x333333, 
+      color: 0x2a2a2a, // Slightly lighter dark background for better contrast
       transparent: true, 
-      opacity: 0.9, 
+      opacity: 0.95, // Slightly more opaque
       depthTest: false, 
       depthWrite: false 
     });
@@ -327,22 +327,22 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     buttonGroup.add(bgMesh);
     
     // Create 3D icon based on button label
-    const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.25; // Smaller for tiles
+    const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.28; // Slightly larger icons
     const iconGroup = new THREE.Group();
     
-    // Add label text (small, at bottom of tile)
-    const textScale = iconScale * 0.3;
+    // Add label text (bigger and brighter, at bottom of tile)
+    const textScale = iconScale * 0.4; // Larger text
     const textCanvas = document.createElement('canvas');
-    textCanvas.width = 128; textCanvas.height = 32;
+    textCanvas.width = 256; textCanvas.height = 64; // Taller canvas for bigger text
     const textCtx = textCanvas.getContext('2d');
-    textCtx.fillStyle = '#ffffff';
-    textCtx.font = '16px Arial';
+    textCtx.fillStyle = '#ffffff'; // Bright white text
+    textCtx.font = 'bold 24px Arial'; // Bigger, bold font
     textCtx.textAlign = 'center';
     textCtx.textBaseline = 'middle';
-    textCtx.fillText(label, 64, 16);
+    textCtx.fillText(label, 128, 32);
     
     const textTexture = new THREE.CanvasTexture(textCanvas);
-    const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.8, BUTTON_H * 0.2);
+    const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.25); // Larger text area
     const textMat = new THREE.MeshBasicMaterial({ 
       map: textTexture, 
       transparent: true, 
@@ -350,7 +350,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       depthWrite: false 
     });
     const textMesh = new THREE.Mesh(textGeom, textMat);
-    textMesh.position.y = -BUTTON_H * 0.3;
+    textMesh.position.y = -BUTTON_H * 0.28; // Position at bottom
     textMesh.position.z = 0.002;
     textMesh.renderOrder = 10001;
     buttonGroup.add(textMesh);
@@ -362,11 +362,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Scale icon: two connected cubes of different sizes
         const cube1 = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale * 0.6, iconScale * 0.6, iconScale * 0.6),
-          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x4da6ff, depthTest: false, depthWrite: false }) // Brighter blue
         );
         const cube2 = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale * 0.4, iconScale * 0.4, iconScale * 0.4),
-          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x80c7ff, depthTest: false, depthWrite: false }) // Even brighter blue
         );
         cube1.position.x = -iconScale * 0.3;
         cube2.position.x = iconScale * 0.3;
@@ -376,7 +376,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       case 'fit':
         // Fit icon: arrows pointing inward
         const arrowGeom = new THREE.ConeGeometry(iconScale * 0.1, iconScale * 0.3, 6);
-        const arrowMat = new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false });
+        const arrowMat = new THREE.MeshBasicMaterial({ color: 0x00ff44, depthTest: false, depthWrite: false }); // Bright green
         const arrow1 = new THREE.Mesh(arrowGeom, arrowMat);
         const arrow2 = new THREE.Mesh(arrowGeom, arrowMat);
         arrow1.position.x = -iconScale * 0.4; arrow1.rotation.z = Math.PI / 2;
@@ -387,7 +387,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       case 'reset':
         // Reset icon: circular arrow
         const torusGeom = new THREE.TorusGeometry(iconScale * 0.4, iconScale * 0.08, 8, 16);
-        const torusMat = new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false });
+        const torusMat = new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false, depthWrite: false }); // Bright red
         iconMesh = new THREE.Mesh(torusGeom, torusMat);
         break;
         
@@ -395,14 +395,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Grab icon: hand shape (simplified as sphere with fingers)
         const handSphere = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.3, 8, 6),
-          new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xffaa00, depthTest: false, depthWrite: false }) // Bright orange
         );
         iconGroup.add(handSphere);
         // Add finger cylinders
         for (let i = 0; i < 5; i++) {
           const finger = new THREE.Mesh(
             new THREE.CylinderGeometry(iconScale * 0.04, iconScale * 0.04, iconScale * 0.2, 6),
-            new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+            new THREE.MeshBasicMaterial({ color: 0xffcc44, depthTest: false, depthWrite: false }) // Brighter orange
           );
           finger.position.x = (i - 2) * iconScale * 0.15;
           finger.position.y = iconScale * 0.2;
@@ -415,7 +415,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         for (let i = 0; i < 3; i++) {
           const cube = new THREE.Mesh(
             new THREE.BoxGeometry(iconScale * 0.25, iconScale * 0.25, iconScale * 0.25),
-            new THREE.MeshBasicMaterial({ color: 0x88aaff, depthTest: false, depthWrite: false })
+            new THREE.MeshBasicMaterial({ color: 0x66bbff, depthTest: false, depthWrite: false }) // Brighter blue
           );
           cube.position.x = (i - 1) * iconScale * 0.4;
           cube.position.y = Math.sin(i) * iconScale * 0.2;
@@ -427,11 +427,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Lock icon: padlock shape
         const lockBody = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale * 0.4, iconScale * 0.3, iconScale * 0.2),
-          new THREE.MeshBasicMaterial({ color: 0xffdd00, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xffdd00, depthTest: false, depthWrite: false }) // Bright yellow
         );
         const lockShackle = new THREE.Mesh(
           new THREE.TorusGeometry(iconScale * 0.2, iconScale * 0.05, 6, 12, Math.PI),
-          new THREE.MeshBasicMaterial({ color: 0xffdd00, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xffee44, depthTest: false, depthWrite: false }) // Brighter yellow
         );
         lockShackle.position.y = iconScale * 0.2;
         lockShackle.rotation.x = Math.PI;
@@ -442,7 +442,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Material icon: textured plane
         const matPlane = new THREE.Mesh(
           new THREE.PlaneGeometry(iconScale * 0.6, iconScale * 0.6),
-          new THREE.MeshBasicMaterial({ color: 0xff88aa, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xff66cc, depthTest: false, depthWrite: false }) // Bright magenta
         );
         matPlane.rotation.x = -Math.PI * 0.2;
         iconGroup.add(matPlane);
@@ -454,7 +454,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           for (let y = -1; y <= 1; y++) {
             const dot = new THREE.Mesh(
               new THREE.SphereGeometry(iconScale * 0.06, 6, 4),
-              new THREE.MeshBasicMaterial({ color: 0x88ff88, depthTest: false, depthWrite: false })
+              new THREE.MeshBasicMaterial({ color: 0x44ff88, depthTest: false, depthWrite: false }) // Bright green
             );
             dot.position.x = x * iconScale * 0.2;
             dot.position.y = y * iconScale * 0.2;
@@ -467,14 +467,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Fingers icon: hand visualization
         const palmSphere = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.15, 8, 6),
-          new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x00ddff, depthTest: false, depthWrite: false }) // Bright cyan
         );
         iconGroup.add(palmSphere);
         // Fingertip spheres
         for (let i = 0; i < 5; i++) {
           const tip = new THREE.Mesh(
             new THREE.SphereGeometry(iconScale * 0.05, 6, 4),
-            new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthTest: false, depthWrite: false })
+            new THREE.MeshBasicMaterial({ color: 0x44eeff, depthTest: false, depthWrite: false }) // Brighter cyan
           );
           const angle = (i - 2) * 0.3;
           tip.position.x = Math.sin(angle) * iconScale * 0.4;
@@ -489,9 +489,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const ring = new THREE.Mesh(
             new THREE.TorusGeometry(iconScale * 0.15 * i, iconScale * 0.03, 6, 12),
             new THREE.MeshBasicMaterial({ 
-              color: 0x00ff88, 
+              color: 0x00ff66, // Bright green
               transparent: true, 
-              opacity: 1 - (i * 0.2),
+              opacity: 1 - (i * 0.15), // Less opacity reduction for visibility
               depthTest: false, 
               depthWrite: false 
             })
@@ -504,13 +504,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Join icon: connecting arrows
         const centerSphere = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.1, 8, 6),
-          new THREE.MeshBasicMaterial({ color: 0x88ff00, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x66ff00, depthTest: false, depthWrite: false }) // Bright lime green
         );
         iconGroup.add(centerSphere);
         for (let i = 0; i < 4; i++) {
           const arrow = new THREE.Mesh(
             new THREE.ConeGeometry(iconScale * 0.06, iconScale * 0.2, 6),
-            new THREE.MeshBasicMaterial({ color: 0x88ff00, depthTest: false, depthWrite: false })
+            new THREE.MeshBasicMaterial({ color: 0x88ff22, depthTest: false, depthWrite: false }) // Brighter lime
           );
           const angle = i * Math.PI / 2;
           arrow.position.x = Math.cos(angle) * iconScale * 0.3;
@@ -524,11 +524,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Primitives icon: basic shapes
         const primCube = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale * 0.2, iconScale * 0.2, iconScale * 0.2),
-          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0x4da6ff, depthTest: false, depthWrite: false }) // Bright blue
         );
         const primSphere = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.1, 8, 6),
-          new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false, depthWrite: false }) // Bright red
         );
         primCube.position.x = -iconScale * 0.2;
         primSphere.position.x = iconScale * 0.2;
@@ -539,7 +539,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Back icon: left-pointing arrow
         const backArrow = new THREE.Mesh(
           new THREE.ConeGeometry(iconScale * 0.15, iconScale * 0.4, 6),
-          new THREE.MeshBasicMaterial({ color: 0xaaaaaa, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xcccccc, depthTest: false, depthWrite: false }) // Brighter gray
         );
         backArrow.rotation.z = Math.PI / 2; // Point left
         iconGroup.add(backArrow);
@@ -549,7 +549,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Default icon: simple cube
         iconMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-          new THREE.MeshBasicMaterial({ color: 0x888888, depthTest: false, depthWrite: false })
+          new THREE.MeshBasicMaterial({ color: 0xbbbbbb, depthTest: false, depthWrite: false }) // Brighter gray
         );
     }
     
@@ -590,7 +590,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Store materials for hover effects
     const baseBgMat = bgMat.clone();
     const hoverBgMat = bgMat.clone();
-    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    hoverBgMat.color.setHex(0x4a4a4a); // Much lighter gray on hover for better visibility
     
     buttonGroup.userData.__hudButton.base = baseBgMat;
     buttonGroup.userData.__hudButton.hover = hoverBgMat;
@@ -599,8 +599,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     function setLabel(next) {
       buttonGroup.userData.__hudButton.label = next;
       // Update text mesh
-      textCtx.clearRect(0, 0, 128, 32);
-      textCtx.fillText(next, 64, 16);
+      textCtx.clearRect(0, 0, 256, 64); // Updated canvas size
+      textCtx.fillText(next, 128, 32); // Updated coordinates
       textTexture.needsUpdate = true;
     }
     
