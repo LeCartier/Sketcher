@@ -202,8 +202,8 @@ export async function init() {
 				arContent.position.y = 0;
 			}
 		} catch {}
-		// If ground lock active, ensure model is aligned to local-floor (y=0)
-		try { if (arGroundLocked) { alignModelToGround(arContent); } } catch {}
+		// If ground lock active, ensure model is aligned to local-floor (y=0) only on initial setup
+		// During manipulation, the AR edit service handles the constraints to prevent stuttering
 	}
 
 	// Ensure HUD reflects 1:1 active state
@@ -398,6 +398,7 @@ export async function init() {
 							// Reset AR-related flags & visual states
 							arOneToOne = false; arGroundLocked = false; arPendingTeleport = null; arMatMode = 'normal';
 							try { setHudButtonActiveByLabel('1:1', false); setHudButtonActiveByLabel('Lock Ground', false); } catch{}
+							try { arEdit.setGroundLocked(false); } catch{}
 							updateVisibilityUI();
 							return; // Session-start baseline consumed; do not fall through to mutable baseline
 						}
@@ -417,6 +418,7 @@ export async function init() {
 						if (arContent) { scene.remove(arContent); arContent = null; arPlaced = false; }
 						// Clear AR state flags
 						arOneToOne = false; arGroundLocked = false; arPendingTeleport = null;
+						try { arEdit.setGroundLocked(false); } catch{}
 						// Restore materials to normal
 						arMatMode = 'normal';
 						// Update HUD button visual states
@@ -463,7 +465,9 @@ export async function init() {
 					arGroundLocked = !arGroundLocked;
 					// Visual HUD tint
 					try { setHudButtonActiveByLabel('Lock Ground', arGroundLocked); } catch {}
-					// If enabling lock, align model now
+					// Configure AR edit service ground lock
+					try { if (arEdit && arEdit.setGroundLocked) arEdit.setGroundLocked(arGroundLocked); } catch {}
+					// If enabling lock, align model now and place on floor
 					if (arGroundLocked) {
 						try { alignModelToGround(arContent); } catch {}
 					}
@@ -548,6 +552,8 @@ export async function init() {
 				}
 				function buildPrimsMenu(){
 					if (primsMenu) return; primsMenu = new THREE.Group(); primsMenu.visible = false; primsMenu.name='XR HUD Prims Menu'; primsMenu.userData.__helper = true;
+					// Expose for HUD targeting logic (used to filter raycast targets when open)
+					try { window.__primsMenuGroup = primsMenu; } catch{}
 					const defs = [
 						{ label:'Box', tool:'box' },
 						{ label:'Sphere', tool:'sphere' },
@@ -577,7 +583,9 @@ export async function init() {
 							const r = Math.floor(i/cols); const c = i%cols;
 							const x = -totalW/2 + c*(bw+gap) + bw/2;
 							const y = totalH/2 - r*(bh+gap) - bh/2;
-							primsButtons[i].mesh.position.set(x,y,0.0002); // slight forward bias
+							// Increase forward bias so submenu cleanly occludes main HUD buttons for ray hits
+							primsButtons[i].mesh.position.set(x,y,0.01);
+							try { primsButtons[i].mesh.renderOrder = 50; } catch{}
 						}
 					} catch {}
 					try { if (xrHud && xrHud.group) xrHud.group.add(primsMenu); } catch{}
@@ -587,6 +595,8 @@ export async function init() {
 					try { buildPrimsMenu(); } catch{}
 					const show = (typeof force === 'boolean') ? force : !primsMenu.visible;
 					primsMenu.visible = show; setMainMenuVisible(!show);
+					// Global flag for HUD service to filter ray targets
+					try { window.__xrPrimsOpen = show; } catch{}
 					if (!show) { __cancelVRPrimitiveDraft(); }
 				}
 				// Expose toggle for debugging if needed
@@ -959,6 +969,8 @@ export async function init() {
 	// AR editing helper (controllers or hands)
 	const arEdit = createAREdit(THREE, scene, renderer);
 	try { arEdit.setGizmoEnabled(false); } catch {}
+	// Initialize ground lock state
+	try { arEdit.setGroundLocked(arGroundLocked); } catch {}
 
 	// Snap highlight via module
 	const snapVisuals = createSnapVisuals({ THREE, scene });
@@ -1270,8 +1282,8 @@ export async function init() {
 				const delta = camPos.clone().sub(target);
 				if (arContent){
 					arContent.position.sub(delta);
-					// When ground lock active, re-snap Y immediately to local floor
-					try { if (typeof arGroundLocked !== 'undefined' && arGroundLocked) { arContent.position.y = 0; alignModelToGround(arContent); } } catch{}
+					// When ground lock active, maintain Y position constraint through AR edit service
+					// rather than forcing realignment which causes stuttering
 				}
 			} catch {}
 			return;
@@ -3556,6 +3568,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						setHudButtonActiveByLabel('1:1', false);
 						setHudButtonActiveByLabel('Lock Ground', false);
 						arGroundLocked = false;
+						arEdit.setGroundLocked(false);
 					} catch {}
 			} else if (supportsVR) {
 				// Start immersive VR for headsets; use hands/controllers for manipulation
@@ -3612,6 +3625,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					} catch { arContent.position.set(0, 0, -0.3048); }
 					computeArBaseMetrics(arContent);
 					try { arEdit.setTarget(arContent); } catch {}
+					try { arEdit.setGroundLocked(arGroundLocked); } catch {}
 
 					// If we had a pending teleport target (ray selected before model existed), apply it now
 					try {
@@ -4661,76 +4675,134 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
-							const gp = src && src.gamepad; const raySpace = src && (src.targetRaySpace || src.gripSpace);
-							// Handle VR primitive workflow on RIGHT hand trigger (ray mode only for placement clarity)
-							if (gp && raySpace && src.handedness==='right' && window.__xrPrim){
-								const pressed = !!(gp.buttons && gp.buttons[0] && gp.buttons[0].pressed);
-								const prev = window.__xrPrim.__triggerPrev.get(src) === true;
-								// Compute ray + ground hit for live preview even without press
-								try {
-									const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
-									if (pose){
-										const p = pose.transform.position; const o = pose.transform.orientation;
-										const origin = new THREE.Vector3(p.x,p.y,p.z);
-										const dir = new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
-										const rc = new THREE.Raycaster(origin, dir, 0.01, 100);
-										const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-										const hit = new THREE.Vector3();
-										if (rc.ray.intersectPlane(plane, hit)){
-											const prim = window.__xrPrim;
-											const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
-											if (prim.stage===0){
-												// Just move a cursor indicator (small sphere) if we want; reuse preview
-												if (!prim.preview){ prim.preview = new THREE.Mesh(new THREE.SphereGeometry(0.05,12,10), new THREE.MeshBasicMaterial({ color:0x44bbff, transparent:true, opacity:0.6, depthTest:false, depthWrite:false })); prim.preview.userData.__helper = true; scene.add(prim.preview); }
-												prim.preview.position.set(hit.x, 0, hit.z);
-											} else if (prim.stage===1){
-												// Update size preview from p0 to current hit
-												const p0 = prim.p0; const dx = hit.x - p0.x; const dz = hit.z - p0.z;
-												const sx = Math.max(0.1, Math.abs(dx)); const sz = Math.max(0.1, Math.abs(dz)); const r = Math.max(sx, sz)/2;
-												const cy = 0; // base
-												const key = prim.tool+':'+sx.toFixed(2)+':'+sz.toFixed(2);
-												if (prim.lastDims !== key){
-													if (prim.preview){ try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{} try { prim.preview.geometry?.dispose?.(); } catch{} prim.preview = null; }
-													if (prim.tool==='box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.5, sz), activeMat);
-													else if (prim.tool==='sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), activeMat);
-													else if (prim.tool==='cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.5,20), activeMat);
-													else if (prim.tool==='cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(r,0.5,20), activeMat);
-													if (prim.preview){ prim.preview.userData.__helper = true; scene.add(prim.preview); }
-													prim.lastDims = key;
-												}
-												if (prim.preview){
-													if (prim.tool==='sphere') prim.preview.position.set((p0.x+hit.x)/2, r, (p0.z+hit.z)/2);
-													else prim.preview.position.set((p0.x+hit.x)/2, 0.25, (p0.z+hit.z)/2);
+							// Handle VR primitive workflow on RIGHT hand (hand tracking or controller) - now places at hand position
+							if (src && src.handedness==='right' && window.__xrPrim){
+								const prim = window.__xrPrim;
+								let handPos = null; // 3D position where primitive should be placed
+								let triggerPressed = false; 
+								
+								// Try to get hand position from hand tracking first (preferred)
+								if (src.hand) {
+									try {
+										const idxJ = src.hand.get && src.hand.get('index-finger-tip');
+										const ref = xrLocalSpace || xrViewerSpace || null;
+										if (idxJ && frame.getJointPose) {
+											const pose = frame.getJointPose(idxJ, ref);
+											if (pose && pose.transform && pose.transform.position) {
+												const ip = pose.transform.position;
+												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+												
+												// Check for pinch gesture for trigger
+												const thJ = src.hand.get && src.hand.get('thumb-tip');
+												if (thJ) {
+													const thumbPose = frame.getJointPose(thJ, ref);
+													if (thumbPose && thumbPose.transform && thumbPose.transform.position) {
+														const tp = thumbPose.transform.position;
+														const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
+														triggerPressed = dist < 0.028; // 2.8cm pinch threshold like VR draw
+													}
 												}
 											}
 										}
-									}
-								} catch{}
-								if (pressed && !prev){
-									const prim = window.__xrPrim;
-									// Stage transitions: 0 -> set p0; 1 -> finalize height (use drag vertical?), for now single height constant.
-									if (prim.stage === 0){
-										// Use last preview position as base corner p0
-										const p = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(); prim.p0 = new THREE.Vector3(p.x, 0, p.z); prim.stage = 1; prim.lastDims='';
-									} else if (prim.stage === 1){
-										// Finalize using p0 + preview dims
-										try {
-											const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
-											const p0 = prim.p0; const pv = prim.preview; if (p0 && pv){
-												let placed = null; const nameBase = prim.tool.charAt(0).toUpperCase()+prim.tool.slice(1);
-												if (prim.tool==='box'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-												else if (prim.tool==='sphere'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-												else if (prim.tool==='cylinder'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-												else if (prim.tool==='cone'){ const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-												if (placed){ placed.name = nameBase+' '+(objects.length+1); addObjectToScene(placed,{ select:true }); saveSessionDraftSoon && saveSessionDraftSoon(); }
-											}
-										} catch{}
-										// Reset state for another of same primitive (stay in tool) until Back pressed
-										try { if (prim.preview){ if (prim.preview.parent) prim.preview.parent.remove(prim.preview); prim.preview.geometry?.dispose?.(); prim.preview = null; } } catch{}
-										prim.stage = 0; prim.p0 = null; prim.p1 = null; prim.lastDims='';
-									}
+									} catch(e) {}
 								}
-								window.__xrPrim.__triggerPrev.set(src, pressed);
+								
+								// Fallback to controller if hand tracking not available
+								if (!handPos && src.gamepad) {
+									try {
+										const raySpace = src.targetRaySpace || src.gripSpace;
+										if (raySpace) {
+											const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+											if (pose && pose.transform && pose.transform.position) {
+												const p = pose.transform.position;
+												// Position slightly forward from controller
+												const o = pose.transform.orientation;
+												const origin = new THREE.Vector3(p.x, p.y, p.z);
+												const forward = new THREE.Vector3(0, 0, -0.15); // 15cm forward
+												if (o) {
+													forward.applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
+												}
+												handPos = origin.add(forward);
+												triggerPressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+											}
+										}
+									} catch(e) {}
+								}
+								
+								// Handle primitive creation at hand position
+								if (handPos) {
+									const prev = window.__xrPrim.__triggerPrev && window.__xrPrim.__triggerPrev.get(src) === true;
+									const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+									
+									if (prim.stage === 0) {
+										// Show preview at hand position
+										if (!prim.preview) { 
+											prim.preview = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 10), new THREE.MeshBasicMaterial({ color: 0x44bbff, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false })); 
+											prim.preview.userData.__helper = true; 
+											scene.add(prim.preview); 
+										}
+										prim.preview.position.copy(handPos);
+									} else if (prim.stage === 1) {
+										// Show sized primitive preview between p0 and current hand position
+										const p0 = prim.p0;
+										if (p0) {
+											const dx = handPos.x - p0.x; const dy = handPos.y - p0.y; const dz = handPos.z - p0.z;
+											const sx = Math.max(0.1, Math.abs(dx)); const sy = Math.max(0.1, Math.abs(dy)); const sz = Math.max(0.1, Math.abs(dz)); 
+											const r = Math.max(sx, sz) / 2;
+											const centerPos = new THREE.Vector3((p0.x + handPos.x) / 2, (p0.y + handPos.y) / 2, (p0.z + handPos.z) / 2);
+											
+											const key = prim.tool + ':' + sx.toFixed(2) + ':' + sy.toFixed(2) + ':' + sz.toFixed(2);
+											if (prim.lastDims !== key) {
+												if (prim.preview) { 
+													try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{} 
+													try { prim.preview.geometry?.dispose?.(); } catch{} 
+													prim.preview = null; 
+												}
+												if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), activeMat);
+												else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), activeMat);
+												else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(r, r, sy, 20), activeMat);
+												else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(r, sy, 20), activeMat);
+												if (prim.preview) { prim.preview.userData.__helper = true; scene.add(prim.preview); }
+												prim.lastDims = key;
+											}
+											if (prim.preview) {
+												prim.preview.position.copy(centerPos);
+											}
+										}
+									}
+									
+									// Handle trigger press for stage transitions
+									if (triggerPressed && !prev) {
+										if (prim.stage === 0) {
+											// Set first corner at hand position and move to sizing stage
+											prim.p0 = handPos.clone(); 
+											prim.stage = 1; 
+											prim.lastDims = '';
+										} else if (prim.stage === 1) {
+											// Finalize primitive creation
+											try {
+												const p0 = prim.p0; 
+												const pv = prim.preview; 
+												if (p0 && pv) {
+													let placed = null; 
+													const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
+													if (prim.tool === 'box') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+													else if (prim.tool === 'sphere') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+													else if (prim.tool === 'cylinder') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+													else if (prim.tool === 'cone') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
+													if (placed) { placed.name = nameBase + ' ' + (objects.length + 1); addObjectToScene(placed, { select: true }); saveSessionDraftSoon && saveSessionDraftSoon(); }
+												}
+											} catch{}
+											// Reset state for another of same primitive (stay in tool) until Back pressed
+											try { if (prim.preview) { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); prim.preview.geometry?.dispose?.(); prim.preview = null; } } catch{}
+											prim.stage = 0; prim.p0 = null; prim.p1 = null; prim.lastDims = '';
+										}
+									}
+									
+									// Store trigger state for edge detection
+									if (!window.__xrPrim.__triggerPrev) window.__xrPrim.__triggerPrev = new WeakMap();
+									window.__xrPrim.__triggerPrev.set(src, triggerPressed);
+								}
 							}
 							// Controller trigger teleport (RIGHT hand only)
 							if (gp && raySpace && (src.handedness === 'right')){
@@ -4923,6 +4995,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						}
 					} catch { arContent.position.set(0, 0, -0.3048); }
 					try { arEdit.setTarget(arContent); } catch {}
+					try { arEdit.setGroundLocked(arGroundLocked); } catch {}
 
 					arPlaced = true;
 					// Ensure model ground is horizontal and snapped to local-floor when placed
@@ -4933,26 +5006,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
 					// VR draw update (independent of AR edit target)
 					try { if (vrDraw){ if (vrDraw.isActive()) { vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); } else { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(true); } } } catch{}
-					// If ground lock is active, re-apply alignment at ~30 Hz to avoid jitter from tiny pose noise
-						try {
-							if (arGroundLocked) {
-								const now = (typeof performance!=='undefined'?performance.now():Date.now());
-								// Only re-align at lower rate (8 Hz) and only if drift > threshold
-								if (!__lastGroundAlignAt) __lastGroundAlignAt = 0;
-								const needsInterval = (now - __lastGroundAlignAt) > 125; // 8 Hz
-								let needsRealign = false;
-								try {
-									// Compute minY quickly without full traversal each frame by sampling cached box if present
-									const box = arBaseBox || new THREE.Box3().setFromObject(arContent);
-									const minY = box.min.y + arContent.position.y; // approximate world minY shift
-									if (Math.abs(minY) > 0.01) needsRealign = true; // >1 cm drift
-								} catch{}
-								if (needsInterval && needsRealign) {
-									alignModelToGround(arContent);
-									__lastGroundAlignAt = now;
-								}
-							}
-						} catch {}
+					// Ground lock is now handled by the AR edit service constraints to prevent stuttering
 				}
 			}
 			renderer.render(scene, camera);

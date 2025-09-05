@@ -409,9 +409,19 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       const session = renderer.xr.getSession?.();
     if (session && frame){
   const sources = session.inputSources ? Array.from(session.inputSources) : [];
-  // Gather all current HUD button meshes dynamically (supports runtime-added submenus)
+  // Gather current HUD button meshes dynamically. Only include visible meshes to avoid mis-hits.
   const hudTargets = [];
-  try { if (hud) hud.traverse(o=>{ if (o && o.isMesh && o.userData && o.userData.__hudButton) hudTargets.push(o); }); } catch{}
+  try {
+    if (hud) hud.traverse(o=>{ if (o && o.isMesh && o.visible && o.userData && o.userData.__hudButton) hudTargets.push(o); });
+  } catch{}
+  // If primitives submenu open, raise its buttons' priority by sorting (renderOrder already set),
+  // and rely on visibility of main menu buttons being false. As a safety, move submenu meshes to front.
+  try {
+    if (typeof window !== 'undefined' && window.__xrPrimsOpen && window.__primsMenuGroup){
+      const primSet = new Set(); try { window.__primsMenuGroup.traverse(o=>{ if (o && o.isMesh) primSet.add(o); }); } catch{}
+      hudTargets.sort((a,b)=>{ const ap=primSet.has(a)?1:0; const bp=primSet.has(b)?1:0; return bp-ap; });
+    }
+  } catch{}
         const hovered = new Set();
         let anyController = false; let anyHand = false;
         let controllerHoveringHUD = false;

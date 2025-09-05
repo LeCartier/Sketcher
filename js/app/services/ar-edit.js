@@ -30,6 +30,7 @@ export function createAREdit(THREE, scene, renderer){
   dirtySet: new Set(), // set of clone nodes that were transformed in per-object mode
   allowScale: true, // when false, two-hand pinch will not scale the target (used by 1:1 mode)
   onTransform: null, // optional callback invoked with (object) after a meaningful transform change
+  groundLocked: false, // when true, constrains Y movement for scene-level operations
   };
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
@@ -37,6 +38,7 @@ export function createAREdit(THREE, scene, renderer){
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
   function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); clearSnapHelper(); }
   function setScaleEnabled(on){ state.allowScale = !!on; }
+  function setGroundLocked(on){ state.groundLocked = !!on; }
   function setOnTransform(fn){ state.onTransform = (typeof fn === 'function') ? fn : null; }
   function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
   function clearDirty(){ state.dirtySet.clear(); }
@@ -304,6 +306,12 @@ export function createAREdit(THREE, scene, renderer){
           desiredLocalQuat.premultiply(invPQ);
         }
       } catch{}
+      
+      // Ground lock constraint: preserve Y position for scene-level operations
+      if (state.groundLocked && !state.perObject) {
+        desiredLocalPos.y = beforePos.y;
+      }
+      
       try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
       try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
@@ -333,6 +341,13 @@ export function createAREdit(THREE, scene, renderer){
           const g = state.one; const dx=gp.x-g.start.x, dy=gp.y-g.start.y, dz=gp.z-g.start.z;
           const desiredWPos = new THREE.Vector3(g.startWPos.x+dx, g.startWPos.y+dy, g.startWPos.z+dz);
           let desiredLocalPos = desiredWPos.clone(); try { if (parent) desiredLocalPos.applyMatrix4(parentWorldInv); } catch{}
+          
+          // Ground lock constraint: preserve Y position for scene-level operations
+          if (state.groundLocked && !state.perObject) {
+            const currentPos = targetObj.position.clone();
+            desiredLocalPos.y = currentPos.y;
+          }
+          
           try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
         }
         // Do not engage two-hand orbit/scale unless both are colliding
@@ -402,6 +417,12 @@ export function createAREdit(THREE, scene, renderer){
         }
       } catch{}
       const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
+      
+      // Ground lock constraint: preserve Y position for scene-level operations
+      if (state.groundLocked && !state.perObject) {
+        desiredLocalPos.y = beforePos.y;
+      }
+      
       // Apply local transforms with smoothing
       if (state.allowScale) { try { targetObj.scale.lerp(desiredLocalScale, state.smooth); } catch { targetObj.scale.copy(desiredLocalScale); } }
       try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
@@ -463,5 +484,5 @@ export function createAREdit(THREE, scene, renderer){
     }
   }
 
-  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setOnTransform, getDirtyInfo, clearDirty, start, stop, update };
+  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setGroundLocked, setOnTransform, getDirtyInfo, clearDirty, start, stop, update };
 }
