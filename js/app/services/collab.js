@@ -10,6 +10,14 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   let active = false;
   let applying = false;
   const userId = (crypto?.randomUUID?.() || (Date.now() + '-' + Math.random().toString(36).slice(2)));
+  
+  // Performance optimization maps
+  const transformLerpMap = new Map(); // Store interpolation state for smooth remote transforms
+  const userAvatars = new Map(); // Store avatar objects for each user
+  const cameraThrottle = createSmartThrottle((cameraData) => {
+    if (applying) return;
+    send('camera', cameraData);
+  });
 
   // Lightweight event listeners for UI integration
   const listeners = { status: new Set(), presence: new Set() };
@@ -32,7 +40,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   function isActive() { return !!active; }
   function isApplyingRemote() { return !!applying; }
 
-  function throttle(fn, ms = 66) { // ~15 Hz
+  function throttle(fn, ms = 66) { // ~15 Hz default
     let t = 0; let lastArgs = null; let pending = false;
     return function(...args){
       const now = Date.now();
@@ -43,6 +51,34 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
       if (!pending) {
         pending = true;
         setTimeout(()=>{ pending = false; t = Date.now(); if (lastArgs) fn.apply(null, lastArgs); lastArgs = null; }, Math.max(0, ms - (now - t)));
+      }
+    };
+  }
+
+  // Create different throttling rates for different interaction types
+  function createSmartThrottle(fn) {
+    const vrThrottle = throttle(fn, 33);    // 30 Hz for VR/AR - smoother hand tracking
+    const desktopThrottle = throttle(fn, 50); // 20 Hz for desktop - good responsiveness
+    const touchThrottle = throttle(fn, 40);   // 25 Hz for touch - mobile-friendly
+    
+    return function(obj, context = 'desktop') {
+      // Auto-detect interaction context if not provided
+      if (!context || context === 'auto') {
+        if (typeof window !== 'undefined' && window.navigator) {
+          if (window.navigator.xr) context = 'vr';
+          else if ('ontouchstart' in window) context = 'touch';
+          else context = 'desktop';
+        }
+      }
+      
+      switch(context) {
+        case 'vr':
+        case 'ar':
+          return vrThrottle(obj);
+        case 'touch':
+          return touchThrottle(obj);
+        default:
+          return desktopThrottle(obj);
       }
     };
   }
@@ -63,12 +99,47 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
         channel.send({ type: 'broadcast', event: 'snapshot', payload: { from: userId, type: 'snapshot', ...snap } });
       } catch {}
     });
-    // Presence sync: update participant count
+    // Presence sync: update participant count and clean up avatars for offline users
     try {
       channel.on('presence', { event: 'sync' }, () => {
         try {
           const state = channel.presenceState?.() || {};
-          let count = 0; try { Object.values(state).forEach(arr => { count += (Array.isArray(arr) ? arr.length : 0); }); } catch{}
+          let count = 0; 
+          const activeUserIds = new Set();
+          
+          try { 
+            Object.values(state).forEach(arr => { 
+              count += (Array.isArray(arr) ? arr.length : 0); 
+              if (Array.isArray(arr)) {
+                arr.forEach(user => {
+                  if (user && user.user_id) activeUserIds.add(user.user_id);
+                });
+              }
+            }); 
+          } catch{}
+          
+          // Remove avatars for users who are no longer present
+          for (const [userId, avatar] of userAvatars.entries()) {
+            if (!activeUserIds.has(userId)) {
+              try {
+                if (avatar.group && avatar.group.parent) {
+                  avatar.group.parent.remove(avatar.group);
+                }
+                avatar.group.traverse(obj => {
+                  if (obj.geometry) obj.geometry.dispose();
+                  if (obj.material) {
+                    if (Array.isArray(obj.material)) {
+                      obj.material.forEach(mat => mat.dispose());
+                    } else {
+                      obj.material.dispose();
+                    }
+                  }
+                });
+              } catch(e) {}
+              userAvatars.delete(userId);
+            }
+          }
+          
           emit('presence', { count, state });
         } catch{}
       });
@@ -87,7 +158,9 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     const kind = msg.type;
     applying = true;
     try {
-      if (kind === 'snapshot') {
+      if (kind === 'camera') {
+      updateUserAvatar(msg.from, msg);
+    } else if (kind === 'snapshot') {
         if (msg.json) {
           try { clearSceneObjects?.(); } catch {}
           try { loadSceneFromJSON?.(msg.json); } catch {}
@@ -125,10 +198,55 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
         if (!obj) return;
         try {
           const p = msg.tr.p, q = msg.tr.q, s = msg.tr.s;
-          if (Array.isArray(p)) obj.position.set(p[0], p[1], p[2]);
-          if (Array.isArray(q)) obj.quaternion.set(q[0], q[1], q[2], q[3]);
-          if (Array.isArray(s)) obj.scale.set(s[0], s[1], s[2]);
-          obj.updateMatrixWorld(true);
+          
+          // Smooth interpolation for better visual experience
+          const smoothTransform = () => {
+            const currentPos = obj.position.clone();
+            const currentQuat = obj.quaternion.clone();
+            const currentScale = obj.scale.clone();
+            
+            let targetPos = Array.isArray(p) ? new THREE.Vector3(p[0], p[1], p[2]) : currentPos;
+            const targetQuat = Array.isArray(q) ? new THREE.Quaternion(q[0], q[1], q[2], q[3]) : currentQuat;
+            const targetScale = Array.isArray(s) ? new THREE.Vector3(s[0], s[1], s[2]) : currentScale;
+            
+            // Enhanced interpolation with velocity prediction
+            const objState = transformLerpMap.get(uuid) || {};
+            if (objState.lastPosition && objState.lastTime) {
+              const deltaTime = (Date.now() - objState.lastTime) / 1000;
+              if (deltaTime > 0 && deltaTime < 0.5) {
+                const velocity = new THREE.Vector3().subVectors(targetPos, objState.lastPosition).divideScalar(deltaTime);
+                // Add small prediction (10% of velocity)
+                const prediction = new THREE.Vector3().copy(velocity).multiplyScalar(deltaTime * 0.1);
+                targetPos.add(prediction);
+              }
+            }
+            
+            // Store state for next prediction
+            transformLerpMap.set(uuid, {
+              ...objState,
+              lastPosition: new THREE.Vector3(p[0], p[1], p[2]),
+              lastTime: Date.now()
+            });
+            
+            // Use lerp for smooth transitions (0.3 = 30% blend per frame)
+            const lerpFactor = 0.3;
+            obj.position.lerp(targetPos, lerpFactor);
+            obj.quaternion.slerp(targetQuat, lerpFactor);
+            obj.scale.lerp(targetScale, lerpFactor);
+            obj.updateMatrixWorld(true);
+            
+            // Continue interpolating if not close enough to target
+            const posDistance = obj.position.distanceTo(targetPos);
+            const quatDistance = obj.quaternion.angleTo(targetQuat);
+            const scaleDistance = obj.scale.distanceTo(targetScale);
+            
+            if (posDistance > 0.001 || quatDistance > 0.01 || scaleDistance > 0.001) {
+              requestAnimationFrame(smoothTransform);
+            }
+          };
+          
+          // Start smooth interpolation instead of instant snap
+          smoothTransform();
         } catch {}
         return;
       }
@@ -166,6 +284,27 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   function leave() {
     try { channel?.unsubscribe(); } catch {}
     channel = null; active = false; isHost = false;
+    
+    // Clean up all user avatars when leaving
+    for (const [userId, avatar] of userAvatars.entries()) {
+      try {
+        if (avatar.group && avatar.group.parent) {
+          avatar.group.parent.remove(avatar.group);
+        }
+        avatar.group.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (Array.isArray(obj.material)) {
+              obj.material.forEach(mat => mat.dispose());
+            } else {
+              obj.material.dispose();
+            }
+          }
+        });
+      } catch(e) {}
+    }
+    userAvatars.clear();
+    
   try { emit('status', 'LEFT'); } catch{}
   try { emit('presence', { count: 0, state: {} }); } catch{}
   }
@@ -192,7 +331,242 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     send('add', { obj: json });
   }
 
-  const onTransform = throttle((obj) => {
+  // Transform cache and delta compression for performance
+  const transformCache = new Map(); // Cache last sent transforms
+  const deltaThreshold = { position: 0.001, rotation: 0.01, scale: 0.001 }; // Minimum change to sync
+  
+  function hasSignificantChange(objId, transform) {
+    const cached = transformCache.get(objId);
+    if (!cached) return true;
+    
+    // Check position delta
+    const posDelta = Math.max(
+      Math.abs(cached.p[0] - transform.p[0]),
+      Math.abs(cached.p[1] - transform.p[1]),
+      Math.abs(cached.p[2] - transform.p[2])
+    );
+    if (posDelta > deltaThreshold.position) return true;
+    
+    // Check quaternion delta (approximate rotation change)
+    const qDelta = Math.max(
+      Math.abs(cached.q[0] - transform.q[0]),
+      Math.abs(cached.q[1] - transform.q[1]),
+      Math.abs(cached.q[2] - transform.q[2]),
+      Math.abs(cached.q[3] - transform.q[3])
+    );
+    if (qDelta > deltaThreshold.rotation) return true;
+    
+    // Check scale delta
+    const scaleDelta = Math.max(
+      Math.abs(cached.s[0] - transform.s[0]),
+      Math.abs(cached.s[1] - transform.s[1]),
+      Math.abs(cached.s[2] - transform.s[2])
+    );
+    if (scaleDelta > deltaThreshold.scale) return true;
+    
+    return false;
+  }
+
+  // User avatar management for camera position sync
+  function createUserAvatar(userId, isVR = false) {
+    if (!findObjectByUUID || !addObjectToScene) return null;
+    
+    const avatarGroup = new THREE.Group();
+    avatarGroup.name = `UserAvatar_${userId}`;
+    avatarGroup.userData.__helper = true; // Mark as helper to exclude from measurements
+    
+    if (isVR) {
+      // VR headset representation - sleek headset shape
+      const headsetGeom = new THREE.BoxGeometry(0.15, 0.08, 0.12);
+      const headsetMat = new THREE.MeshBasicMaterial({ 
+        color: 0x2196F3, 
+        transparent: true, 
+        opacity: 0.8 
+      });
+      const headset = new THREE.Mesh(headsetGeom, headsetMat);
+      headset.position.y = 0.04;
+      avatarGroup.add(headset);
+      
+      // VR controller indicators (small spheres for hands)
+      const controllerGeom = new THREE.SphereGeometry(0.02);
+      const controllerMat = new THREE.MeshBasicMaterial({ 
+        color: 0x4CAF50, 
+        transparent: true, 
+        opacity: 0.7 
+      });
+      
+      const leftController = new THREE.Mesh(controllerGeom, controllerMat);
+      leftController.position.set(-0.3, -0.2, 0.1);
+      leftController.name = 'leftController';
+      avatarGroup.add(leftController);
+      
+      const rightController = new THREE.Mesh(controllerGeom, controllerMat);
+      rightController.position.set(0.3, -0.2, 0.1);
+      rightController.name = 'rightController';
+      avatarGroup.add(rightController);
+      
+    } else {
+      // Desktop camera representation - camera icon
+      const cameraGeom = new THREE.BoxGeometry(0.1, 0.06, 0.08);
+      const cameraMat = new THREE.MeshBasicMaterial({ 
+        color: 0xFF9800, 
+        transparent: true, 
+        opacity: 0.8 
+      });
+      const camera = new THREE.Mesh(cameraGeom, cameraMat);
+      
+      // Add lens (front face)
+      const lensGeom = new THREE.CylinderGeometry(0.025, 0.025, 0.01);
+      const lensMat = new THREE.MeshBasicMaterial({ 
+        color: 0x333333, 
+        transparent: true, 
+        opacity: 0.9 
+      });
+      const lens = new THREE.Mesh(lensGeom, lensMat);
+      lens.rotation.x = Math.PI / 2;
+      lens.position.z = 0.045;
+      camera.add(lens);
+      
+      avatarGroup.add(camera);
+    }
+    
+    // Add floating user ID label
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 256;
+      canvas.height = 64;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(0, 0, 256, 64);
+      ctx.fillStyle = 'white';
+      ctx.font = '24px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(`User ${userId.slice(-4)}`, 128, 40);
+      
+      const texture = new THREE.CanvasTexture(canvas);
+      const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+      const label = new THREE.Sprite(labelMat);
+      label.scale.set(0.4, 0.1, 1);
+      label.position.y = 0.15;
+      avatarGroup.add(label);
+    } catch(e) {
+      console.warn('Could not create user label:', e);
+    }
+    
+    addObjectToScene(avatarGroup);
+    userAvatars.set(userId, { group: avatarGroup, isVR, lastUpdate: Date.now() });
+    
+    return avatarGroup;
+  }
+
+  function updateUserAvatar(fromUserId, cameraData) {
+    if (!cameraData || fromUserId === userId) return; // Don't show our own avatar
+    
+    // Avatar visibility rules:
+    // - VR users only see desktop user avatars (not other VR users)
+    // - Desktop users see all avatars (VR and desktop)
+    const isVRViewer = window.renderer && window.renderer.xr && window.renderer.xr.isPresenting;
+    const isVRAvatar = cameraData.type === 'vr';
+    
+    if (isVRViewer && isVRAvatar) {
+      // VR user viewing another VR user - don't show avatar
+      return;
+    }
+    
+    let avatar = userAvatars.get(fromUserId);
+    const isVR = cameraData.type === 'vr';
+    
+    // Create avatar if it doesn't exist or type changed
+    if (!avatar || avatar.isVR !== isVR) {
+      if (avatar && avatar.group) {
+        // Remove old avatar
+        try { 
+          if (avatar.group.parent) avatar.group.parent.remove(avatar.group);
+          avatar.group.traverse(obj => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach(mat => mat.dispose());
+              } else {
+                obj.material.dispose();
+              }
+            }
+          });
+        } catch(e) {}
+      }
+      avatar = { group: createUserAvatar(fromUserId, isVR), isVR, lastUpdate: Date.now() };
+      if (!avatar.group) return;
+    }
+    
+    const group = avatar.group;
+    if (!group) return;
+    
+    // Update position and rotation
+    if (cameraData.position) {
+      group.position.set(cameraData.position[0], cameraData.position[1], cameraData.position[2]);
+    }
+    
+    if (cameraData.rotation) {
+      group.quaternion.set(
+        cameraData.rotation[0], 
+        cameraData.rotation[1], 
+        cameraData.rotation[2], 
+        cameraData.rotation[3]
+      );
+    }
+    
+    // Update VR controller positions if available
+    if (isVR && cameraData.controllers) {
+      const leftController = group.getObjectByName('leftController');
+      const rightController = group.getObjectByName('rightController');
+      
+      if (leftController && cameraData.controllers.left) {
+        const pos = cameraData.controllers.left.position;
+        const rot = cameraData.controllers.left.rotation;
+        if (pos) leftController.position.set(pos[0], pos[1], pos[2]);
+        if (rot) leftController.quaternion.set(rot[0], rot[1], rot[2], rot[3]);
+      }
+      
+      if (rightController && cameraData.controllers.right) {
+        const pos = cameraData.controllers.right.position;
+        const rot = cameraData.controllers.right.rotation;
+        if (pos) rightController.position.set(pos[0], pos[1], pos[2]);
+        if (rot) rightController.quaternion.set(rot[0], rot[1], rot[2], rot[3]);
+      }
+    }
+    
+    avatar.lastUpdate = Date.now();
+    userAvatars.set(fromUserId, avatar);
+  }
+
+  function cleanupOldAvatars() {
+    const now = Date.now();
+    const TIMEOUT = 30000; // 30 seconds
+    
+    for (const [userId, avatar] of userAvatars.entries()) {
+      if (now - avatar.lastUpdate > TIMEOUT) {
+        // Remove old avatar
+        try {
+          if (avatar.group && avatar.group.parent) {
+            avatar.group.parent.remove(avatar.group);
+          }
+          avatar.group.traverse(obj => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach(mat => mat.dispose());
+              } else {
+                obj.material.dispose();
+              }
+            }
+          });
+        } catch(e) {}
+        userAvatars.delete(userId);
+      }
+    }
+  }
+
+  const onTransform = createSmartThrottle((obj, context) => {
     if (!obj || applying) return;
     const u = obj.uuid;
     if (!u) return;
@@ -200,9 +574,17 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
       const p = [obj.position.x, obj.position.y, obj.position.z];
       const q = [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w];
       const s = [obj.scale.x, obj.scale.y, obj.scale.z];
-      send('transform', { uuid: u, tr: { p, q, s } });
+      const transform = { p, q, s };
+      
+      // Only send if there's a significant change (delta compression)
+      if (!hasSignificantChange(u, transform)) return;
+      
+      // Cache the transform we're sending
+      transformCache.set(u, transform);
+      
+      send('transform', { uuid: u, tr: transform, context });
     } catch {}
-  }, 66);
+  });
 
   function onDelete(obj) {
     if (!obj || applying) return;
@@ -217,5 +599,22 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
     try { send('overlay', { overlay: data }); } catch {}
   }
 
-  return { host, join, leave, isActive, isApplyingRemote, onAdd, onTransform, onDelete, onOverlay };
+  // Camera position sync for user avatars
+  function onCameraUpdate(cameraData) {
+    if (!cameraData || applying) return;
+    try { 
+      cameraThrottle({
+        type: cameraData.type || 'desktop',
+        position: cameraData.position,
+        rotation: cameraData.rotation,
+        controllers: cameraData.controllers || null,
+        timestamp: Date.now()
+      }); 
+    } catch {}
+  }
+
+  // Cleanup old avatars periodically
+  setInterval(cleanupOldAvatars, 10000); // Every 10 seconds
+
+  return { host, join, leave, isActive, isApplyingRemote, onAdd, onTransform, onDelete, onOverlay, onCameraUpdate };
 }

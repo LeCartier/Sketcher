@@ -17,6 +17,7 @@
 		let color = 0xff0000; // red linework
 		let minSegmentDist = 0.01; // 1 cm
 		let maxPointsPerStroke = 5000;
+		let onLineCreated = null; // callback when new line is added
 		// fingertip markers
 		const tipMarkers = new Map(); // src -> mesh
 		function setEnabled(v){
@@ -26,6 +27,7 @@
 		function isActive(){ return !!enabled; }
 		function clear(){ try { while(group.children.length){ const c=group.children.pop(); c.geometry?.dispose?.(); c.material?.dispose?.(); } } catch{} }
 		function setColor(hex){ color = hex; }
+		function setOnLineCreated(fn){ onLineCreated = fn; }
 		function startStroke(pt){
 			points = [pt.clone()];
 			currentGeom = new THREE.BufferGeometry();
@@ -35,6 +37,8 @@
 			currentStroke.frustumCulled = false;
 			currentStroke.userData.__helper = true;
 			group.add(currentStroke);
+			// Notify callback of new line creation
+			if (onLineCreated) try { onLineCreated(currentStroke); } catch{}
 		}
 		function addPoint(pt){
 			if (!currentGeom || !points.length) return;
@@ -99,7 +103,7 @@
 				triggerPrev.set(src, pinching);
 			}
 		}
-		return { group, setEnabled, isActive, clear, setColor, update };
+		return { group, setEnabled, isActive, clear, setColor, setOnLineCreated, update };
 	}
 	try { window.createVRDraw = createVRDraw; } catch{}
 })();

@@ -108,6 +108,8 @@ export async function init() {
 	let orthoCamera = null;
 	const renderer = new THREE.WebGLRenderer({ antialias:true, logarithmicDepthBuffer: true, alpha: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+	// Make renderer globally available for collaboration avatar visibility logic
+	window.renderer = renderer;
 	// Prefer VisualViewport for accurate iOS dynamic viewport sizing
 	const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
 	const sizeW = vv ? Math.round(vv.width) : window.innerWidth;
@@ -635,7 +637,10 @@ export async function init() {
 				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ try { if (!xrHud3D) return true; // no hud yet
 					const hudVisible = xrHud3D.visible === true;
 					const primsOpen = (typeof primsMenu!=='undefined' && primsMenu && primsMenu.visible===true);
-					return !hudVisible && !primsOpen && !window.__xrPrim; } catch{} return true; } }); } catch{}
+					return !hudVisible && !primsOpen && !window.__xrPrim; } catch{} return true; } }); 
+					// Connect VR draw to collaboration
+					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
+				} catch{}
 				const bDraw = xrHud.createDraw3DButton(()=>{ try { if (!vrDraw) return; const on = !vrDraw.isActive(); vrDraw.setEnabled(on); setHudButtonActiveByLabel('Draw', on); if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); } catch{} });
 				xrHudButtons.push(bDraw);
 			// --- Room status feedback (VR) ---
@@ -1957,7 +1962,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				} catch{}
 				if (asHost) await collab.host(room); else await collab.join(room);
 				// Bridge XR/VR AR edit transforms to collaboration (live sync of object motions)
-				try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj); } catch{} }); } catch{}
+				try { if (arEdit && arEdit.setOnTransform) arEdit.setOnTransform(obj=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(obj, 'vr'); } catch{} }); } catch{}
 				// Tiny status badge in version area
 				try {
 					const el = document.getElementById('version-badge');
@@ -5240,6 +5245,68 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				}
 			}
 			renderer.render(scene, camera);
+			
+			// Camera position sync for collaboration (VR and desktop)
+			try {
+				if (collab && collab.isActive && collab.isActive() && collab.onCameraUpdate) {
+					const now = performance.now();
+					if (!window.__lastCameraSync || now - window.__lastCameraSync > 100) { // 10Hz camera sync
+						window.__lastCameraSync = now;
+						
+						const inXR = renderer.xr && renderer.xr.isPresenting;
+						if (inXR) {
+							// VR camera and controller tracking
+							const xrCam = renderer.xr.getCamera(camera);
+							if (xrCam) {
+								const camPos = new THREE.Vector3();
+								const camQuat = new THREE.Quaternion();
+								xrCam.getWorldPosition(camPos);
+								xrCam.getWorldQuaternion(camQuat);
+								
+								const cameraData = {
+									type: 'vr',
+									position: [camPos.x, camPos.y, camPos.z],
+									rotation: [camQuat.x, camQuat.y, camQuat.z, camQuat.w]
+								};
+								
+								// Add controller positions if available
+								if (session && session.inputSources) {
+									const controllers = {};
+									for (const source of session.inputSources) {
+										if (!source.gamepad || !source.targetRaySpace) continue;
+										const pose = frame.getPose(source.targetRaySpace, xrLocalSpace || xrViewerSpace);
+										if (pose) {
+											const hand = source.handedness === 'left' ? 'left' : 'right';
+											controllers[hand] = {
+												position: [pose.transform.position.x, pose.transform.position.y, pose.transform.position.z],
+												rotation: [pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w]
+											};
+										}
+									}
+									if (Object.keys(controllers).length > 0) {
+										cameraData.controllers = controllers;
+									}
+								}
+								
+								collab.onCameraUpdate(cameraData);
+							}
+						} else {
+							// Desktop camera tracking
+							const camPos = camera.position;
+							const camQuat = camera.quaternion;
+							
+							collab.onCameraUpdate({
+								type: 'desktop',
+								position: [camPos.x, camPos.y, camPos.z],
+								rotation: [camQuat.x, camQuat.y, camQuat.z, camQuat.w]
+							});
+						}
+					}
+				}
+			} catch(e) {
+				// Silently handle camera sync errors to avoid disrupting rendering
+			}
+			
 			// Update HUD status about depth availability (XR only)
 			try {
 				const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
