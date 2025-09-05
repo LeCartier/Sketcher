@@ -17,6 +17,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let xrHoverBySource = new WeakMap();
   let xrPressedSources = new WeakSet();
   const raycaster = new THREE.Raycaster();
+  // Global cooldown to prevent accidental clicks after menu transitions
+  let globalClickCooldownUntil = 0;
   // Simple viz for hands and right-controller ray
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
   let handVizMode = null; // 'default' | 'hands-only'
@@ -109,6 +111,568 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     mesh.add(flash); mesh.userData.__flash = flash;
     function setLabel(next){ try { const t=makeButtonTexture(next); if (mesh.material?.map?.dispose) mesh.material.map.dispose(); mesh.material.map=t; mesh.material.needsUpdate=true; mesh.userData.__hudButton.label=next; } catch{} }
     return { mesh, onClick, setLabel };
+  }
+
+  function createPrimitive3DButton(primitiveType, onClick) {
+    // Create a group to hold the 3D primitive and background
+    const buttonGroup = new THREE.Group();
+    buttonGroup.userData.__hudButton = { label: primitiveType, onClick, base: null, hover: null };
+    
+    // Background panel (similar to text button)
+    const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
+    const bgMat = new THREE.MeshBasicMaterial({ 
+      color: 0x333333, 
+      transparent: true, 
+      opacity: 0.8, 
+      depthTest: false, 
+      depthWrite: false 
+    });
+    const bgMesh = new THREE.Mesh(bgGeom, bgMat);
+    bgMesh.renderOrder = 10000;
+    buttonGroup.add(bgMesh);
+    
+    // 3D primitive icon (smaller scale to fit in button)
+    const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.35; // 35% of button size
+    let primitiveMesh;
+    
+    // Create primitive geometry based on type
+    switch(primitiveType.toLowerCase()) {
+      case 'box':
+        primitiveMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale, iconScale, iconScale),
+          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+        );
+        break;
+      case 'sphere':
+        primitiveMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.5, 12, 8),
+          new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false })
+        );
+        break;
+      case 'cylinder':
+        primitiveMesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(iconScale * 0.4, iconScale * 0.4, iconScale, 12),
+          new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false })
+        );
+        break;
+      case 'cone':
+        primitiveMesh = new THREE.Mesh(
+          new THREE.ConeGeometry(iconScale * 0.4, iconScale, 12),
+          new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+        );
+        break;
+      default:
+        // Fallback to a simple cube
+        primitiveMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale, iconScale, iconScale),
+          new THREE.MeshBasicMaterial({ color: 0x888888, depthTest: false, depthWrite: false })
+        );
+    }
+    
+    if (primitiveMesh) {
+      primitiveMesh.renderOrder = 10001;
+      primitiveMesh.position.z = 0.001; // Slightly forward from background
+      
+      // Add subtle rotation for better 3D visibility
+      primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
+      primitiveMesh.rotation.y = Math.PI * 0.15; // 27 degrees
+      
+      buttonGroup.add(primitiveMesh);
+    }
+    
+    // Flash overlay for click feedback
+    const flashGeom = bgGeom.clone();
+    const flashMat = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff, 
+      transparent: true, 
+      opacity: 0, 
+      depthTest: false, 
+      depthWrite: false, 
+      blending: THREE.AdditiveBlending 
+    });
+    const flash = new THREE.Mesh(flashGeom, flashMat);
+    flash.name = 'hud-flash';
+    flash.renderOrder = 10002;
+    flash.scale.set(1.05, 1.05, 1);
+    flash.position.z = 0.002;
+    buttonGroup.add(flash);
+    buttonGroup.userData.__flash = flash;
+    
+    // Store materials for hover effects
+    const baseBgMat = bgMat.clone();
+    const hoverBgMat = bgMat.clone();
+    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    
+    buttonGroup.userData.__hudButton.base = baseBgMat;
+    buttonGroup.userData.__hudButton.hover = hoverBgMat;
+    
+    // Function to update appearance (not really needed for 3D buttons but kept for compatibility)
+    function setLabel(next) {
+      // 3D buttons don't change labels, but keep this for interface compatibility
+      buttonGroup.userData.__hudButton.label = next;
+    }
+    
+    return { mesh: buttonGroup, onClick, setLabel };
+  }
+
+  function createDraw3DButton(onClick) {
+    // Create a group to hold the 3D draw icon and background
+    const buttonGroup = new THREE.Group();
+    buttonGroup.userData.__hudButton = { label: 'Draw', onClick, base: null, hover: null };
+    
+    // Background panel (similar to primitive buttons)
+    const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
+    const bgMat = new THREE.MeshBasicMaterial({ 
+      color: 0x333333, 
+      transparent: true, 
+      opacity: 0.8, 
+      depthTest: false, 
+      depthWrite: false 
+    });
+    const bgMesh = new THREE.Mesh(bgGeom, bgMat);
+    bgMesh.renderOrder = 10000;
+    buttonGroup.add(bgMesh);
+    
+    // 3D draw icon: create a pencil/pen shape
+    const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.4; // 40% of button size
+    const drawIconGroup = new THREE.Group();
+    
+    // Pencil body (cylinder)
+    const bodyGeom = new THREE.CylinderGeometry(iconScale * 0.08, iconScale * 0.08, iconScale * 0.8, 8);
+    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffa500, depthTest: false, depthWrite: false }); // Orange
+    const bodyMesh = new THREE.Mesh(bodyGeom, bodyMat);
+    bodyMesh.renderOrder = 10001;
+    drawIconGroup.add(bodyMesh);
+    
+    // Pencil tip (cone)
+    const tipGeom = new THREE.ConeGeometry(iconScale * 0.08, iconScale * 0.2, 8);
+    const tipMat = new THREE.MeshBasicMaterial({ color: 0x444444, depthTest: false, depthWrite: false }); // Dark gray
+    const tipMesh = new THREE.Mesh(tipGeom, tipMat);
+    tipMesh.position.y = -iconScale * 0.5; // Position at bottom of pencil
+    tipMesh.renderOrder = 10001;
+    drawIconGroup.add(tipMesh);
+    
+    // Small drawing line/squiggle to indicate drawing action
+    const linePoints = [
+      new THREE.Vector3(-iconScale * 0.2, -iconScale * 0.7, 0.002),
+      new THREE.Vector3(-iconScale * 0.1, -iconScale * 0.75, 0.002),
+      new THREE.Vector3(0, -iconScale * 0.7, 0.002),
+      new THREE.Vector3(iconScale * 0.1, -iconScale * 0.75, 0.002),
+      new THREE.Vector3(iconScale * 0.2, -iconScale * 0.7, 0.002)
+    ];
+    const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xff6666, linewidth: 3, depthTest: false, depthWrite: false }); // Red
+    const lineMesh = new THREE.Line(lineGeom, lineMat);
+    lineMesh.renderOrder = 10001;
+    drawIconGroup.add(lineMesh);
+    
+    // Position and rotate the entire draw icon for better visibility
+    drawIconGroup.position.z = 0.001; // Slightly forward from background
+    drawIconGroup.rotation.x = Math.PI * 0.1;  // 18 degrees
+    drawIconGroup.rotation.z = Math.PI * 0.1;  // Slight angle like holding a pencil
+    
+    buttonGroup.add(drawIconGroup);
+    
+    // Flash overlay for click feedback
+    const flashGeom = bgGeom.clone();
+    const flashMat = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff, 
+      transparent: true, 
+      opacity: 0, 
+      depthTest: false, 
+      depthWrite: false, 
+      blending: THREE.AdditiveBlending 
+    });
+    const flash = new THREE.Mesh(flashGeom, flashMat);
+    flash.name = 'hud-flash';
+    flash.renderOrder = 10002;
+    flash.scale.set(1.05, 1.05, 1);
+    flash.position.z = 0.002;
+    buttonGroup.add(flash);
+    buttonGroup.userData.__flash = flash;
+    
+    // Store materials for hover effects
+    const baseBgMat = bgMat.clone();
+    const hoverBgMat = bgMat.clone();
+    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    
+    buttonGroup.userData.__hudButton.base = baseBgMat;
+    buttonGroup.userData.__hudButton.hover = hoverBgMat;
+    
+    // Function to update appearance
+    function setLabel(next) {
+      // 3D buttons don't change labels, but keep this for interface compatibility
+      buttonGroup.userData.__hudButton.label = next;
+    }
+    
+    return { mesh: buttonGroup, onClick, setLabel };
+  }
+
+  function createTile3DButton(label, onClick) {
+    // Create a group to hold the 3D icon and tile background
+    const buttonGroup = new THREE.Group();
+    buttonGroup.userData.__hudButton = { label, onClick, base: null, hover: null };
+    
+    // Tile background (maintains the existing aesthetic)
+    const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
+    const bgMat = new THREE.MeshBasicMaterial({ 
+      color: 0x333333, 
+      transparent: true, 
+      opacity: 0.9, 
+      depthTest: false, 
+      depthWrite: false 
+    });
+    const bgMesh = new THREE.Mesh(bgGeom, bgMat);
+    bgMesh.renderOrder = 10000;
+    buttonGroup.add(bgMesh);
+    
+    // Create 3D icon based on button label
+    const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.25; // Smaller for tiles
+    const iconGroup = new THREE.Group();
+    
+    // Add label text (small, at bottom of tile)
+    const textScale = iconScale * 0.3;
+    const textCanvas = document.createElement('canvas');
+    textCanvas.width = 128; textCanvas.height = 32;
+    const textCtx = textCanvas.getContext('2d');
+    textCtx.fillStyle = '#ffffff';
+    textCtx.font = '16px Arial';
+    textCtx.textAlign = 'center';
+    textCtx.textBaseline = 'middle';
+    textCtx.fillText(label, 64, 16);
+    
+    const textTexture = new THREE.CanvasTexture(textCanvas);
+    const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.8, BUTTON_H * 0.2);
+    const textMat = new THREE.MeshBasicMaterial({ 
+      map: textTexture, 
+      transparent: true, 
+      depthTest: false, 
+      depthWrite: false 
+    });
+    const textMesh = new THREE.Mesh(textGeom, textMat);
+    textMesh.position.y = -BUTTON_H * 0.3;
+    textMesh.position.z = 0.002;
+    textMesh.renderOrder = 10001;
+    buttonGroup.add(textMesh);
+    
+    // Create specific 3D icons based on label
+    let iconMesh;
+    switch(label.toLowerCase()) {
+      case '1:1':
+        // Scale icon: two connected cubes of different sizes
+        const cube1 = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale * 0.6, iconScale * 0.6, iconScale * 0.6),
+          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+        );
+        const cube2 = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale * 0.4, iconScale * 0.4, iconScale * 0.4),
+          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+        );
+        cube1.position.x = -iconScale * 0.3;
+        cube2.position.x = iconScale * 0.3;
+        iconGroup.add(cube1, cube2);
+        break;
+        
+      case 'fit':
+        // Fit icon: arrows pointing inward
+        const arrowGeom = new THREE.ConeGeometry(iconScale * 0.1, iconScale * 0.3, 6);
+        const arrowMat = new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false });
+        const arrow1 = new THREE.Mesh(arrowGeom, arrowMat);
+        const arrow2 = new THREE.Mesh(arrowGeom, arrowMat);
+        arrow1.position.x = -iconScale * 0.4; arrow1.rotation.z = Math.PI / 2;
+        arrow2.position.x = iconScale * 0.4; arrow2.rotation.z = -Math.PI / 2;
+        iconGroup.add(arrow1, arrow2);
+        break;
+        
+      case 'reset':
+        // Reset icon: circular arrow
+        const torusGeom = new THREE.TorusGeometry(iconScale * 0.4, iconScale * 0.08, 8, 16);
+        const torusMat = new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false });
+        iconMesh = new THREE.Mesh(torusGeom, torusMat);
+        break;
+        
+      case 'grab':
+        // Grab icon: hand shape (simplified as sphere with fingers)
+        const handSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.3, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+        );
+        iconGroup.add(handSphere);
+        // Add finger cylinders
+        for (let i = 0; i < 5; i++) {
+          const finger = new THREE.Mesh(
+            new THREE.CylinderGeometry(iconScale * 0.04, iconScale * 0.04, iconScale * 0.2, 6),
+            new THREE.MeshBasicMaterial({ color: 0xffaa66, depthTest: false, depthWrite: false })
+          );
+          finger.position.x = (i - 2) * iconScale * 0.15;
+          finger.position.y = iconScale * 0.2;
+          iconGroup.add(finger);
+        }
+        break;
+        
+      case 'objects':
+        // Objects icon: multiple small cubes
+        for (let i = 0; i < 3; i++) {
+          const cube = new THREE.Mesh(
+            new THREE.BoxGeometry(iconScale * 0.25, iconScale * 0.25, iconScale * 0.25),
+            new THREE.MeshBasicMaterial({ color: 0x88aaff, depthTest: false, depthWrite: false })
+          );
+          cube.position.x = (i - 1) * iconScale * 0.4;
+          cube.position.y = Math.sin(i) * iconScale * 0.2;
+          iconGroup.add(cube);
+        }
+        break;
+        
+      case 'lock ground':
+        // Lock icon: padlock shape
+        const lockBody = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale * 0.4, iconScale * 0.3, iconScale * 0.2),
+          new THREE.MeshBasicMaterial({ color: 0xffdd00, depthTest: false, depthWrite: false })
+        );
+        const lockShackle = new THREE.Mesh(
+          new THREE.TorusGeometry(iconScale * 0.2, iconScale * 0.05, 6, 12, Math.PI),
+          new THREE.MeshBasicMaterial({ color: 0xffdd00, depthTest: false, depthWrite: false })
+        );
+        lockShackle.position.y = iconScale * 0.2;
+        lockShackle.rotation.x = Math.PI;
+        iconGroup.add(lockBody, lockShackle);
+        break;
+        
+      case 'mat':
+        // Material icon: textured plane
+        const matPlane = new THREE.Mesh(
+          new THREE.PlaneGeometry(iconScale * 0.6, iconScale * 0.6),
+          new THREE.MeshBasicMaterial({ color: 0xff88aa, depthTest: false, depthWrite: false })
+        );
+        matPlane.rotation.x = -Math.PI * 0.2;
+        iconGroup.add(matPlane);
+        break;
+        
+      case 'align tile':
+        // Align icon: grid pattern
+        for (let x = -1; x <= 1; x++) {
+          for (let y = -1; y <= 1; y++) {
+            const dot = new THREE.Mesh(
+              new THREE.SphereGeometry(iconScale * 0.06, 6, 4),
+              new THREE.MeshBasicMaterial({ color: 0x88ff88, depthTest: false, depthWrite: false })
+            );
+            dot.position.x = x * iconScale * 0.2;
+            dot.position.y = y * iconScale * 0.2;
+            iconGroup.add(dot);
+          }
+        }
+        break;
+        
+      case 'fingers':
+        // Fingers icon: hand visualization
+        const palmSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.15, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthTest: false, depthWrite: false })
+        );
+        iconGroup.add(palmSphere);
+        // Fingertip spheres
+        for (let i = 0; i < 5; i++) {
+          const tip = new THREE.Mesh(
+            new THREE.SphereGeometry(iconScale * 0.05, 6, 4),
+            new THREE.MeshBasicMaterial({ color: 0x00e0ff, depthTest: false, depthWrite: false })
+          );
+          const angle = (i - 2) * 0.3;
+          tip.position.x = Math.sin(angle) * iconScale * 0.4;
+          tip.position.y = Math.cos(angle) * iconScale * 0.4;
+          iconGroup.add(tip);
+        }
+        break;
+        
+      case 'host':
+        // Host icon: broadcast/signal waves
+        for (let i = 1; i <= 3; i++) {
+          const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(iconScale * 0.15 * i, iconScale * 0.03, 6, 12),
+            new THREE.MeshBasicMaterial({ 
+              color: 0x00ff88, 
+              transparent: true, 
+              opacity: 1 - (i * 0.2),
+              depthTest: false, 
+              depthWrite: false 
+            })
+          );
+          iconGroup.add(ring);
+        }
+        break;
+        
+      case 'join':
+        // Join icon: connecting arrows
+        const centerSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.1, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x88ff00, depthTest: false, depthWrite: false })
+        );
+        iconGroup.add(centerSphere);
+        for (let i = 0; i < 4; i++) {
+          const arrow = new THREE.Mesh(
+            new THREE.ConeGeometry(iconScale * 0.06, iconScale * 0.2, 6),
+            new THREE.MeshBasicMaterial({ color: 0x88ff00, depthTest: false, depthWrite: false })
+          );
+          const angle = i * Math.PI / 2;
+          arrow.position.x = Math.cos(angle) * iconScale * 0.3;
+          arrow.position.y = Math.sin(angle) * iconScale * 0.3;
+          arrow.rotation.z = -angle + Math.PI / 2;
+          iconGroup.add(arrow);
+        }
+        break;
+        
+      case 'prims':
+        // Primitives icon: basic shapes
+        const primCube = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale * 0.2, iconScale * 0.2, iconScale * 0.2),
+          new THREE.MeshBasicMaterial({ color: 0x66aaff, depthTest: false, depthWrite: false })
+        );
+        const primSphere = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.1, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false })
+        );
+        primCube.position.x = -iconScale * 0.2;
+        primSphere.position.x = iconScale * 0.2;
+        iconGroup.add(primCube, primSphere);
+        break;
+        
+      case 'back':
+        // Back icon: left-pointing arrow
+        const backArrow = new THREE.Mesh(
+          new THREE.ConeGeometry(iconScale * 0.15, iconScale * 0.4, 6),
+          new THREE.MeshBasicMaterial({ color: 0xaaaaaa, depthTest: false, depthWrite: false })
+        );
+        backArrow.rotation.z = Math.PI / 2; // Point left
+        iconGroup.add(backArrow);
+        break;
+        
+      default:
+        // Default icon: simple cube
+        iconMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale, iconScale, iconScale),
+          new THREE.MeshBasicMaterial({ color: 0x888888, depthTest: false, depthWrite: false })
+        );
+    }
+    
+    if (iconMesh) {
+      iconGroup.add(iconMesh);
+    }
+    
+    if (iconGroup.children.length > 0) {
+      iconGroup.position.y = BUTTON_H * 0.1; // Position above text
+      iconGroup.position.z = 0.001; // Slightly forward from background
+      
+      // Add subtle rotation for better 3D visibility
+      iconGroup.rotation.x = Math.PI * 0.05;  // 9 degrees
+      iconGroup.rotation.y = Math.PI * 0.08; // 14.4 degrees
+      
+      iconGroup.renderOrder = 10001;
+      buttonGroup.add(iconGroup);
+    }
+    
+    // Flash overlay for click feedback
+    const flashGeom = bgGeom.clone();
+    const flashMat = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff, 
+      transparent: true, 
+      opacity: 0, 
+      depthTest: false, 
+      depthWrite: false, 
+      blending: THREE.AdditiveBlending 
+    });
+    const flash = new THREE.Mesh(flashGeom, flashMat);
+    flash.name = 'hud-flash';
+    flash.renderOrder = 10002;
+    flash.scale.set(1.05, 1.05, 1);
+    flash.position.z = 0.002;
+    buttonGroup.add(flash);
+    buttonGroup.userData.__flash = flash;
+    
+    // Store materials for hover effects
+    const baseBgMat = bgMat.clone();
+    const hoverBgMat = bgMat.clone();
+    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    
+    buttonGroup.userData.__hudButton.base = baseBgMat;
+    buttonGroup.userData.__hudButton.hover = hoverBgMat;
+    
+    // Function to update label
+    function setLabel(next) {
+      buttonGroup.userData.__hudButton.label = next;
+      // Update text mesh
+      textCtx.clearRect(0, 0, 128, 32);
+      textCtx.fillText(next, 64, 16);
+      textTexture.needsUpdate = true;
+    }
+    
+    // Function to add/update status indicator (like green dot)
+    function setStatusIndicator(show, color = 0x00ff00) {
+      // Remove existing indicator
+      const existingIndicator = buttonGroup.children.find(child => child.name === 'statusIndicator');
+      if (existingIndicator) {
+        buttonGroup.remove(existingIndicator);
+        if (existingIndicator.geometry) existingIndicator.geometry.dispose();
+        if (existingIndicator.material) existingIndicator.material.dispose();
+      }
+      
+      if (show) {
+        // Add green dot indicator
+        const dotGeom = new THREE.SphereGeometry(iconScale * 0.1, 8, 6);
+        const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false });
+        const dot = new THREE.Mesh(dotGeom, dotMat);
+        dot.name = 'statusIndicator';
+        dot.position.set(BUTTON_W * 0.35, BUTTON_H * 0.35, 0.003); // Top right corner
+        dot.renderOrder = 10003;
+        buttonGroup.add(dot);
+      }
+    }
+    
+    // Function to add/update user count badge
+    function setUserCount(count) {
+      // Remove existing count badge
+      const existingBadge = buttonGroup.children.find(child => child.name === 'userCountBadge');
+      if (existingBadge) {
+        buttonGroup.remove(existingBadge);
+        if (existingBadge.geometry) existingBadge.geometry.dispose();
+        if (existingBadge.material && existingBadge.material.map) existingBadge.material.map.dispose();
+        if (existingBadge.material) existingBadge.material.dispose();
+      }
+      
+      if (count && count > 1) {
+        // Create count badge
+        const badgeCanvas = document.createElement('canvas');
+        badgeCanvas.width = 64; badgeCanvas.height = 64;
+        const badgeCtx = badgeCanvas.getContext('2d');
+        
+        // Draw badge background (circle)
+        badgeCtx.fillStyle = '#ff4444';
+        badgeCtx.beginPath();
+        badgeCtx.arc(32, 32, 30, 0, Math.PI * 2);
+        badgeCtx.fill();
+        
+        // Draw count text
+        badgeCtx.fillStyle = '#ffffff';
+        badgeCtx.font = 'bold 24px Arial';
+        badgeCtx.textAlign = 'center';
+        badgeCtx.textBaseline = 'middle';
+        badgeCtx.fillText(String(count), 32, 32);
+        
+        const badgeTexture = new THREE.CanvasTexture(badgeCanvas);
+        const badgeGeom = new THREE.PlaneGeometry(BUTTON_W * 0.25, BUTTON_W * 0.25);
+        const badgeMat = new THREE.MeshBasicMaterial({ 
+          map: badgeTexture, 
+          transparent: true, 
+          depthTest: false, 
+          depthWrite: false 
+        });
+        const badge = new THREE.Mesh(badgeGeom, badgeMat);
+        badge.name = 'userCountBadge';
+        badge.position.set(-BUTTON_W * 0.35, BUTTON_H * 0.35, 0.003); // Top left corner
+        badge.renderOrder = 10003;
+        buttonGroup.add(badge);
+      }
+    }
+    
+    return { mesh: buttonGroup, onClick, setLabel, setStatusIndicator, setUserCount };
   }
 
   function ensureHandViz() {
@@ -412,7 +976,26 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // Gather current HUD button meshes dynamically. Only include visible meshes to avoid mis-hits.
   const hudTargets = [];
   try {
-    if (hud) hud.traverse(o=>{ if (o && o.isMesh && o.visible && o.userData && o.userData.__hudButton) hudTargets.push(o); });
+    if (hud) hud.traverse(o=>{ 
+      if (o && o.userData && o.userData.__hudButton) {
+        // Include both meshes (text buttons) and groups (3D primitive buttons)
+        if (o.isMesh || o.isGroup) {
+          // Check if this object and all its ancestors are visible
+          let isFullyVisible = o.visible;
+          let parent = o.parent;
+          while (parent && isFullyVisible) {
+            if (parent.visible === false) {
+              isFullyVisible = false;
+              break;
+            }
+            parent = parent.parent;
+          }
+          if (isFullyVisible) {
+            hudTargets.push(o);
+          }
+        }
+      }
+    });
   } catch{}
   // If primitives submenu open, raise its buttons' priority by sorting (renderOrder already set),
   // and rely on visibility of main menu buttons being false. As a safety, move submenu meshes to front.
@@ -434,7 +1017,19 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w));
           raycaster.set(origin, dir);
           const hits=raycaster.intersectObjects(hudTargets,true);
-          const top = hits && hits.length ? hits[0].object : null;
+          let top = hits && hits.length ? hits[0].object : null;
+          
+          // If we hit a child of a 3D button group, find the parent group with __hudButton
+          if (top && !top.userData.__hudButton) {
+            let parent = top.parent;
+            while (parent && !parent.userData.__hudButton) {
+              parent = parent.parent;
+            }
+            if (parent && parent.userData.__hudButton) {
+              top = parent;
+            }
+          }
+          
           xrHoverBySource.set(src, top);
           if (top) hovered.add(top);
           if (top && src.gamepad) controllerHoveringHUD = true;
@@ -443,8 +1038,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             const pressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
             const prev = update.__xrTriggerPrev.get(src) === true;
             if (pressed && !prev && top){
-              const handler = top.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
-              try { const fl = top.userData && top.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch{}
+              // Check global cooldown to prevent accidental clicks after menu transitions
+              const now = performance.now();
+              if (now >= globalClickCooldownUntil) {
+                const handler = top.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
+                try { const fl = top.userData && top.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch{}
+              }
             }
             update.__xrTriggerPrev.set(src, pressed);
           }
@@ -472,7 +1071,21 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     let hudHit = null, discHit = null, bestScene = null; // bestScene: { point, normal, obj, dist }
     try {
       const hudHits = raycaster.intersectObjects(hudTargets, true);
-      if (hudHits && hudHits.length) hudHit = hudHits[0];
+      if (hudHits && hudHits.length) {
+        hudHit = hudHits[0];
+        
+        // If we hit a child of a 3D button group, find the parent group with __hudButton
+        if (hudHit.object && !hudHit.object.userData.__hudButton) {
+          let parent = hudHit.object.parent;
+          while (parent && !parent.userData.__hudButton) {
+            parent = parent.parent;
+          }
+          if (parent && parent.userData.__hudButton) {
+            // Create a new hit object with the correct target
+            hudHit = { ...hudHit, object: parent };
+          }
+        }
+      }
     } catch{}
     try {
       // Build disc target list including children (plane + ring)
@@ -693,10 +1306,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             if (within) { hovered.add(m); if (!fingerHover) fingerHover = m; }
             // onPress transition: fire onClick once and set cooldown
             if (!st.pressed && pressedNow){
-              const handler = m.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
-              st._cooldownUntil = now + 180; // ms
-              // Trigger flash overlay
-              try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
+              // Check global cooldown to prevent accidental clicks after menu transitions
+              const globalNow = performance.now();
+              if (globalNow >= globalClickCooldownUntil) {
+                const handler = m.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
+                st._cooldownUntil = now + 180; // ms
+                // Trigger flash overlay
+                try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
+              }
             }
             st.pressed = pressedNow;
             // Fade flash overlay each frame
@@ -705,7 +1322,29 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         } catch {}
 
   // Apply hover highlight for any hovered (ray or finger)
-  hudTargets.forEach(m=>{ const mat=m.material; if (!mat) return; const on = hovered.has(m); mat.opacity = on ? 1.0 : 0.82; mat.needsUpdate=true; });
+  hudTargets.forEach(m=>{
+    const on = hovered.has(m);
+    
+    // Handle different button types
+    if (m.material) {
+      // Standard text buttons with direct materials
+      const mat = m.material;
+      mat.opacity = on ? 1.0 : 0.82; 
+      mat.needsUpdate = true;
+    } else if (m.isGroup && m.userData.__hudButton) {
+      // 3D primitive buttons (groups) - find background mesh
+      const bgMesh = m.children.find(child => child.isMesh && child.material && child.material.color);
+      if (bgMesh && bgMesh.material) {
+        const hoverData = m.userData.__hudButton;
+        if (on && hoverData.hover) {
+          bgMesh.material.copy(hoverData.hover);
+        } else if (!on && hoverData.base) {
+          bgMesh.material.copy(hoverData.base);
+        }
+        bgMesh.material.needsUpdate = true;
+      }
+    }
+  });
   // Expose HUD hover to suppress other interactions (e.g., teleport)
   try { window.__xrHudHover = !!controllerHoveringHUD; } catch{}
 
@@ -717,6 +1356,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function resetPressStates(){ try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {} }
+
+  function setGlobalClickCooldown(durationMs = 300) {
+    globalClickCooldownUntil = performance.now() + durationMs;
+  }
 
   function setHandVizStyle(style){
   const allowed = ['fingertips','skeleton','off'];
@@ -732,5 +1375,5 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     } catch {}
   }
 
-  return { ensure, remove, update, setAnchor, setHandVizStyle, get group(){ return hud; }, get buttons(){ return buttons; }, resetPressStates };
+  return { ensure, remove, update, setAnchor, setHandVizStyle, setGlobalClickCooldown, createPrimitive3DButton, createDraw3DButton, createTile3DButton, get group(){ return hud; }, get buttons(){ return buttons; }, resetPressStates };
 }

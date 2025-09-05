@@ -85,7 +85,14 @@
 					scene.add(marker);
 					tipMarkers.set(src, marker);
 				}
-				marker.visible = true; marker.position.set(ip.x, ip.y, ip.z);
+				marker.visible = true; 
+				marker.position.set(ip.x, ip.y, ip.z);
+				// Update marker color based on draw state and pinching
+				if (enabled) {
+					marker.material.color.setHex(pinching ? 0xff00ff : 0xff00ff); // Always magenta when draw mode is active
+				} else {
+					marker.visible = false; // Hide markers when draw mode is off
+				}
 				if (pinching && !prev){ startStroke(drawPos); }
 				else if (pinching && currentStroke){ addPoint(drawPos); }
 				else if (!pinching && prev){ endStroke(); }

@@ -27,6 +27,7 @@ export async function init() {
 			import('./features/primitives.js'),
 			import('./services/ar-edit.js'),
 			import('./services/xr-hud.js'),
+			import('./services/vr-draw.js'),
 			import('./services/ar-materials.js'),
 			import('./services/collab.js'),
 			import('./features/alignment-tile.js'),
@@ -54,7 +55,7 @@ export async function init() {
 			const tb = document.getElementById('toolbox'); if (!tb) return;
 			if (document.getElementById('toggleRoom')) return; // already added
 			const btn = document.createElement('button');
-			btn.id = 'toggleRoom'; btn.className = 'icon-btn toggle-btn'; btn.style.display = 'none';
+			btn.id = 'toggleRoom'; btn.className = 'icon-btn toggle-btn';
 			btn.title = 'Room'; btn.setAttribute('aria-label','Room'); btn.setAttribute('aria-pressed','false');
 			btn.innerHTML = '<span class="sr-only">Room</span><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#222" stroke-width="2"><circle cx="12" cy="7" r="3"/><path d="M4 20c0-3 3-5 8-5s8 2 8 5"/></g></svg>';
 			tb.appendChild(btn);
@@ -345,7 +346,7 @@ export async function init() {
 			// Track per-object manipulation mode (default: whole scene)
 			let arPerObject = false;
 			let handStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
-			const bOne = createHudButton('1:1', ()=>{
+			const bOne = xrHud.createTile3DButton('1:1', ()=>{
 				// Toggle-only behavior: do not auto-fit; just flip 1:1 state and update HUD + scale gate
 				try {
 					if (arOneToOne) {
@@ -360,8 +361,8 @@ export async function init() {
 					}
 				} catch {}
 			});
-			const bFit = createHudButton('Fit', ()=> setARScaleFit());
-			const bReset = createHudButton('Reset', async ()=>{
+			const bFit = xrHud.createTile3DButton('Fit', ()=> setARScaleFit());
+			const bReset = xrHud.createTile3DButton('Reset', async ()=>{
 				try {
 					// XR-specific lightweight revert (per-object) only for AR sessions (transparent / additive)
 					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
@@ -444,13 +445,13 @@ export async function init() {
 				} catch { resetARTransform(); }
 			});
 			// Toggle XR interaction mode between Ray (teleport) and Grab (pinch)
-	    const bInteract = createHudButton('Grab', ()=>{
+	    const bInteract = xrHud.createTile3DButton('Grab', ()=>{
 				try {
 		    setXRInteractionMode(!xrInteractionRay);
 				} catch {}
 			});
 			// Toggle per-object vs whole-scene manipulation
-			const bMode = createHudButton('Objects', ()=>{
+			const bMode = xrHud.createTile3DButton('Objects', ()=>{
 				try {
 					arPerObject = !arPerObject;
 					arEdit.setPerObjectEnabled(arPerObject);
@@ -458,7 +459,7 @@ export async function init() {
 				} catch {}
 			});
 			// Lock ground: snap AR content ground to XR local-floor (translate up, yaw align, optional scale within constraints)
-			const bLock = createHudButton('Lock Ground', ()=>{
+			const bLock = xrHud.createTile3DButton('Lock Ground', ()=>{
 				try {
 					if (!arContent) return;
 					// Toggle lock state
@@ -477,14 +478,14 @@ export async function init() {
 				} catch {}
 			});
 			// Cycle material mode: Normal -> Outline -> Lite -> Normal
-			const bMatMode = createHudButton('Mat', ()=>{
+			const bMatMode = xrHud.createTile3DButton('Mat', ()=>{
 				try {
 					arMatMode = (arMatMode === 'normal') ? 'outline' : (arMatMode === 'outline' ? 'lite' : 'normal');
 					applyArMaterialModeOnContent();
 					bMatMode.setLabel(arMatMode === 'normal' ? 'Mat' : (arMatMode === 'outline' ? 'Outline' : 'Lite'));
 				} catch {}
 			});
-			const bAlign = createHudButton('Align Tile', ()=>{
+			const bAlign = xrHud.createTile3DButton('Align Tile', ()=>{
 				try {
 					const session = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
 					if (!session) return; // Only in XR
@@ -507,7 +508,7 @@ export async function init() {
 						try { if (collab && collab.isActive && collab.isActive() && collab.onAdd) collab.onAdd(tile); } catch{}
 				} catch{}
 			});
-			const bHands = createHudButton('Fingers', ()=>{
+			const bHands = xrHud.createTile3DButton('Fingers', ()=>{
 				try {
 					// Cycle through supported styles
 					if (handStyle === 'fingertips') handStyle = 'skeleton';
@@ -522,13 +523,13 @@ export async function init() {
 				} catch {}
 			});
 			// Room controls in XR: dispatch to app-level handler
-			const bRoomHost = createHudButton('Host', async ()=>{
+			const bRoomHost = xrHud.createTile3DButton('Host', async ()=>{
 				try {
 					const r = await showRoomOverlay('host'); if (!r) return;
 					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
 				} catch {}
 			});
-			const bRoomJoin = createHudButton('Join', async ()=>{
+			const bRoomJoin = xrHud.createTile3DButton('Join', async ()=>{
 				try {
 					const r = await showRoomOverlay('join'); if (!r) return;
 					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
@@ -562,19 +563,40 @@ export async function init() {
 						{ label:'Back', tool:'__back' }
 					];
 					for (const d of defs){
-						const btn = createHudButton(d.label, ()=>{
-							try {
-								if (d.tool === '__back'){ toggleVRPrimitivesMenu(false); return; }
-								// Arm primitive creation state (multi-click). stage semantics vary by tool.
-								window.__xrPrim = { tool: d.tool, stage:0, p0:null, p1:null, preview:null, lastDims:'' };
-							} catch{}
-						});
+						let btn;
+						// Use 3D primitive buttons for actual primitives, text button for Back
+						if (d.tool === '__back') {
+							btn = xrHud.createTile3DButton(d.label, ()=>{
+								try {
+									// Trigger cooldown to prevent immediate clicking of main menu button
+									try { if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(300); } catch {}
+									toggleVRPrimitivesMenu(false); 
+									return; 
+								} catch{}
+							});
+						} else {
+							// Use 3D primitive icon button
+							btn = xrHud.createPrimitive3DButton(d.label, ()=>{
+								try {
+									// Arm primitive creation state (pinch-to-scale workflow)
+									window.__xrPrim = { 
+										tool: d.tool, 
+										stage: 'attached', // 'attached' -> 'scaling' -> 'complete'
+										preview: null, 
+										initialPos: null,
+										baseScale: 0.1, // Starting size in meters
+										leftHand: null,
+										rightHand: null
+									};
+								} catch{}
+							});
+						}
 						primsButtons.push(btn);
 						primsMenu.add(btn.mesh);
 					}
-					// Simple grid layout (reuse width of first button). Approximate original HUD spacing.
+					// Simple grid layout (use consistent button dimensions)
 					try {
-						const bw = primsButtons[0]?.mesh?.geometry?.parameters?.width || 0.02;
+						const bw = 0.01905; // BUTTON_SIZE from HUD system (0.75 inches in meters)
 						const bh = bw; const gap = bw * 0.32; // ~6mm when bw≈19mm
 						const cols = 3; const rows = Math.ceil(primsButtons.length / cols);
 						const totalW = cols * bw + (cols - 1) * gap;
@@ -602,13 +624,19 @@ export async function init() {
 				// Expose toggle for debugging if needed
 				try { window.toggleVRPrimitivesMenu = toggleVRPrimitivesMenu; } catch{}
 				// Add new VR Prims button that opens a primitives submenu
-				const bPrims = createHudButton('Prims', ()=>{ try { toggleVRPrimitivesMenu(); } catch{} });
+				const bPrims = xrHud.createTile3DButton('Prims', ()=>{ 
+					try { 
+						// Add brief cooldown to prevent accidental submenu clicks
+						if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(200);
+						toggleVRPrimitivesMenu(); 
+					} catch{} 
+				});
 				// VR Draw toggle button
 				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ try { if (!xrHud3D) return true; // no hud yet
 					const hudVisible = xrHud3D.visible === true;
 					const primsOpen = (typeof primsMenu!=='undefined' && primsMenu && primsMenu.visible===true);
 					return !hudVisible && !primsOpen && !window.__xrPrim; } catch{} return true; } }); } catch{}
-				const bDraw = createHudButton('Draw', ()=>{ try { if (!vrDraw) return; const on = !vrDraw.isActive(); vrDraw.setEnabled(on); setHudButtonActiveByLabel('Draw', on); if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); } catch{} });
+				const bDraw = xrHud.createDraw3DButton(()=>{ try { if (!vrDraw) return; const on = !vrDraw.isActive(); vrDraw.setEnabled(on); setHudButtonActiveByLabel('Draw', on); if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); } catch{} });
 				xrHudButtons.push(bDraw);
 			// --- Room status feedback (VR) ---
 			(function(){
@@ -619,20 +647,48 @@ export async function init() {
 						if (!currentRoom){
 							bRoomHost.setLabel('Host');
 							bRoomJoin.setLabel('Join');
+							// Clear indicators when not in a room
+							if (bRoomHost.setStatusIndicator) bRoomHost.setStatusIndicator(false);
+							if (bRoomJoin.setStatusIndicator) bRoomJoin.setStatusIndicator(false);
+							if (bRoomHost.setUserCount) bRoomHost.setUserCount(0);
+							if (bRoomJoin.setUserCount) bRoomJoin.setUserCount(0);
 							return;
 						}
 						const sr = shortRoom(currentRoom);
-						// Two-word labels => stacked lines by existing texture generator
-						bRoomHost.setLabel((isHost ? 'Host' : 'Room') + ' ' + sr);
 						const cnt = Math.max(1, userCount||1);
-						if (lastStatus && lastStatus !== 'SUBSCRIBED' && lastStatus !== 'CONNECTED' && lastStatus !== 'OPEN') {
-							bRoomJoin.setLabel('Conn' + ' ' + '…');
+						
+						// Update labels and indicators based on status
+						if (isHost) {
+							bRoomHost.setLabel('Host ' + sr);
+							if (bRoomHost.setStatusIndicator) bRoomHost.setStatusIndicator(true, 0x00ff00); // Green dot for host
+							if (bRoomHost.setUserCount) bRoomHost.setUserCount(cnt);
+							
+							if (lastStatus && lastStatus !== 'SUBSCRIBED' && lastStatus !== 'CONNECTED' && lastStatus !== 'OPEN') {
+								bRoomJoin.setLabel('Connecting...');
+								if (bRoomJoin.setStatusIndicator) bRoomJoin.setStatusIndicator(true, 0xffaa00); // Orange for connecting
+							} else {
+								bRoomJoin.setLabel(cnt + ' online');
+								if (bRoomJoin.setStatusIndicator) bRoomJoin.setStatusIndicator(true, 0x00ff00); // Green for connected
+							}
+							if (bRoomJoin.setUserCount) bRoomJoin.setUserCount(0); // Don't show count on join button when hosting
 						} else {
-							bRoomJoin.setLabel(String(cnt) + ' ' + 'online');
+							// Joined as participant
+							bRoomHost.setLabel('Room ' + sr);
+							if (bRoomHost.setStatusIndicator) bRoomHost.setStatusIndicator(false); // No indicator on host button when joined
+							if (bRoomHost.setUserCount) bRoomHost.setUserCount(0);
+							
+							if (lastStatus && lastStatus !== 'SUBSCRIBED' && lastStatus !== 'CONNECTED' && lastStatus !== 'OPEN') {
+								bRoomJoin.setLabel('Connecting...');
+								if (bRoomJoin.setStatusIndicator) bRoomJoin.setStatusIndicator(true, 0xffaa00); // Orange for connecting
+							} else {
+								bRoomJoin.setLabel(cnt + ' online');
+								if (bRoomJoin.setStatusIndicator) bRoomJoin.setStatusIndicator(true, 0x00ff00); // Green for connected
+							}
+							if (bRoomJoin.setUserCount) bRoomJoin.setUserCount(cnt);
 						}
 					} catch {}
 				}
-				window.addEventListener('sketcher:room', (ev)=>{ try { const d = ev.detail||{}; const r=(d.room||'').trim(); if(!r) return; currentRoom = r; isHost = d.action === 'host'; lastStatus='CONNECTING'; bRoomJoin.setLabel('Conn' + ' ' + '…'); refresh(); } catch{} });
+				window.addEventListener('sketcher:room', (ev)=>{ try { const d = ev.detail||{}; const r=(d.room||'').trim(); if(!r) return; currentRoom = r; isHost = d.action === 'host'; lastStatus='CONNECTING'; refresh(); } catch{} });
 				window.addEventListener('sketcher:collab-presence', (ev)=>{ try { if(ev.detail && typeof ev.detail.count === 'number'){ userCount = ev.detail.count; refresh(); } } catch{} });
 				window.addEventListener('sketcher:collab-status', (ev)=>{ try { const st = ev.detail?.status; if(st){ lastStatus = st; if(st==='LEFT'){ currentRoom=null; isHost=false; userCount=1; } refresh(); } } catch{} });
 			})();
@@ -719,11 +775,26 @@ export async function init() {
 						if (!meta) continue;
 						if (meta.label === label){
 							mesh.userData.__hudButton.active = !!active;
-							// Use material.color to tint the button; multiply the texture
+							
+							// Handle different button types
 							if (mesh.material) {
+								// Standard text buttons with direct materials
 								if (active) mesh.material.color.setHex(0xff8800);
 								else mesh.material.color.setHex(0xffffff);
 								mesh.material.needsUpdate = true;
+							} else if (mesh.isGroup) {
+								// 3D button groups - find and tint the background mesh
+								const bgMesh = mesh.children.find(child => 
+									child.isMesh && 
+									child.material && 
+									child.material.color &&
+									child.renderOrder === 10000 // Background mesh has this render order
+								);
+								if (bgMesh && bgMesh.material) {
+									if (active) bgMesh.material.color.setHex(0xff8800); // Orange highlight
+									else bgMesh.material.color.setHex(0x333333); // Default dark gray
+									bgMesh.material.needsUpdate = true;
+								}
 							}
 						}
 					} catch(_){}
@@ -3106,6 +3177,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			toggleDrawCreateBtn.style.display = showEdit ? 'flex' : 'none';
 			if (toggleUtilsBtn) toggleUtilsBtn.style.display = showEdit ? 'flex' : 'none';
 			if (toggleImportBtn) toggleImportBtn.style.display = showImport ? 'flex' : 'none';
+			if (toggleRoomBtn) toggleRoomBtn.style.display = showEdit ? 'flex' : 'none';
 			// Keep Scale Figure parent button visible in Edit mode
 			const scaleParentBtn = document.getElementById('addScaleFigure');
 			if (scaleParentBtn) scaleParentBtn.style.display = showEdit ? 'flex' : 'none';
@@ -3113,7 +3185,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			drawCreateGroup.style.display = showEdit ? 'block' : 'none';
 			if (utilsGroup) utilsGroup.style.display = showEdit ? 'block' : 'none';
 			if (importGroup) importGroup.style.display = showImport ? 'block' : 'none';
-			if (showEdit){ primsGroup.classList.remove('open'); primsGroup.setAttribute('aria-hidden','true'); togglePrimsBtn.setAttribute('aria-pressed','false'); drawCreateGroup.classList.remove('open'); drawCreateGroup.setAttribute('aria-hidden','true'); toggleDrawCreateBtn.setAttribute('aria-pressed','false'); if (utilsGroup && toggleUtilsBtn){ utilsGroup.classList.remove('open'); utilsGroup.setAttribute('aria-hidden','true'); toggleUtilsBtn.setAttribute('aria-pressed','false'); }
+			if (roomGroup) roomGroup.style.display = showEdit ? 'block' : 'none';
+			if (showEdit){ primsGroup.classList.remove('open'); primsGroup.setAttribute('aria-hidden','true'); togglePrimsBtn.setAttribute('aria-pressed','false'); drawCreateGroup.classList.remove('open'); drawCreateGroup.setAttribute('aria-hidden','true'); toggleDrawCreateBtn.setAttribute('aria-pressed','false'); if (utilsGroup && toggleUtilsBtn){ utilsGroup.classList.remove('open'); utilsGroup.setAttribute('aria-hidden','true'); toggleUtilsBtn.setAttribute('aria-pressed','false'); } if (roomGroup && toggleRoomBtn){ roomGroup.classList.remove('open'); roomGroup.setAttribute('aria-hidden','true'); toggleRoomBtn.setAttribute('aria-pressed','false'); }
 				// Also ensure nested drawers (like My Scenes) are closed when Utilities resets
 				if (typeof scenesDrawer !== 'undefined' && scenesDrawer) { scenesDrawer.classList.remove('open'); scenesDrawer.setAttribute('aria-hidden','true'); }
 			}
@@ -3184,6 +3257,102 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const hostBtn = document.getElementById('hostRoom');
 			const joinBtn = document.getElementById('joinRoom');
 			const ensure = async (mode)=>{ try { const r = await showRoomOverlay(mode==='host'?'host':'join'); return r? r.trim(): null; } catch { return null; } };
+			
+			// Enhanced desktop room status management
+			let desktopRoomState = { currentRoom: null, isHost: false, userCount: 1, lastStatus: 'IDLE' };
+			
+			const updateDesktopRoomUI = ()=>{
+				try {
+					if (!hostBtn || !joinBtn) return;
+					
+					// Reset to default state
+					hostBtn.style.position = 'relative';
+					joinBtn.style.position = 'relative';
+					
+					// Remove existing indicators
+					const existingDots = document.querySelectorAll('.room-status-dot');
+					existingDots.forEach(dot => dot.remove());
+					const existingCounts = document.querySelectorAll('.room-user-count');
+					existingCounts.forEach(count => count.remove());
+					
+					if (!desktopRoomState.currentRoom) {
+						hostBtn.textContent = 'Host Room';
+						joinBtn.textContent = 'Join Room';
+						return;
+					}
+					
+					const sr = desktopRoomState.currentRoom.length > 8 ? desktopRoomState.currentRoom.slice(0,8)+'…' : desktopRoomState.currentRoom;
+					const cnt = Math.max(1, desktopRoomState.userCount||1);
+					
+					if (desktopRoomState.isHost) {
+						hostBtn.textContent = 'Host ' + sr;
+						// Add green dot to host button
+						const hostDot = document.createElement('div');
+						hostDot.className = 'room-status-dot';
+						hostDot.style.cssText = 'position:absolute;top:4px;right:4px;width:8px;height:8px;background:#00ff00;border-radius:50%;';
+						hostBtn.appendChild(hostDot);
+						
+						// Add user count badge to host button
+						if (cnt > 1) {
+							const hostCount = document.createElement('div');
+							hostCount.className = 'room-user-count';
+							hostCount.textContent = cnt;
+							hostCount.style.cssText = 'position:absolute;top:2px;left:2px;background:#ff4444;color:white;border-radius:50%;width:16px;height:16px;font-size:10px;display:flex;align-items:center;justify-content:center;font-weight:bold;';
+							hostBtn.appendChild(hostCount);
+						}
+						
+						if (desktopRoomState.lastStatus && desktopRoomState.lastStatus !== 'SUBSCRIBED' && desktopRoomState.lastStatus !== 'CONNECTED' && desktopRoomState.lastStatus !== 'OPEN') {
+							joinBtn.textContent = 'Connecting...';
+							// Add orange dot for connecting
+							const joinDot = document.createElement('div');
+							joinDot.className = 'room-status-dot';
+							joinDot.style.cssText = 'position:absolute;top:4px;right:4px;width:8px;height:8px;background:#ffaa00;border-radius:50%;';
+							joinBtn.appendChild(joinDot);
+						} else {
+							joinBtn.textContent = cnt + ' online';
+							// Add green dot for connected
+							const joinDot = document.createElement('div');
+							joinDot.className = 'room-status-dot';
+							joinDot.style.cssText = 'position:absolute;top:4px;right:4px;width:8px;height:8px;background:#00ff00;border-radius:50%;';
+							joinBtn.appendChild(joinDot);
+						}
+					} else {
+						// Joined as participant
+						hostBtn.textContent = 'Room ' + sr;
+						
+						if (desktopRoomState.lastStatus && desktopRoomState.lastStatus !== 'SUBSCRIBED' && desktopRoomState.lastStatus !== 'CONNECTED' && desktopRoomState.lastStatus !== 'OPEN') {
+							joinBtn.textContent = 'Connecting...';
+							// Add orange dot for connecting
+							const joinDot = document.createElement('div');
+							joinDot.className = 'room-status-dot';
+							joinDot.style.cssText = 'position:absolute;top:4px;right:4px;width:8px;height:8px;background:#ffaa00;border-radius:50%;';
+							joinBtn.appendChild(joinDot);
+						} else {
+							joinBtn.textContent = cnt + ' online';
+							// Add green dot to join button
+							const joinDot = document.createElement('div');
+							joinDot.className = 'room-status-dot';
+							joinDot.style.cssText = 'position:absolute;top:4px;right:4px;width:8px;height:8px;background:#00ff00;border-radius:50%;';
+							joinBtn.appendChild(joinDot);
+							
+							// Add user count badge to join button
+							if (cnt > 1) {
+								const joinCount = document.createElement('div');
+								joinCount.className = 'room-user-count';
+								joinCount.textContent = cnt;
+								joinCount.style.cssText = 'position:absolute;top:2px;left:2px;background:#ff4444;color:white;border-radius:50%;width:16px;height:16px;font-size:10px;display:flex;align-items:center;justify-content:center;font-weight:bold;';
+								joinBtn.appendChild(joinCount);
+							}
+						}
+					}
+				} catch{}
+			};
+			
+			// Listen for room state changes
+			window.addEventListener('sketcher:room', (ev)=>{ try { const d = ev.detail||{}; const r=(d.room||'').trim(); if(!r) return; desktopRoomState.currentRoom = r; desktopRoomState.isHost = d.action === 'host'; desktopRoomState.lastStatus='CONNECTING'; updateDesktopRoomUI(); } catch{} });
+			window.addEventListener('sketcher:collab-presence', (ev)=>{ try { if(ev.detail && typeof ev.detail.count === 'number'){ desktopRoomState.userCount = ev.detail.count; updateDesktopRoomUI(); } } catch{} });
+			window.addEventListener('sketcher:collab-status', (ev)=>{ try { const st = ev.detail?.status; if(st){ desktopRoomState.lastStatus = st; if(st==='LEFT'){ desktopRoomState.currentRoom=null; desktopRoomState.isHost=false; desktopRoomState.userCount=1; } updateDesktopRoomUI(); } } catch{} });
+			
 			const updateBadge = (room, isHost)=>{ try { const vb = document.getElementById('version-badge'); if (vb){ vb.textContent = vb.textContent.replace(/\s*·\s*Room:.*$/, ''); if(room){ vb.textContent += `  ·  Room:${room}${isHost?' (host)':''}`; } } } catch{} };
 			if (hostBtn) hostBtn.addEventListener('click', async ()=>{ try { if (!collab && createCollab){ collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }); try{ if (collab.onStatus) collab.onStatus((status)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-status', { detail: { status } })); }); if (collab.onPresence) collab.onPresence((p)=>{ window.dispatchEvent(new CustomEvent('sketcher:collab-presence', { detail: p })); }); }catch{} }
 				if (collab?.isActive?.()){ alert('Already in a room'); return; }
@@ -3496,6 +3665,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							if (hadPerObject || hasClone) {
 								const ok = confirm('Apply XR adjustments (move/scale/rotate) back to the 3D workspace?');
 								if (ok) {
+									// User accepted: apply changes to original objects
 									// First, per-object dirty nodes
 									if (hadPerObject) {
 										const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
@@ -3518,7 +3688,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									// Then, whole-clone placement back to originals (handles global move/scale)
 									if (hasClone) { try { __applyXRCloneTopLevelToOriginals(arContent); } catch{} }
 									try { saveSessionDraftNow(); } catch{}
+								} else {
+									// User canceled: revert VR content to baseline state
+									if (hasClone) {
+										try { __revertArContentChildren(arContent); } catch {}
+									}
 								}
+								// Clear dirty state after handling user choice
 								try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
 							}
 					} catch{}
@@ -3609,6 +3785,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					if (arSimplifyMaterials) simplifyMaterialsForARInPlace(THREE, root);
 					arContent = root; try { arContent.userData.__initialTR = { pos: arContent.position.toArray(), quat: arContent.quaternion.toArray(), scl: arContent.scale.toArray() }; } catch{} scene.add(arContent);
 					try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
+					
+					// Capture baseline transforms for revert functionality
+					try {
+						__captureArContentBaseline(arContent);
+						if (!arContent.userData) arContent.userData = {};
+						arContent.userData.__baselineCaptured = true;
+					} catch {}
+					
 					// Place origin 1 foot in front of the user on the ground (local-floor y=0), using camera facing
 					try {
 						const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
@@ -3679,6 +3863,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							if (hadPerObject || hasClone) {
 								const ok = confirm('Apply XR adjustments (move/scale/rotate) back to the 3D workspace?');
 								if (ok) {
+									// User accepted: apply changes to original objects
 									if (hadPerObject) {
 										const METERS_TO_FEET = 1.0 / FEET_TO_METERS;
 										const { setWorldMatrix } = transforms;
@@ -3699,7 +3884,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									}
 									if (hasClone) { try { __applyXRCloneTopLevelToOriginals(arContent); } catch{} }
 									try { saveSessionDraftNow(); } catch{}
+								} else {
+									// User canceled: revert VR content to baseline state
+									if (hasClone) {
+										try { __revertArContentChildren(arContent); } catch {}
+									}
 								}
+								// Clear dirty state after handling user choice
 								try { arEdit.clearDirty && arEdit.clearDirty(); } catch{}
 							}
 					} catch{}
@@ -4675,31 +4866,33 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
-							// Handle VR primitive workflow on RIGHT hand (hand tracking or controller) - now places at hand position
-							if (src && src.handedness==='right' && window.__xrPrim){
+							// NEW: Two-handed pinch-to-scale primitive creation system
+							if (window.__xrPrim && (src.handedness === 'left' || src.handedness === 'right')) {
 								const prim = window.__xrPrim;
-								let handPos = null; // 3D position where primitive should be placed
-								let triggerPressed = false; 
 								
-								// Try to get hand position from hand tracking first (preferred)
+								// Get hand tracking data for this hand
+								let handPos = null;
+								let isPinching = false;
+								
 								if (src.hand) {
 									try {
 										const idxJ = src.hand.get && src.hand.get('index-finger-tip');
+										const thJ = src.hand.get && src.hand.get('thumb-tip');
 										const ref = xrLocalSpace || xrViewerSpace || null;
+										
 										if (idxJ && frame.getJointPose) {
-											const pose = frame.getJointPose(idxJ, ref);
-											if (pose && pose.transform && pose.transform.position) {
-												const ip = pose.transform.position;
+											const idxPose = frame.getJointPose(idxJ, ref);
+											if (idxPose && idxPose.transform && idxPose.transform.position) {
+												const ip = idxPose.transform.position;
 												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
 												
-												// Check for pinch gesture for trigger
-												const thJ = src.hand.get && src.hand.get('thumb-tip');
+												// Check for pinch gesture
 												if (thJ) {
 													const thumbPose = frame.getJointPose(thJ, ref);
 													if (thumbPose && thumbPose.transform && thumbPose.transform.position) {
 														const tp = thumbPose.transform.position;
 														const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
-														triggerPressed = dist < 0.028; // 2.8cm pinch threshold like VR draw
+														isPinching = dist < 0.03; // 3cm pinch threshold
 													}
 												}
 											}
@@ -4712,96 +4905,118 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									try {
 										const raySpace = src.targetRaySpace || src.gripSpace;
 										if (raySpace) {
-											const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+											const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null);
 											if (pose && pose.transform && pose.transform.position) {
 												const p = pose.transform.position;
-												// Position slightly forward from controller
-												const o = pose.transform.orientation;
-												const origin = new THREE.Vector3(p.x, p.y, p.z);
-												const forward = new THREE.Vector3(0, 0, -0.15); // 15cm forward
-												if (o) {
-													forward.applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
-												}
-												handPos = origin.add(forward);
-												triggerPressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+												handPos = new THREE.Vector3(p.x, p.y, p.z);
+												isPinching = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
 											}
 										}
 									} catch(e) {}
 								}
 								
-								// Handle primitive creation at hand position
+								// Store hand data
 								if (handPos) {
-									const prev = window.__xrPrim.__triggerPrev && window.__xrPrim.__triggerPrev.get(src) === true;
-									const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
-									
-									if (prim.stage === 0) {
-										// Show preview at hand position
-										if (!prim.preview) { 
-											prim.preview = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 10), new THREE.MeshBasicMaterial({ color: 0x44bbff, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false })); 
-											prim.preview.userData.__helper = true; 
-											scene.add(prim.preview); 
+									if (src.handedness === 'left') {
+										prim.leftHand = { pos: handPos, pinching: isPinching };
+									} else if (src.handedness === 'right') {
+										prim.rightHand = { pos: handPos, pinching: isPinching };
+									}
+								}
+							}
+							
+							// Process primitive creation workflow after collecting both hands
+							if (window.__xrPrim && window.__xrPrim.rightHand) {
+								const prim = window.__xrPrim;
+								const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+								
+								if (prim.stage === 'attached') {
+									// Stage 1: Primitive attached to right index finger
+									if (!prim.preview) {
+										// Create initial primitive at small size
+										const initialScale = prim.baseScale;
+										if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(initialScale, initialScale, initialScale), activeMat);
+										else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(initialScale/2, 20, 16), activeMat);
+										else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(initialScale/2, initialScale/2, initialScale, 20), activeMat);
+										else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(initialScale/2, initialScale, 20), activeMat);
+										
+										if (prim.preview) {
+											prim.preview.userData.__helper = true;
+											scene.add(prim.preview);
+											prim.initialPos = prim.rightHand.pos.clone();
 										}
-										prim.preview.position.copy(handPos);
-									} else if (prim.stage === 1) {
-										// Show sized primitive preview between p0 and current hand position
-										const p0 = prim.p0;
-										if (p0) {
-											const dx = handPos.x - p0.x; const dy = handPos.y - p0.y; const dz = handPos.z - p0.z;
-											const sx = Math.max(0.1, Math.abs(dx)); const sy = Math.max(0.1, Math.abs(dy)); const sz = Math.max(0.1, Math.abs(dz)); 
-											const r = Math.max(sx, sz) / 2;
-											const centerPos = new THREE.Vector3((p0.x + handPos.x) / 2, (p0.y + handPos.y) / 2, (p0.z + handPos.z) / 2);
+									}
+									
+									// Update preview position to follow right hand
+									if (prim.preview) {
+										prim.preview.position.copy(prim.rightHand.pos);
+									}
+									
+									// Check if both hands are pinching to start scaling
+									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand.pinching) {
+										prim.stage = 'scaling';
+										prim.initialDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+										prim.initialScale = prim.baseScale;
+									}
+								} 
+								else if (prim.stage === 'scaling') {
+									// Stage 2: Both hands pinching - scale based on hand distance
+									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand.pinching) {
+										const currentDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+										const scaleFactor = Math.max(0.1, currentDistance / prim.initialDistance);
+										const newScale = prim.initialScale * scaleFactor;
+										
+										// Update primitive scale and position (center between hands)
+										const centerPos = new THREE.Vector3()
+											.addVectors(prim.leftHand.pos, prim.rightHand.pos)
+											.multiplyScalar(0.5);
+										
+										if (prim.preview) {
+											prim.preview.position.copy(centerPos);
 											
-											const key = prim.tool + ':' + sx.toFixed(2) + ':' + sy.toFixed(2) + ':' + sz.toFixed(2);
-											if (prim.lastDims !== key) {
-												if (prim.preview) { 
-													try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{} 
-													try { prim.preview.geometry?.dispose?.(); } catch{} 
-													prim.preview = null; 
-												}
-												if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), activeMat);
-												else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), activeMat);
-												else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(r, r, sy, 20), activeMat);
-												else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(r, sy, 20), activeMat);
-												if (prim.preview) { prim.preview.userData.__helper = true; scene.add(prim.preview); }
-												prim.lastDims = key;
+											// Update geometry based on new scale
+											const prevGeom = prim.preview.geometry;
+											let newGeom = null;
+											
+											if (prim.tool === 'box') {
+												newGeom = new THREE.BoxGeometry(newScale, newScale, newScale);
+											} else if (prim.tool === 'sphere') {
+												newGeom = new THREE.SphereGeometry(newScale/2, 20, 16);
+											} else if (prim.tool === 'cylinder') {
+												newGeom = new THREE.CylinderGeometry(newScale/2, newScale/2, newScale, 20);
+											} else if (prim.tool === 'cone') {
+												newGeom = new THREE.ConeGeometry(newScale/2, newScale, 20);
 											}
+											
+											if (newGeom) {
+												prim.preview.geometry = newGeom;
+												try { prevGeom?.dispose?.(); } catch {}
+											}
+										}
+									} else {
+										// One or both hands stopped pinching - finalize primitive
+										try {
 											if (prim.preview) {
-												prim.preview.position.copy(centerPos);
+												const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
+												const finalPrimitive = new THREE.Mesh(prim.preview.geometry.clone(), activeMat);
+												finalPrimitive.position.copy(prim.preview.position);
+												finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
+												addObjectToScene(finalPrimitive, { select: true });
+												if (saveSessionDraftSoon) saveSessionDraftSoon();
 											}
+										} catch(e) {
+											console.warn('Failed to create primitive:', e);
 										}
+										
+										// Clean up and reset
+										try {
+											if (prim.preview) {
+												if (prim.preview.parent) prim.preview.parent.remove(prim.preview);
+												prim.preview.geometry?.dispose?.();
+											}
+										} catch {}
+										window.__xrPrim = null;
 									}
-									
-									// Handle trigger press for stage transitions
-									if (triggerPressed && !prev) {
-										if (prim.stage === 0) {
-											// Set first corner at hand position and move to sizing stage
-											prim.p0 = handPos.clone(); 
-											prim.stage = 1; 
-											prim.lastDims = '';
-										} else if (prim.stage === 1) {
-											// Finalize primitive creation
-											try {
-												const p0 = prim.p0; 
-												const pv = prim.preview; 
-												if (p0 && pv) {
-													let placed = null; 
-													const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
-													if (prim.tool === 'box') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-													else if (prim.tool === 'sphere') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-													else if (prim.tool === 'cylinder') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-													else if (prim.tool === 'cone') { const g = pv.geometry.clone(); placed = new THREE.Mesh(g, activeMat); placed.position.copy(pv.position); }
-													if (placed) { placed.name = nameBase + ' ' + (objects.length + 1); addObjectToScene(placed, { select: true }); saveSessionDraftSoon && saveSessionDraftSoon(); }
-												}
-											} catch{}
-											// Reset state for another of same primitive (stay in tool) until Back pressed
-											try { if (prim.preview) { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); prim.preview.geometry?.dispose?.(); prim.preview = null; } } catch{}
-											prim.stage = 0; prim.p0 = null; prim.p1 = null; prim.lastDims = '';
-										}
-									}
-									
-									// Store trigger state for edge detection
-									if (!window.__xrPrim.__triggerPrev) window.__xrPrim.__triggerPrev = new WeakMap();
-									window.__xrPrim.__triggerPrev.set(src, triggerPressed);
 								}
 							}
 							// Controller trigger teleport (RIGHT hand only)
@@ -4916,6 +5131,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				})();
 				// XR HUD update via service
 				xrHud.update(frame);
+				// Clear hand data for next frame to prevent stale tracking
+				try {
+					if (window.__xrPrim) {
+						window.__xrPrim.leftHand = null;
+						window.__xrPrim.rightHand = null;
+					}
+				} catch {}
 				// If XR not presenting anymore, remove alignment tile helper
 				try {
 					const sess = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
@@ -4963,6 +5185,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						try { arContent.userData.__initialTR = { pos: arContent.position.toArray(), quat: arContent.quaternion.toArray(), scl: arContent.scale.toArray() }; } catch{}
 						scene.add(arContent);
 						try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
+						
+						// Capture baseline transforms for revert functionality
+						try {
+							__captureArContentBaseline(arContent);
+							if (!arContent.userData) arContent.userData = {};
+							arContent.userData.__baselineCaptured = true;
+						} catch {}
+						
 						computeArBaseMetrics(arContent);
 						// Ensure 1:1 scale in meters after feet->meters conversion in prepareModelForAR
 						try { arContent.scale.setScalar(FEET_TO_METERS); } catch {}

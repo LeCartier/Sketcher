@@ -307,9 +307,15 @@ export function createAREdit(THREE, scene, renderer){
         }
       } catch{}
       
-      // Ground lock constraint: preserve Y position for scene-level operations
+      // Ground lock constraint: preserve Y position and constrain rotation to yaw-only for scene-level operations
       if (state.groundLocked && !state.perObject) {
         desiredLocalPos.y = beforePos.y;
+        
+        // Constrain rotation to yaw-only (Y-axis rotation)
+        // Extract yaw component from desired quaternion and apply it to a Y-axis-only rotation
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(desiredLocalQuat);
+        const yawAngle = Math.atan2(forward.x, forward.z);
+        desiredLocalQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle);
       }
       
       try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
@@ -418,9 +424,14 @@ export function createAREdit(THREE, scene, renderer){
       } catch{}
       const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
       
-      // Ground lock constraint: preserve Y position for scene-level operations
+      // Ground lock constraint: preserve Y position and constrain rotation to yaw only for scene-level operations
       if (state.groundLocked && !state.perObject) {
         desiredLocalPos.y = beforePos.y;
+        
+        // Extract yaw angle from desired quaternion and apply as Y-axis only rotation
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(desiredLocalQuat);
+        const yaw = Math.atan2(forward.x, forward.z);
+        desiredLocalQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
       }
       
       // Apply local transforms with smoothing
