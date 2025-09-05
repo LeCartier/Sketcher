@@ -638,11 +638,8 @@ export async function init() {
 				// VR Draw toggle button
 				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ 
 					// Only allow drawing when explicitly enabled
-					// Check VR draw state without circular reference
-					try {
-						return vrDraw && vrDraw.isActive && vrDraw.isActive();
-					} catch{} 
-					return false; 
+					// Simple check without circular reference
+					return true; // Let the vrDraw service manage its own enabled state
 				} }); 
 					// Connect VR draw to collaboration
 					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
@@ -3682,6 +3679,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				arPlaced = false;
 				grid.visible = false;
 				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
+				// Ensure draw mode is disabled on AR session start
+				try {
+					if (vrDraw && vrDraw.setEnabled) vrDraw.setEnabled(false);
+					if (xrHud && xrHud.hideDrawSubmenu) xrHud.hideDrawSubmenu();
+					setHudButtonActiveByLabel('Draw', false);
+				} catch {}
 				// Setup reference spaces; align to local-floor for ground alignment
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');
 				xrViewerSpace = await session.requestReferenceSpace('viewer').catch(()=>null);
@@ -3813,6 +3816,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { arEdit.setTarget(null); arEdit.start(session); } catch {}
 				arActive = true; arPlaced = false; grid.visible = false;
 				ensureXRHud3D(); if (xrHud3D) xrHud3D.visible = true;
+				// Ensure draw mode is disabled on VR session start
+				try {
+					if (vrDraw && vrDraw.setEnabled) vrDraw.setEnabled(false);
+					if (xrHud && xrHud.hideDrawSubmenu) xrHud.hideDrawSubmenu();
+					setHudButtonActiveByLabel('Draw', false);
+				} catch {}
 				// Keep originals visible until AR clone is created (we'll hide after placement)
 				// Reference space (floor-aligned)
 				xrLocalSpace = await session.requestReferenceSpace('local-floor');

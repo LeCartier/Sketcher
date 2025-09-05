@@ -30,7 +30,11 @@
 		// fingertip markers
 		const tipMarkers = new Map(); // src -> mesh
 		function setEnabled(v){
+			const wasEnabled = enabled;
 			enabled = !!v;
+			if (wasEnabled !== enabled) {
+				console.log('VR Draw mode:', enabled ? 'ENABLED' : 'DISABLED');
+			}
 			if (!enabled) endStroke();
 		}
 		function isActive(){ return !!enabled; }
@@ -109,7 +113,7 @@
 			if (!enabled || !session || !frame) return;
 			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { endStroke(); return; }
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
-			const PINCH_DIST = 0.028; // 2.8cm threshold
+			const PINCH_DIST = 0.035; // 3.5cm threshold (slightly more forgiving)
 			// Remove markers for sources no longer present
 			for (const k of Array.from(tipMarkers.keys())){ if (!sources.includes(k)){ const m = tipMarkers.get(k); try { if (m.parent) m.parent.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch{} tipMarkers.delete(k);} }
 			for (const src of sources){
@@ -124,6 +128,11 @@
 				const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
 				const pinching = dist < PINCH_DIST;
 				const prev = triggerPrev.get(src) === true;
+				
+				// Debug logging for pinch detection
+				if (enabled && (pinching !== prev)) {
+					console.log(`VR Draw: Hand ${src.handedness} pinch ${pinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm)`);
+				}
 				// Drawing point originates slightly forward from index tip along local finger direction if orientation available
 				let drawPos = new THREE.Vector3(ip.x, ip.y, ip.z);
 				if (pi.transform && pi.transform.orientation){
@@ -134,22 +143,40 @@
 				// Update fingertip marker
 				let marker = tipMarkers.get(src);
 				if (!marker){
-					marker = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), new THREE.MeshBasicMaterial({ color:0xff00ff, depthTest:false }));
+					marker = new THREE.Mesh(
+						new THREE.SphereGeometry(0.01, 12, 8), // Slightly larger for better visibility
+						new THREE.MeshBasicMaterial({ 
+							color: color, 
+							depthTest: false,
+							transparent: true,
+							opacity: 0.8
+						})
+					);
 					marker.userData.__helper = true;
+					marker.renderOrder = 9999; // Ensure it renders on top
 					scene.add(marker);
 					tipMarkers.set(src, marker);
 				}
-				marker.visible = true; 
+				marker.visible = enabled; // Always visible when draw mode is enabled
 				marker.position.set(ip.x, ip.y, ip.z);
 				// Update marker color based on draw state and pinching
 				if (enabled) {
-					marker.material.color.setHex(pinching ? 0xff00ff : 0xff00ff); // Always magenta when draw mode is active
+					// Use current drawing color when pinching, slightly dimmed when not pinching
+					const currentColor = pinching ? color : (color & 0x888888); // Dim when not actively drawing
+					marker.material.color.setHex(currentColor);
+					marker.material.opacity = pinching ? 1.0 : 0.6; // More opaque when pinching
 				} else {
 					marker.visible = false; // Hide markers when draw mode is off
 				}
-				if (pinching && !prev){ startStroke(drawPos); }
+				if (pinching && !prev){ 
+					console.log('VR Draw: Starting stroke at', drawPos); 
+					startStroke(drawPos); 
+				}
 				else if (pinching && currentStroke){ addPoint(drawPos); }
-				else if (!pinching && prev){ endStroke(); }
+				else if (!pinching && prev){ 
+					console.log('VR Draw: Ending stroke'); 
+					endStroke(); 
+				}
 				triggerPrev.set(src, pinching);
 			}
 		}

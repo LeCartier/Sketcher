@@ -19,6 +19,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const raycaster = new THREE.Raycaster();
   // Global cooldown to prevent accidental clicks after menu transitions
   let globalClickCooldownUntil = 0;
+  // Hand interaction smoothing - prevent rapid state changes when hands cross
+  let handCrossingCooldownUntil = 0;
+  let lastRightHandPosition = new THREE.Vector3();
+  let handCrossingDetected = false;
   // Simple viz for hands and right-controller ray
   let handVizL = null, handVizR = null, rightRay = null, rightRayTip = null;
   let handVizMode = null; // 'default' | 'hands-only'
@@ -173,9 +177,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       primitiveMesh.renderOrder = 10001;
       primitiveMesh.position.z = 0.001; // Slightly forward from background
       
-      // Add subtle rotation for better 3D visibility
+      // Add subtle rotation for better 3D visibility - flipped to face user
       primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
-      primitiveMesh.rotation.y = Math.PI * 0.15; // 27 degrees
+      primitiveMesh.rotation.y = Math.PI * 0.15 + Math.PI; // 27 degrees + 180 degrees (face user)
       
       buttonGroup.add(primitiveMesh);
     }
@@ -679,9 +683,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       iconGroup.position.y = BUTTON_H * 0.1; // Position above text
       iconGroup.position.z = 0.001; // Slightly forward from background
       
-      // Add subtle rotation for better 3D visibility
+      // Add subtle rotation for better 3D visibility - flipped to face user
       iconGroup.rotation.x = Math.PI * 0.05;  // 9 degrees
-      iconGroup.rotation.y = Math.PI * 0.08; // 14.4 degrees
+      iconGroup.rotation.y = Math.PI * 0.08 + Math.PI; // 14.4 degrees + 180 degrees (face user)
       
       iconGroup.renderOrder = 10001;
       buttonGroup.add(iconGroup);
@@ -906,6 +910,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   hud.userData.__menuShown = false; // armed by menu button
   prevVisible = false;
     ensureHandViz();
+  // Ensure draw submenu is hidden on initialization
+  hideDrawSubmenu();
   // Both controller trigger and right index finger can activate buttons
   return hud;
   }
@@ -1380,8 +1386,34 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         // Right index finger hover + poke-to-click (depress animation). Only this triggers clicks.
         try {
           const rightHand = sources.find(s => s.hand && s.handedness === 'right');
+          const leftHand = sources.find(s => s.hand && s.handedness === 'left');
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           let idxPos = null;
+          
+          // Detect hand crossing to prevent state confusion
+          const nowCrossing = performance.now();
+          if (rightHand && leftHand && frame.getJointPose && ref) {
+            const rightIdx = rightHand.hand.get?.('index-finger-tip');
+            const leftPalm = leftHand.hand.get?.('wrist');
+            const pRightIdx = rightIdx ? frame.getJointPose(rightIdx, ref) : null;
+            const pLeftPalm = leftPalm ? frame.getJointPose(leftPalm, ref) : null;
+            
+            if (pRightIdx?.transform?.position && pLeftPalm?.transform?.position) {
+              const rightPos = new THREE.Vector3().copy(pRightIdx.transform.position);
+              const leftPos = new THREE.Vector3().copy(pLeftPalm.transform.position);
+              const crossingDistance = rightPos.distanceTo(leftPos);
+              
+              // Detect if right hand is crossing over to left side (within 15cm of left palm)
+              if (crossingDistance < 0.15) {
+                if (!handCrossingDetected) {
+                  handCrossingDetected = true;
+                  handCrossingCooldownUntil = nowCrossing + 200; // 200ms stabilization period
+                }
+              } else if (crossingDistance > 0.25) {
+                handCrossingDetected = false;
+              }
+            }
+          }
           if (rightHand && frame.getJointPose && ref){
             const idx = rightHand.hand.get?.('index-finger-tip');
             const pIdx = idx ? frame.getJointPose(idx, ref) : null;
@@ -1433,9 +1465,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             if (within) { hovered.add(m); if (!fingerHover) fingerHover = m; }
             // onPress transition: fire onClick once and set cooldown
             if (!st.pressed && pressedNow){
-              // Check global cooldown to prevent accidental clicks after menu transitions
+              // Check global cooldown and hand crossing to prevent accidental clicks
               const globalNow = performance.now();
-              if (globalNow >= globalClickCooldownUntil) {
+              const crossingCheck = globalNow >= handCrossingCooldownUntil;
+              if (globalNow >= globalClickCooldownUntil && crossingCheck) {
                 const handler = m.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
                 st._cooldownUntil = now + 180; // ms
                 // Trigger flash overlay
@@ -1508,6 +1541,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   
   function showDrawSubmenu(vrDrawService) {
     if (drawSubmenuActive) return;
+    
+    // Add stabilization delay to prevent rapid menu switching
+    const now = performance.now();
+    handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 150);
+    
     drawSubmenuActive = true;
     
     // Hide main menu buttons temporarily
@@ -1545,10 +1583,22 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       if (vrDrawService) vrDrawService.clear();
     });
     const returnButton = createTile3DButton('Return', () => {
-      hideDrawSubmenu();
-      // Turn off draw mode
-      if (vrDrawService) vrDrawService.setEnabled(false);
-      if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
+      // Add stabilization delay to prevent accidental menu switching
+      const now = performance.now();
+      if (now < handCrossingCooldownUntil) {
+        // If hand crossing detected, add extra delay
+        setTimeout(() => {
+          hideDrawSubmenu();
+          // Turn off draw mode
+          if (vrDrawService) vrDrawService.setEnabled(false);
+          if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
+        }, 150);
+      } else {
+        hideDrawSubmenu();
+        // Turn off draw mode
+        if (vrDrawService) vrDrawService.setEnabled(false);
+        if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
+      }
     });
     
     drawSubmenuButtons = [
@@ -1565,6 +1615,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   
   function hideDrawSubmenu() {
     if (!drawSubmenuActive) return;
+    
+    // Add brief cooldown to prevent rapid menu switching during hand crossing
+    const now = performance.now();
+    handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 100);
+    
     drawSubmenuActive = false;
     
     // Remove submenu buttons
@@ -1575,10 +1630,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
     drawSubmenuButtons = [];
     
-    // Restore main menu buttons
-    for (const btn of buttons) {
-      if (btn.mesh) btn.mesh.visible = true;
-    }
+    // Restore main menu buttons with slight delay to prevent immediate re-triggering
+    setTimeout(() => {
+      for (const btn of buttons) {
+        if (btn.mesh) btn.mesh.visible = true;
+      }
+    }, 50);
   }
   
   function arrangeSubmenuButtons() {
