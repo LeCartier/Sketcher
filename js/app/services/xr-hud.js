@@ -1604,28 +1604,29 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       if (vrDrawService) vrDrawService.clear();
     });
     const returnButton = createTile3DButton('Return', () => {
-      // Add stabilization delay to prevent accidental menu switching
+      // Close submenu but keep draw mode active so user can continue drawing
       const now = performance.now();
       if (now < handCrossingCooldownUntil) {
-        // If hand crossing detected, add extra delay
-        setTimeout(() => {
-          hideDrawSubmenu();
-          // Turn off draw mode
-          if (vrDrawService) vrDrawService.setEnabled(false);
-          if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
-        }, 150);
+        setTimeout(() => { hideDrawSubmenu(); }, 120);
       } else {
         hideDrawSubmenu();
-        // Turn off draw mode
-        if (vrDrawService) vrDrawService.setEnabled(false);
-        if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
       }
+      // Keep Draw button visually active
+      if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', true);
+    });
+
+    // Provide explicit exit control separate from Return
+    const exitButton = createTile3DButton('Exit', () => {
+      // Exit draw mode entirely
+      hideDrawSubmenu();
+      if (vrDrawService) vrDrawService.setEnabled(false);
+      if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
     });
     
     drawSubmenuButtons = [
       colorRed, colorGreen, colorBlue, colorYellow,
       thinLine, mediumLine, thickLine,
-      clearButton, returnButton
+      clearButton, returnButton, exitButton
     ];
     
     // Add submenu buttons to the HUD
@@ -1660,8 +1661,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
   
   function arrangeSubmenuButtons() {
-    // Arrange submenu buttons in a 3x3 grid
-    const cols = 3;
+  // Arrange submenu buttons in a 4x3 grid (added Exit)
+  const cols = 4;
     const buttonSpacing = BUTTON_W + GRID_GAP_X;
     const rowSpacing = BUTTON_H + GRID_GAP_Y;
     

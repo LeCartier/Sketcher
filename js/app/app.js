@@ -636,11 +636,24 @@ export async function init() {
 					} catch{} 
 				});
 				// VR Draw toggle button
-				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, shouldDraw: ()=>{ 
-					// Only allow drawing when explicitly enabled
-					// Simple check without circular reference
-					return true; // Let the vrDraw service manage its own enabled state
-				} }); 
+				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, 
+					shouldDraw: ()=>{ 
+						// Additional global gating can go here (e.g., paused state)
+						return true; 
+					},
+					shouldBlockHandForMenu: (handedness)=>{
+						// Block drawing for a hand only if that hand is currently supposed to interact with a visible menu.
+						// Policy: when any HUD tile group is visible (main buttons or prims submenu) we still allow drawing
+						// with both hands EXCEPT the left hand while main menu (not primitives submenu) is visible.
+						try {
+							const mainVisible = xrHudButtons.some(b=>b?.mesh?.visible);
+							const primsVisible = primsMenu?.visible === true;
+							// If primitives submenu is open we also allow left-hand drawing because submenu is on left palm already handled by direct presses.
+							if (handedness === 'left' && mainVisible && !primsVisible) return true; // block left drawing when main menu showing
+							return false;
+						} catch { return false; }
+					}
+				}); 
 					// Connect VR draw to collaboration
 					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
 					// Connect VR draw to real-time collaboration for live drawing

@@ -1,4 +1,8 @@
 // VR Draw service: simple 3D stroke drawing with hand pinch (thumb-index) in XR
+// Options (opts):
+//   THREE, scene (required)
+//   shouldDraw(): boolean   -> additional global gating
+//   shouldBlockHandForMenu(handedness): boolean -> return true to suppress drawing for that hand this frame (e.g. menu interaction)
 // Lines are added directly to the scene and scale/rotate with scene transformations.
 (function(){
 	function createVRDraw(opts){
@@ -59,14 +63,15 @@
 		function getLineWidth(){ return lineWidth; }
 		function setOnLineCreated(fn){ onLineCreated = fn; }
 		function setCollaborationService(service){ collaborationService = service; }
-		function startStroke(pt){
+		function startStroke(pt, dir){
 			// Generate unique stroke ID for collaboration
 			currentStrokeId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 			
-			// Start with a small duplicate point to make line immediately visible
+			// Use provided direction (finger forward) or fallback to world X
+			let direction = (dir && dir.length() > 0) ? dir.clone().normalize() : new THREE.Vector3(1,0,0);
+			// Create tiny forward stub (1.5mm) so a line is visible immediately but can be replaced by first real movement
 			const startPt = pt.clone();
-			const nextPt = pt.clone();
-			nextPt.x += 0.001; // Add 1mm offset to make line visible
+			const nextPt = pt.clone().add(direction.multiplyScalar(0.0015));
 			points = [startPt, nextPt];
 			
 			currentGeom = new THREE.BufferGeometry();
@@ -149,11 +154,21 @@
 			for (const k of Array.from(tipMarkers.keys())){ if (!sources.includes(k)){ const m = tipMarkers.get(k); try { if (m.parent) m.parent.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch{} tipMarkers.delete(k);} }
 			for (const src of sources){
 				if (!src || !src.hand) continue; // need hand tracking for pinch
-				
-				// ONLY use right hand for drawing - left hand is for menu interaction
-				if (src.handedness !== 'right') continue;
-				
-				const ref = referenceSpace || null;
+					const ref = referenceSpace || null;
+
+					// If host app provided a gating predicate to reserve hand for menu, honor it
+					try {
+						if (opts && typeof opts.shouldBlockHandForMenu === 'function') {
+							// We'll derive an approximate pointer position using the index tip if available later; for now just pass handedness
+							const blocked = opts.shouldBlockHandForMenu(src.handedness);
+							if (blocked) {
+								// Ensure any ongoing stroke from this hand ends immediately
+								if (triggerPrev.get(src)) { endStroke(); }
+								triggerPrev.set(src, false);
+								continue; // Skip drawing for this hand this frame
+							}
+						}
+					} catch(e) {}
 				const idxJ = src.hand.get && src.hand.get('index-finger-tip');
 				const thJ = src.hand.get && src.hand.get('thumb-tip');
 				if (!idxJ || !thJ || !frame.getJointPose) continue;
@@ -170,10 +185,11 @@
 				}
 				// Drawing point originates slightly forward from index tip along local finger direction if orientation available
 				let drawPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+				let forwardDir = null;
 				if (pi.transform && pi.transform.orientation){
 					const o = pi.transform.orientation; const q = new THREE.Quaternion(o.x,o.y,o.z,o.w);
-					const forward = new THREE.Vector3(0,0,-1).applyQuaternion(q);
-					drawPos.add(forward.multiplyScalar(0.01)); // offset 1cm forward
+					forwardDir = new THREE.Vector3(0,0,-1).applyQuaternion(q).normalize();
+					drawPos.add(forwardDir.clone().multiplyScalar(0.01)); // offset 1cm forward
 				}
 				// Update fingertip marker
 				let marker = tipMarkers.get(src);
@@ -205,7 +221,7 @@
 				}
 				if (pinching && !prev){ 
 					console.log('VR Draw: Starting stroke at', drawPos); 
-					startStroke(drawPos); 
+					startStroke(drawPos, forwardDir); 
 				}
 				else if (pinching && currentStroke){ addPoint(drawPos); }
 				else if (!pinching && prev){ 
