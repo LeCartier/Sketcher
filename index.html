@@ -1318,15 +1318,12 @@
               textureEditor.style.display = 'block';
               requestAnimationFrame(()=>{ placeTE(); });
             } else {
+              // Allow explicit toggle off via toolbar button
               textureEditor.style.display = 'none';
             }
           });
           if (textureEditorClose) textureEditorClose.addEventListener('click', ()=>{ textureEditor.style.display = 'none'; });
-          document.addEventListener('click', (e) => {
-            if (textureEditor.style.display !== 'none' && !textureEditor.contains(e.target) && e.target !== openTextureEditorBtn) {
-              textureEditor.style.display = 'none';
-            }
-          });
+          // Removed outside-click auto close: panel now persists until toolbar toggle or explicit X close for efficient multi-apply workflow.
           window.addEventListener('resize', () => { if (textureEditor.style.display !== 'none') placeTE(); });
         }
     });
