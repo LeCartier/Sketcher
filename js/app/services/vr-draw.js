@@ -149,6 +149,10 @@
 			for (const k of Array.from(tipMarkers.keys())){ if (!sources.includes(k)){ const m = tipMarkers.get(k); try { if (m.parent) m.parent.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch{} tipMarkers.delete(k);} }
 			for (const src of sources){
 				if (!src || !src.hand) continue; // need hand tracking for pinch
+				
+				// ONLY use right hand for drawing - left hand is for menu interaction
+				if (src.handedness !== 'right') continue;
+				
 				const ref = referenceSpace || null;
 				const idxJ = src.hand.get && src.hand.get('index-finger-tip');
 				const thJ = src.hand.get && src.hand.get('thumb-tip');

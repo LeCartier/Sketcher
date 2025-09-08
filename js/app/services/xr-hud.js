@@ -177,9 +177,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       primitiveMesh.renderOrder = 10003; // Higher render order than text and flash
       primitiveMesh.position.z = 0.007; // Furthest forward - closest to user's eye (7mm)
       
-      // Add subtle rotation for better 3D visibility - flipped to face user
+      // Add subtle rotation for better 3D visibility - facing user
       primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
-      primitiveMesh.rotation.y = Math.PI * 0.15 + Math.PI; // 27 degrees + 180 degrees (face user)
+      primitiveMesh.rotation.y = Math.PI * 0.15; // 27 degrees (removed 180 flip)
       
       buttonGroup.add(primitiveMesh);
     }
