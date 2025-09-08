@@ -24,9 +24,12 @@
   // Dragging
   let drag = null;
   header?.addEventListener('pointerdown', (e)=>{
+    // Don't start dragging if the pointerdown originated on an interactive control in the header
+    const isInteractive = !!(e.target && (e.target.closest('button, input, select, textarea, a, [role="button"]')));
+    if (isInteractive) return;
     const rect = editor.getBoundingClientRect();
     drag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-    header.setPointerCapture(e.pointerId);
+    try { header.setPointerCapture(e.pointerId); } catch {}
   });
   header?.addEventListener('pointermove', (e)=>{
     if (!drag) return;

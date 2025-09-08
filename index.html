@@ -87,6 +87,12 @@
       </svg>
     </button>
     <div id="primsGroup" class="collapse" aria-hidden="true">
+      <button id="addScaleFigure" class="icon-btn" title="Add 6ft Scale Figure" aria-label="Add 6ft Scale Figure">
+        <span class="sr-only">Add 6ft Scale Figure</span>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" height="24" width="24">
+          <path stroke="#000000" d="m10.5 24 0 -6.5a2 2 0 0 1 2 -2l0 -8s-1.5 -1 -4 -1 -4 1 -4 1l0 8a2 2 0 0 1 2 2V24M21 14c-0.265 0 -0.66 0.275 -0.993 0.553a4.858 4.858 0 0 0 -1.088 1.275c-0.214 0.368 -0.419 0.814 -0.419 1.172 0 -0.358 -0.205 -0.804 -0.42 -1.171a4.858 4.858 0 0 0 -1.087 -1.276C16.661 14.275 16.265 14 16 14m5 -4c-0.265 0 -0.66 -0.275 -0.993 -0.553a4.857 4.857 0 0 1 -1.088 -1.276C18.705 7.804 18.5 7.358 18.5 7c0 0.358 -0.205 0.804 -0.42 1.171 -0.285 0.49 -0.659 0.918 -1.087 1.276 -0.332 0.278 -0.728 0.553 -0.993 0.553M8.35 4.5s-1.6 -1 -1.6 -2.25C6.75 1.283 7.534 0.5 8.5 0.5s1.746 0.783 1.746 1.75c0 1.25 -1.596 2.25 -1.596 2.25h-0.3Z" stroke-width="1.5"></path>
+        </svg>
+      </button>
       <button id="addFloor" class="icon-btn" title="Add Floor" aria-label="Add Floor">
         <span class="sr-only">Add Floor</span>
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -132,19 +138,21 @@
           <path d="M4 18h4v-2h4v-2h4v-2h4v-2" fill="none" stroke="#222" stroke-width="1.8"/>
         </svg>
       </button>
-      <button id="addRoof" class="icon-btn" title="Add Roof Plane" aria-label="Add Roof Plane">
-        <span class="sr-only">Add Roof Plane</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <polygon points="3,12 12,6 21,12 21,14 3,14" fill="none" stroke="#222" stroke-width="1.8"/>
-        </svg>
-      </button>
     </div>
 
-    <!-- 3) Scale Figure -->
-    <button id="addScaleFigure" class="icon-btn" title="Add 6ft Scale Figure" aria-label="Add 6ft Scale Figure">
-      <span class="sr-only">Add 6ft Scale Figure</span>
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" id="Elevator-Person--Streamline-Guidance-Free" height="24" width="24">
-        <path stroke="#000000" d="m10.5 24 0 -6.5a2 2 0 0 1 2 -2l0 -8s-1.5 -1 -4 -1 -4 1 -4 1l0 8a2 2 0 0 1 2 2V24M21 14c-0.265 0 -0.66 0.275 -0.993 0.553a4.858 4.858 0 0 0 -1.088 1.275c-0.214 0.368 -0.419 0.814 -0.419 1.172 0 -0.358 -0.205 -0.804 -0.42 -1.171a4.858 4.858 0 0 0 -1.087 -1.276C16.661 14.275 16.265 14 16 14m5 -4c-0.265 0 -0.66 -0.275 -0.993 -0.553a4.857 4.857 0 0 1 -1.088 -1.276C18.705 7.804 18.5 7.358 18.5 7c0 0.358 -0.205 0.804 -0.42 1.171 -0.285 0.49 -0.659 0.918 -1.087 1.276 -0.332 0.278 -0.728 0.553 -0.993 0.553M8.35 4.5s-1.6 -1 -1.6 -2.25C6.75 1.283 7.534 0.5 8.5 0.5s1.746 0.783 1.746 1.75c0 1.25 -1.596 2.25 -1.596 2.25h-0.3Z" stroke-width="1.5"></path>
+    <!-- 3) Face Align Tool (new) -->
+    <button id="faceAlignTool" class="icon-btn" title="Align object face to another face" aria-label="Face Align Tool">
+      <span class="sr-only">Face Align Tool</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Icon: two squares with an arrow indicating alignment -->
+        <rect x="3" y="5" width="7" height="7" fill="none" stroke="#222" stroke-width="2" />
+        <rect x="14" y="12" width="7" height="7" fill="none" stroke="#222" stroke-width="2" />
+        <path d="M10 9 L14 13" stroke="#222" stroke-width="2" marker-end="url(#arrowheadFA)" />
+        <defs>
+          <marker id="arrowheadFA" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto">
+            <polygon points="0 0, 6 3, 0 6" fill="#222" />
+          </marker>
+        </defs>
       </svg>
     </button>
 
@@ -224,6 +232,10 @@
           <path d="M9 9l3-3 3 3" fill="none" stroke="#222" stroke-width="2"/>
           <text x="12" y="22" text-anchor="middle" font-size="9" fill="#222" font-family="Arial" font-weight="normal">IFC</text>
         </svg>
+      </button>
+      <button id="snipOverlay" class="icon-btn" title="Snip 2D Overlay (Lasso to 3D)" aria-label="Snip Overlay">
+        <span class="sr-only">Snip Overlay</span>
+        ✂
       </button>
       
       
@@ -1370,4 +1382,9 @@
     }
   </script>
 </body>
+<!-- Snip status HUD -->
+<div id="snipStatus" style="position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:rgba(20,20,20,0.78);color:#fff;padding:8px 14px;border-radius:8px;font:13px/1.4 system-ui,Arial,sans-serif;letter-spacing:.3px;backdrop-filter:blur(4px);pointer-events:none;z-index:400;display:none;white-space:nowrap;">
+  LASSO MODE: click to add points • double‑click or Enter to finish • ESC to cancel
+</div>
+</html>
 </html>

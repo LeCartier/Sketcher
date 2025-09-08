@@ -119,6 +119,39 @@ export async function init() {
 	renderer.shadowMap.enabled = true;
 	try { renderer.shadowMap.type = THREE.PCFSoftShadowMap; } catch {}
 	document.body.appendChild(renderer.domElement);
+	// 2D overlay canvas for transient UI (e.g., lasso preview)
+	let overlay2D = null;
+	(function ensureOverlay2D(){
+		try {
+			overlay2D = document.createElement('canvas');
+			overlay2D.id = 'overlay2D';
+			overlay2D.style.position = 'absolute';
+			overlay2D.style.pointerEvents = 'none';
+			overlay2D.style.zIndex = '120';
+			document.body.appendChild(overlay2D);
+			const sync = () => {
+				try {
+					const r = renderer.domElement.getBoundingClientRect();
+					overlay2D.style.left = Math.round(r.left) + 'px';
+					overlay2D.style.top = Math.round(r.top) + 'px';
+					overlay2D.style.width = Math.round(r.width) + 'px';
+					overlay2D.style.height = Math.round(r.height) + 'px';
+					overlay2D.width = Math.max(1, Math.round(r.width));
+					overlay2D.height = Math.max(1, Math.round(r.height));
+					// Clear on resize to avoid ghosting
+					const ctx = overlay2D.getContext('2d'); if (ctx) ctx.clearRect(0,0,overlay2D.width, overlay2D.height);
+				} catch {}
+			};
+			// Initial position/size and on resize
+			sync();
+			window.addEventListener('resize', sync);
+			if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+				try { window.visualViewport.addEventListener('resize', sync); } catch {}
+			}
+			// Expose for debugging if needed
+			window.__overlay2D = overlay2D;
+		} catch {}
+	})();
 	// Ensure great touch/stylus behavior on tablets and iPad (no page scroll/zoom gestures on canvas)
 	try {
 		renderer.domElement.style.touchAction = 'none';
@@ -998,6 +1031,13 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
+							// Default to main menu on open unless draw is already active
+							try {
+								if (nextShown) {
+									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
+									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
+								}
+							} catch {}
 											// Temporarily force Ray mode while the HUD is shown, but only if a controller is present.
 											if (nextShown){
 												if (anyControllerPresent){
@@ -1067,6 +1107,13 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
+							// Default to main menu on open unless draw is already active
+							try {
+								if (nextShown) {
+									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
+									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
+								}
+							} catch {}
 							if (nextShown){
 								if (sources.some(s=>s && s.gamepad && !s.hand)){
 									xrHud3D.userData.__prevInteractionRay = xrInteractionRay;
@@ -1649,9 +1696,27 @@ export async function init() {
 		return box;
 	}
 
+	// Track last position to infer drag axis preference
+	let __lastDragPos = null;
 	function computeSnapDelta(movingBox, excludeSet){
 		if (!SNAP_ENABLED) return { delta: new THREE.Vector3(0,0,0), axis: null, other: null, otherBox: null, movingFace: null, otherFace: null };
-		return snapping.computeSnapDelta(THREE, movingBox, objects, excludeSet, SNAP_ENTER, SNAP_OVERLAP);
+		// Guess axis preference by how much the selected object moved since last frame
+		let axisPreference = null;
+		try {
+			const o = selectedObjects[0];
+			if (o){
+				const p = o.getWorldPosition(new THREE.Vector3());
+				if (__lastDragPos){
+					const dx = Math.abs(p.x - __lastDragPos.x);
+					const dy = Math.abs(p.y - __lastDragPos.y);
+					const dz = Math.abs(p.z - __lastDragPos.z);
+					if (dx > dy && dx > dz) axisPreference = 'x'; else if (dy > dx && dy > dz) axisPreference = 'y'; else if (dz > dx && dz > dy) axisPreference = 'z';
+				}
+				__lastDragPos = p;
+			}
+		} catch {}
+		const opts = { axisPreference, minOverlapAbs: planViewLocked ? 0.04 : 0.02, overlapFrac: planViewLocked ? 0.75 : 0.6 };
+		return snapping.computeSnapDelta(THREE, movingBox, objects, excludeSet, SNAP_ENTER, SNAP_OVERLAP, opts);
 	}
 
 	// Outline helpers
@@ -1970,7 +2035,8 @@ export async function init() {
 				target.position.copy(newLocal);
 				target.updateMatrixWorld(true);
 				rebuildSelectionOutlines();
-				snapVisuals.showAt(movingBox, snap);
+				// Hide highlight for extremely tiny deltas (visual noise)
+				if (snap.delta.length() > 1e-3) snapVisuals.showAt(movingBox, snap); else snapVisuals.hide();
 			}
 			else { snapVisuals.hide(); }
 			// Debounced autosave as objects move
@@ -4770,12 +4836,79 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const addBeamBtn = document.getElementById('addBeam');
 	const addRampBtn = document.getElementById('addRamp');
 	const addStairsBtn = document.getElementById('addStairs');
-	const addRoofBtn = document.getElementById('addRoof');
+	const addScaleFigureBtn = document.getElementById('addScaleFigure');
+	const faceAlignToolBtn = document.getElementById('faceAlignTool');
 	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createColumn({ THREE, material: mat, radius: 0.5, height: 8 }); mesh.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(mesh,{ select:true }); });
 	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createBeam({ THREE, material: mat, len: 12, depth: 1, width: 1 }); mesh.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(mesh,{ select:true }); });
 	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createRamp({ THREE, material: mat, len: 10, thick: 0.5, width: 4 }); mesh.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(mesh,{ select:true }); });
 	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const grp = primitives.createStairs({ THREE, material: mat, steps: 10, rise: 0.7, tread: 1, width: 4 }); grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
-	if(addRoofBtn) addRoofBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createRoofPlane({ THREE, material: mat, w: 12, d: 10 }); mesh.name=`Roof Plane ${objects.filter(o=>o.name.startsWith('Roof Plane')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 16); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 16, 12), mat.clone()); head.position.set(0, legH + torsoH + headR*1.1, 0); grp.add(head); grp.traverse(o=>{ o.castShadow=true; }); grp.scale.setScalar(6/ (legH+torsoH+headR*2)); grp.name=`Scale Figure ${objects.filter(o=>o.name.startsWith('Scale Figure')).length+1}`; addObjectToScene(grp,{ select:true }); });
+	if(faceAlignToolBtn) faceAlignToolBtn.addEventListener('click', ()=>{ startFaceAlignMode(); });
+
+	// Face Align Tool state & logic
+	let faceAlignState = null; // { stage:1|2, source:{object, faceIndex, normal, centroid}, indicator:Mesh }
+	function startFaceAlignMode(){ if(faceAlignState){ cancelFaceAlignMode(); return; } faceAlignState={ stage:1 }; setStatusTemp('Select baseline face'); }
+	function cancelFaceAlignMode(){ cleanupFaceAlignIndicators(); faceAlignState=null; setStatusTemp(''); }
+	function cleanupFaceAlignIndicators(){ if(faceAlignState && faceAlignState.indicator){ scene.remove(faceAlignState.indicator); faceAlignState.indicator.geometry.dispose(); faceAlignState.indicator.material.dispose(); faceAlignState.indicator=null; } }
+	function setStatusTemp(msg){ const hud=document.getElementById('snipStatus'); if(!hud) return; if(!msg){ hud.style.display='none'; return; } hud.style.display='block'; hud.textContent=msg; }
+
+	// Raycast helper for face picking
+	const _faRaycaster = new THREE.Raycaster();
+	function pickFace(ev){ const rect=renderer.domElement.getBoundingClientRect(); const x=(ev.clientX-rect.left)/rect.width*2-1; const y=-(ev.clientY-rect.top)/rect.height*2+1; _faRaycaster.setFromCamera({x,y}, camera); const meshes = objects.filter(o=>o.isMesh && o.geometry && o.geometry.isBufferGeometry); const hits=_faRaycaster.intersectObjects(meshes,false); if(!hits.length) return null; return hits[0]; }
+
+	window.addEventListener('pointerdown', e=>{ if(!faceAlignState) return; if(e.button!==0) return; const hit=pickFace(e); if(!hit) return; const { object, face } = hit; const geom=object.geometry; const posAttr=geom.getAttribute('position'); let a,b,c; if(face && face.a!==undefined){ a=face.a; b=face.b; c=face.c; } else { // Fallback derive from faceIndex
+		const idx = hit.faceIndex*3; a=idx; b=idx+1; c=idx+2; }
+	const va=new THREE.Vector3().fromBufferAttribute(posAttr,a).applyMatrix4(object.matrixWorld);
+	const vb=new THREE.Vector3().fromBufferAttribute(posAttr,b).applyMatrix4(object.matrixWorld);
+	const vc=new THREE.Vector3().fromBufferAttribute(posAttr,c).applyMatrix4(object.matrixWorld);
+	const centroid=new THREE.Vector3().addVectors(va,vb).add(vc).multiplyScalar(1/3);
+	const normal=hit.face ? hit.face.normal.clone().transformDirection(object.matrixWorld) : new THREE.Vector3();
+	if(faceAlignState.stage===1){ // store baseline (stationary)
+		cleanupFaceAlignIndicators(); faceAlignState.source={ object, faceIndex: hit.faceIndex, normal, centroid };
+		const sph=new THREE.Mesh(new THREE.SphereGeometry(0.3,12,8), new THREE.MeshBasicMaterial({color:0x44aa44})); sph.position.copy(centroid); scene.add(sph); faceAlignState.indicator=sph; faceAlignState.stage=2; setStatusTemp('Select face to move');
+	} else if(faceAlignState.stage===2){ // align target (second) to baseline (first)
+		if(object===faceAlignState.source.object && hit.faceIndex===faceAlignState.source.faceIndex){ setStatusTemp('Pick a different face'); return; }
+		const baselineNormal = faceAlignState.source.normal.clone();
+		const baselineCentroid = faceAlignState.source.centroid.clone();
+		const targetNormal = normal.clone();
+		const targetCentroid = centroid.clone();
+		const moverObj = object; // second selection moves
+		const nBase = baselineNormal.clone().normalize();
+		const nTarget = targetNormal.clone().normalize();
+		const dot = nBase.dot(nTarget);
+		const OPP_THRESHOLD = -0.95; // faces toward each other
+		const SAME_THRESHOLD = 0.95;  // parallel same direction
+		if (dot < OPP_THRESHOLD) {
+			// Inside faces (facing each other): slide target along its normal so planes coincide
+			const planeDelta = baselineCentroid.clone().sub(targetCentroid).dot(nTarget);
+			moverObj.position.add(nTarget.clone().multiplyScalar(planeDelta));
+			moverObj.updateMatrixWorld(true);
+			setStatusTemp('Slid into baseline');
+		} else if (dot > SAME_THRESHOLD) {
+			// Already parallel same direction; translate centroids
+			const fullDelta = baselineCentroid.clone().sub(targetCentroid);
+			moverObj.position.add(fullDelta); moverObj.updateMatrixWorld(true);
+			setStatusTemp('Aligned (translation)');
+		} else {
+			// Need rotation of target about its face centroid to match baseline normal, then translation
+			const q = new THREE.Quaternion().setFromUnitVectors(nTarget, nBase);
+			const worldBefore = new THREE.Matrix4().copy(moverObj.matrixWorld);
+			const T1 = new THREE.Matrix4().makeTranslation(-targetCentroid.x, -targetCentroid.y, -targetCentroid.z);
+			const R = new THREE.Matrix4().makeRotationFromQuaternion(q);
+			const T2 = new THREE.Matrix4().makeTranslation(targetCentroid.x, targetCentroid.y, targetCentroid.z);
+			const M = new THREE.Matrix4().multiplyMatrices(T2, new THREE.Matrix4().multiplyMatrices(R, T1));
+			const newWorld = new THREE.Matrix4().multiplyMatrices(M, worldBefore);
+			setWorldMatrix(moverObj, newWorld);
+			// After rotation, translate centroid to baseline centroid
+			const delta = baselineCentroid.clone().sub(targetCentroid);
+			moverObj.position.add(delta); moverObj.updateMatrixWorld(true);
+			setStatusTemp('Rotated & aligned');
+		}
+		rebuildSelectionOutlines(); saveSessionDraftSoon();
+		setTimeout(()=>{ cancelFaceAlignMode(); }, 900);
+	}
+	});
+	window.addEventListener('keydown', e=>{ if(!faceAlignState) return; if(e.key==='Escape'){ cancelFaceAlignMode(); } });
 
 	// Return to Floor logic for toolbox button
 	function handleReturnToFloor() {
@@ -5430,7 +5563,6 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		try { sessionStorage.removeItem('sketcher:baselineStart'); } catch{}
 		updateCameraClipping();
 	});
-	const addScaleFigureBtn = document.getElementById('addScaleFigure'); if (addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 24); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const headGeo = new THREE.SphereGeometry(headR, 24, 16); const head = new THREE.Mesh(headGeo, mat.clone()); head.position.set(0, legH + torsoH + headR, 0); grp.add(head); grp.name = `Scale Figure 6ft ${objects.filter(o=>o.name && o.name.startsWith('Scale Figure 6ft')).length + 1}`; addObjectToScene(grp, { select: true }); });
 	// Desktop Alignment Tile button intentionally disabled; alignment tile is VR-only via XR HUD
 
 	// Local scenes: serialize, save, list, load, delete
@@ -5751,6 +5883,142 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				}
 			} catch {}
 		} catch(e){ console.warn('2D overlay load failed', e); }
+	})();
+
+	// ---- Overlay Snip Feature (Lasso Mode) ----
+	(function initOverlaySnip(){
+		let snipMode = false;
+		let lassoPts = [];// ground plane (x,z)
+		let hoverPt = null;
+		let savedVisibility = new Map();
+		let savedCam = { pos:null, target:null, up:null };
+		let overlayPrevVisible = null;
+		const ray = new THREE.Raycaster();
+		const groundNormal = new THREE.Vector3(0,1,0);
+		const plane = new THREE.Plane(groundNormal, 0); // y=0
+		const tmpVec3 = new THREE.Vector3();
+		function worldPointFromScreen(ev){
+			const rect = renderer.domElement.getBoundingClientRect();
+			const x = ((ev.clientX - rect.left)/rect.width)*2 - 1;
+			const y = -((ev.clientY - rect.top)/rect.height)*2 + 1;
+			ray.setFromCamera({x,y}, camera);
+			const hit = ray.ray.intersectPlane(plane, tmpVec3); if (!hit) return null; return hit.clone();
+		}
+		function pointInPoly(pt, poly){
+			let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+				const xi=poly[i].x, zi=poly[i].z, xj=poly[j].x, zj=poly[j].z;
+				const inter = ((zi>pt.z)!=(zj>pt.z)) && (pt.x < (xj-xi)*(pt.z-zi)/(zj-zi+1e-9)+xi); if(inter) c=!c;
+			} return c;
+		}
+		function enterSnip(){
+			if (snipMode) return;
+			const overlay = scene.getObjectByName('2D Overlay'); if(!overlay){ alert('No 2D Overlay present.'); return; }
+			snipMode = true; lassoPts.length = 0;
+			// Save camera state
+			savedCam.pos = camera.position.clone();
+			savedCam.target = controls.target.clone();
+			// Hide all except overlay
+			savedVisibility.clear();
+			scene.traverse(o=>{
+				// Keep the overlay subtree and all lights visible during snip
+				if (o.isLight) return;
+				let p = o;
+				while (p) { if (p === overlay) return; p = p.parent; }
+				if (o.isObject3D && !o.userData.__alwaysVisible) { savedVisibility.set(o, o.visible); o.visible = false; }
+			});
+			// Ensure overlay itself is visible during snip; remember its prior state
+			overlayPrevVisible = overlay.visible;
+			overlay.visible = true;
+			// Plan view: position camera above overlay center
+			overlay.updateMatrixWorld();
+			const bb = new THREE.Box3().setFromObject(overlay);
+			const center = bb.getCenter(new THREE.Vector3());
+			const size = bb.getSize(new THREE.Vector3());
+			// Compute height so overlay fits in view given perspective FOV and aspect
+			const aspect = (renderer.domElement.clientWidth || 1) / Math.max(1, renderer.domElement.clientHeight || 1);
+			const fovY = (camera.fov || 75) * Math.PI/180;
+			const fovX = 2 * Math.atan(Math.tan(fovY/2) * aspect);
+			const distForX = (size.x/2) / Math.tan(fovX/2);
+			const distForZ = (size.z/2) / Math.tan(fovY/2);
+			const margin = Math.max(2, 0.1 * Math.max(size.x, size.z));
+			const height = Math.min(2000, Math.max(5, Math.max(distForX, distForZ) + margin));
+			camera.position.set(center.x, height, center.z);
+			// Use north-up for top view to avoid up-vector singularity
+			savedCam.up = camera.up.clone();
+			camera.up.set(0,0,1);
+			controls.target.copy(center);
+			camera.lookAt(center);
+			if ('enableRotate' in controls) controls.enableRotate = false;
+			// Force a render so the user immediately sees the overlay framed
+			try { renderer.render(scene, camera); } catch {}
+			const hud = document.getElementById('snipStatus'); if(hud) hud.style.display='block';
+			console.log('Overlay Snip: Lasso mode ON. Click to add points, double-click or Enter to finish, ESC to cancel.');
+		}
+		function exitSnip(apply){
+			if(!snipMode) return;
+			const overlay = scene.getObjectByName('2D Overlay');
+			if (!overlay){ snipMode=false; return; }
+			if (apply && lassoPts.length>2){
+				// Build selection polygon and convert subset
+				const selectedChildren = [];
+				overlay.traverse(child=>{
+					if(child.type==='Line' || child.type==='LineLoop'){
+						try {
+							const posAttr=child.geometry.getAttribute('position'); if(!posAttr) return;
+							for(let i=0;i<posAttr.count;i++){
+								const vx = posAttr.getX(i); const vz = posAttr.getZ(i);
+								if(pointInPoly({x:vx,z:vz}, lassoPts)){ selectedChildren.push(child); break; }
+							}
+						} catch{}
+					} else if (child.isMesh) {
+						// Use mesh position for inclusion test
+						child.updateWorldMatrix(true,false);
+						const lp = child.position.clone(); // overlay local already
+						if(pointInPoly({x:lp.x,z:lp.z}, lassoPts)) selectedChildren.push(child);
+					}
+				});
+				if(selectedChildren.length){
+					const snip = new THREE.Group(); snip.name='Overlay Snip';
+					const LINE_THICK=0.02, EXTRUDE_H=0.02;
+					for(const child of selectedChildren){
+						if(child.type==='Line' || child.type==='LineLoop'){
+							try { const posAttr=child.geometry.getAttribute('position'); if(!posAttr) continue; const pts=[]; for(let i=0;i<posAttr.count;i++){ pts.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i))); } if(child.type==='LineLoop'&&pts.length>2) pts.push(pts[0].clone()); for(let i=0;i<pts.length-1;i++){ const a=pts[i], b=pts[i+1]; const seg=new THREE.Vector3().subVectors(b,a); const len=seg.length(); if(len<1e-4) continue; const geom=new THREE.BoxGeometry(len, EXTRUDE_H, LINE_THICK); const mat=new THREE.MeshStandardMaterial({ color:(child.material&&child.material.color)?child.material.color.clone():new THREE.Color(0x444444), metalness:0, roughness:0.9 }); const mesh=new THREE.Mesh(geom,mat); mesh.position.copy(a.clone().add(b).multiplyScalar(0.5)); const quat=new THREE.Quaternion(); quat.setFromUnitVectors(new THREE.Vector3(1,0,0), seg.clone().normalize()); mesh.setRotationFromQuaternion(quat); mesh.position.y += EXTRUDE_H/2; snip.add(mesh);} } catch{}
+						} else if(child.isMesh){
+							try { const g=child.geometry && child.geometry.clone(); if(!g) continue; const mesh=new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color:(child.material&&child.material.color)?child.material.color.clone():new THREE.Color(0x888888), roughness:0.8 })); mesh.position.copy(child.position); mesh.rotation.copy(child.rotation); mesh.scale.copy(child.scale); snip.add(mesh);} catch{}
+						}
+					}
+					overlay.updateMatrixWorld(); const ovM=overlay.matrixWorld; const pos=new THREE.Vector3(), quat=new THREE.Quaternion(), scl=new THREE.Vector3(); ovM.decompose(pos,quat,scl); snip.position.copy(pos); snip.quaternion.copy(quat); snip.scale.copy(scl); scene.add(snip); selectedObjects.length=0; selectedObjects.push(snip); attachTransformForSelection(); console.log('Overlay Snip: created object from', selectedChildren.length, 'overlay elements');
+				} else { console.log('Overlay Snip: no elements inside lasso'); }
+			}
+			// Restore scene
+			savedVisibility.forEach((vis,obj)=>{ obj.visible = vis; });
+			// Restore overlay visibility if we changed it
+			try { const overlay = scene.getObjectByName('2D Overlay'); if (overlay && overlayPrevVisible !== null) overlay.visible = overlayPrevVisible; } catch{}
+			if(savedCam.pos) camera.position.copy(savedCam.pos);
+			if(savedCam.target) controls.target.copy(savedCam.target);
+			if(savedCam.up) camera.up.copy(savedCam.up);
+			if ('enableRotate' in controls) controls.enableRotate = true;
+			try { renderer.render(scene, camera); } catch {}
+			lassoPts.length=0; hoverPt=null; snipMode=false; const hud=document.getElementById('snipStatus'); if(hud) hud.style.display='none';
+			try { if (overlay2D && overlay2D.getContext) { const ctx=overlay2D.getContext('2d'); ctx.clearRect(0,0,overlay2D.width, overlay2D.height); } } catch {}
+		}
+		function drawLassoOverlay(){
+			if(!snipMode) return;
+			if(!overlay2D || !overlay2D.getContext) return;
+			const ctx = overlay2D.getContext('2d'); if(!ctx) return;
+			try { ctx.save(); ctx.clearRect(0,0,overlay2D.width, overlay2D.height); if(lassoPts.length){ ctx.strokeStyle='rgba(255,160,0,0.9)'; ctx.fillStyle='rgba(255,160,0,0.12)'; ctx.lineWidth=2; ctx.setLineDash([6,4]); ctx.beginPath(); const r=renderer.domElement.getBoundingClientRect(); const project=(p)=>{ const sp=p.clone().project(camera); return { x:(sp.x*0.5+0.5)*r.width, y:(-sp.y*0.5+0.5)*r.height }; }; for(let i=0;i<lassoPts.length;i++){ const p=project(lassoPts[i]); if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); } if(hoverPt){ const hp=project(hoverPt); ctx.lineTo(hp.x,hp.y); } if(lassoPts.length>2) ctx.closePath(); ctx.stroke(); if(lassoPts.length>2) ctx.fill(); } ctx.restore(); } catch{}
+		}
+		// Hook events
+		try {
+			const canvas = renderer.domElement;
+			canvas.addEventListener('pointerdown', (e)=>{ if(!snipMode) return; const w=worldPointFromScreen(e); if(!w) return; lassoPts.push(new THREE.Vector3(w.x,0,w.z)); });
+			canvas.addEventListener('pointermove', (e)=>{ if(!snipMode) return; const w=worldPointFromScreen(e); hoverPt = w ? new THREE.Vector3(w.x,0,w.z): null; });
+			canvas.addEventListener('dblclick', (e)=>{ if(!snipMode) return; e.preventDefault(); exitSnip(true); });
+			window.addEventListener('keydown', (e)=>{ if(!snipMode) return; if(e.key==='Enter'){ exitSnip(true); } else if(e.key==='Escape'){ exitSnip(false); } });
+			// Augment main render loop to draw lasso (wrap renderer.render once)
+			if(!renderer.__snipWrapped){ const baseRender = renderer.render.bind(renderer); renderer.render=(sc,cam)=>{ baseRender(sc,cam); drawLassoOverlay(); }; renderer.__snipWrapped=true; }
+		} catch{}
+		try { const btn=document.getElementById('snipOverlay'); if(btn) btn.addEventListener('click', ()=>{ if(snipMode){ exitSnip(false); } else { enterSnip(); } }); } catch{}
 	})();
 }
 

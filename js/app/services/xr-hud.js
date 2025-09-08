@@ -129,7 +129,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       transparent: true, 
       opacity: 0.95, // More opaque
       depthTest: false, 
-      depthWrite: false 
+      depthWrite: false,
+      toneMapped: false
     });
     const bgMesh = new THREE.Mesh(bgGeom, bgMat);
     bgMesh.renderOrder = 10000;
@@ -141,41 +142,41 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     
     // Create primitive geometry based on type with brighter colors
     switch(primitiveType.toLowerCase()) {
-      case 'box':
+    case 'box':
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-          new THREE.MeshBasicMaterial({ color: 0x66d9ff, depthTest: false, depthWrite: false }) // Much brighter blue
+      new THREE.MeshBasicMaterial({ color: 0x66d9ff, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter blue
         );
         break;
       case 'sphere':
         primitiveMesh = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.5, 12, 8),
-          new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false }) // Much brighter red
+      new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter red
         );
         break;
       case 'cylinder':
         primitiveMesh = new THREE.Mesh(
           new THREE.CylinderGeometry(iconScale * 0.4, iconScale * 0.4, iconScale, 12),
-          new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false }) // Much brighter green
+      new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter green
         );
         break;
       case 'cone':
         primitiveMesh = new THREE.Mesh(
           new THREE.ConeGeometry(iconScale * 0.4, iconScale, 12),
-          new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false }) // Much brighter orange
+      new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter orange
         );
         break;
       default:
         // Fallback to a simple cube
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-          new THREE.MeshBasicMaterial({ color: 0xdddddd, depthTest: false, depthWrite: false }) // Much brighter gray
+      new THREE.MeshBasicMaterial({ color: 0xdddddd, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter gray
         );
     }
     
     if (primitiveMesh) {
-      primitiveMesh.renderOrder = 10003; // Higher render order than text and flash
-      primitiveMesh.position.z = 0.007; // Furthest forward - closest to user's eye (7mm)
+  primitiveMesh.renderOrder = 10003; // Higher render order than text and flash
+  primitiveMesh.position.z = 0.012; // Push further forward to avoid blending dimming
       
       // Add subtle rotation for better 3D visibility - facing user
       primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
@@ -231,7 +232,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       transparent: true, 
       opacity: 0.95, 
       depthTest: false, 
-      depthWrite: false 
+      depthWrite: false,
+      toneMapped: false
     });
     const bgMesh = new THREE.Mesh(bgGeom, bgMat);
     bgMesh.renderOrder = 10000;
@@ -258,7 +260,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       map: textTexture, 
       transparent: true, 
       depthTest: false, 
-      depthWrite: false 
+      depthWrite: false,
+      toneMapped: false
     });
     const textMesh = new THREE.Mesh(textGeom, textMat);
     textMesh.position.y = -BUTTON_H * 0.28; // Position at bottom
@@ -269,14 +272,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Create draw icon: pencil/pen shape
     // Pencil body (cylinder)
     const bodyGeom = new THREE.CylinderGeometry(iconScale * 0.08, iconScale * 0.08, iconScale * 0.6, 8);
-    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false }); // Bright orange
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }); // Bright orange
     const bodyMesh = new THREE.Mesh(bodyGeom, bodyMat);
     bodyMesh.renderOrder = 10001;
     iconGroup.add(bodyMesh);
     
     // Pencil tip (cone)
     const tipGeom = new THREE.ConeGeometry(iconScale * 0.08, iconScale * 0.15, 8);
-    const tipMat = new THREE.MeshBasicMaterial({ color: 0x999999, depthTest: false, depthWrite: false }); // Bright gray
+  const tipMat = new THREE.MeshBasicMaterial({ color: 0x999999, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }); // Bright gray
     const tipMesh = new THREE.Mesh(tipGeom, tipMat);
     tipMesh.position.y = -iconScale * 0.375; // Position at bottom of pencil
     tipMesh.renderOrder = 10001;
@@ -290,14 +293,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       new THREE.Vector3(iconScale * 0.15, -iconScale * 0.55, 0.002)
     ];
     const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xff6666, linewidth: 3, depthTest: false, depthWrite: false }); // Bright red
+  const lineMat = new THREE.LineBasicMaterial({ color: 0xff6666, linewidth: 3, depthTest: false, depthWrite: false }); // Bright red (LineBasicMaterial ignores toneMapped)
     const lineMesh = new THREE.Line(lineGeom, lineMat);
     lineMesh.renderOrder = 10001;
     iconGroup.add(lineMesh);
     
     // Position the icon group in the upper area of the tile
     iconGroup.position.y = BUTTON_H * 0.1; // Centered in upper area
-    iconGroup.position.z = 0.001;
+  iconGroup.position.z = 0.006; // Push forward to avoid z-fighting/alpha blending dimming
     iconGroup.rotation.x = Math.PI * 0.1;  // Slight tilt
     iconGroup.rotation.z = Math.PI * 0.1;  // Slight angle like holding a pencil
     
@@ -1119,8 +1122,26 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // If palm not present, don’t gate on palmUp; allow menu to show when toggled
   const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || !palmPresent || palmUp);
   const mustHide = (anyGrabOrSqueeze) || (palmReq && palmPresent && !palmUp);
-  if (hud.visible && mustHide) { hud.visible = false; hud.userData.__autoHidden = true; hud.userData.__menuShown = false; try { if (typeof module!=='undefined'){} } catch {} }
-  else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { hud.visible = true; hud.userData.__autoHidden = false; try { /* reset pressed states on show */ } catch {} }
+  if (hud.visible && mustHide) { 
+    hud.visible = false; 
+    hud.userData.__autoHidden = true; 
+    hud.userData.__menuShown = false; 
+    try { 
+      // Ensure any draw submenu is closed when HUD hides
+      if (typeof hideDrawSubmenu === 'function') hideDrawSubmenu(); 
+    } catch {}
+    try { if (typeof module!=='undefined'){} } catch {} 
+  }
+  else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { 
+    hud.visible = true; 
+    hud.userData.__autoHidden = false; 
+    try { 
+      /* reset pressed states on show */ 
+      // Default to main menu on open: close draw submenu unless draw is already active
+      const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
+      if (!drawActive && typeof hideDrawSubmenu === 'function') hideDrawSubmenu();
+    } catch {} 
+  }
     } catch {}
     // Hover and click via controller rays; also support right finger poke
     try {
