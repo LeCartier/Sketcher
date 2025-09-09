@@ -1,22 +1,28 @@
 import { distToSegment } from './geometry-2d.js';
 
+// Hit-test thickness conversion: world feet per screen pixel (set by app)
+let worldPerPx = 1/20; // default: 20 px per ft -> ~0.05 ft/px
+export function setHitTestWorldPerPx(v){ if(typeof v==='number' && isFinite(v) && v>0){ worldPerPx = v; } }
+
 export function hitTestObject(o, p, radius){
+  const sw = (typeof o.thickness === 'number' && isFinite(o.thickness)) ? o.thickness : 1;
+  const tol = Math.max(radius, (sw/2) * worldPerPx);
   switch(o.type){
     case 'path': {
       for(let i=1;i<o.pts.length;i++){
-        if(distToSegment(p, o.pts[i-1], o.pts[i]) <= Math.max(radius, o.thickness/2)) return {hit:true, seg:i-1};
+        if(distToSegment(p, o.pts[i-1], o.pts[i]) <= tol) return {hit:true, seg:i-1};
       }
       // If closed, also test the closing edge from last to first
       if(o.closed && o.pts.length>2){
-        if(distToSegment(p, o.pts[o.pts.length-1], o.pts[0]) <= Math.max(radius, o.thickness/2)) return {hit:true, seg:o.pts.length-1};
+        if(distToSegment(p, o.pts[o.pts.length-1], o.pts[0]) <= tol) return {hit:true, seg:o.pts.length-1};
       }
       return {hit:false};
     }
-    case 'line': { const d = distToSegment(p, o.a, o.b); return { hit: d <= Math.max(radius, o.thickness/2) }; }
+    case 'line': { const d = distToSegment(p, o.a, o.b); return { hit: d <= tol }; }
     case 'rect': {
       const a={x:Math.min(o.a.x,o.b.x),y:Math.min(o.a.y,o.b.y)}, b={x:Math.max(o.a.x,o.b.x),y:Math.max(o.a.y,o.b.y)};
       const segs=[[{x:a.x,y:a.y},{x:b.x,y:a.y}],[{x:b.x,y:a.y},{x:b.x,y:b.y}],[{x:b.x,y:b.y},{x:a.x,y:b.y}],[{x:a.x,y:b.y},{x:a.x,y:a.y}]];
-      const ok = segs.some(([s,e])=> distToSegment(p,s,e) <= Math.max(radius, o.thickness/2));
+      const ok = segs.some(([s,e])=> distToSegment(p,s,e) <= tol);
       return { hit: ok };
     }
     case 'ellipse': {
@@ -40,6 +46,7 @@ export function eraseObjectAt(objects, p, radius){
 export function erasePixelAt(objects, p, radius){
   for(let i=objects.length-1;i>=0;i--){
     const o = objects[i];
+  const sw = (typeof o.thickness === 'number' && isFinite(o.thickness)) ? o.thickness : 1;
     if(o.type==='path'){
       const keep = o.pts.map(pt => Math.hypot(pt.x-p.x, pt.y-p.y) > radius);
       if(keep.every(v=>v)) continue;
@@ -52,7 +59,7 @@ export function erasePixelAt(objects, p, radius){
       objects.splice(i,1);
       for(let pi=parts.length-1; pi>=0; pi--){ objects.splice(i,0,{...o, pts: parts[pi]}); }
     } else if(o.type==='line'){
-      const hit = distToSegment(p, o.a, o.b) <= Math.max(radius, o.thickness/2);
+      const hit = distToSegment(p, o.a, o.b) <= Math.max(radius, (sw/2)*worldPerPx);
       if(hit){
         const ax=o.a.x, ay=o.a.y, bx=o.b.x, by=o.b.y; const vx=bx-ax, vy=by-ay; const len2=vx*vx+vy*vy; if(len2<1e-6){ objects.splice(i,1); continue; }
         const t = ((p.x-ax)*vx + (p.y-ay)*vy)/len2; const tcut = Math.max(0, Math.min(1, t));
@@ -68,7 +75,7 @@ export function erasePixelAt(objects, p, radius){
     } else if(o.type==='rect'){
       const a={x:Math.min(o.a.x,o.b.x),y:Math.min(o.a.y,o.b.y)}, b={x:Math.max(o.a.x,o.b.x),y:Math.max(o.a.y,o.b.y)};
       const edges=[[{x:a.x,y:a.y},{x:b.x,y:a.y}],[{x:b.x,y:a.y},{x:b.x,y:b.y}],[{x:b.x,y:b.y},{x:a.x,y:b.y}],[{x:a.x,y:b.y},{x:a.x,y:a.y}]];
-      if(edges.some(([s,e])=> distToSegment(p,s,e) <= Math.max(radius, o.thickness/2))){ objects.splice(i,1); }
+      if(edges.some(([s,e])=> distToSegment(p,s,e) <= Math.max(radius, (sw/2)*worldPerPx))){ objects.splice(i,1); }
     } else if(o.type==='ellipse'){
       const cx=(o.a.x+o.b.x)/2, cy=(o.a.y+o.b.y)/2, rx=Math.abs(o.a.x-o.b.x)/2, ry=Math.abs(o.a.y-o.b.y)/2;
       if(rx<1e-3||ry<1e-3) { objects.splice(i,1); continue; }

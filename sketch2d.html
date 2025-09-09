@@ -26,10 +26,26 @@
     #importScaleModal .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   }
   </style>
+  <style>
+    /* Temp snip edit theme accents */
+    body.snip-edit-mode #statusBar { background: rgba(30,136,229,0.1); color:#0b3a6e; border:1px solid rgba(30,136,229,0.3); }
+    body.snip-edit-mode #toolbox .toggle-btn[aria-pressed="true"],
+    body.snip-edit-mode .icon-btn[aria-pressed="true"] { outline: 2px solid #1e88e5; }
+  </style>
 </head>
 <body>
   <div id="pageFade"></div>
   <canvas id="grid2d"></canvas>
+  <!-- Temp Snip Edit bar (only in snip-edit-mode) -->
+  <div id="snipEdit2DBar" role="group" aria-label="Snip edit" style="display:none; position:fixed; left:24px; top:12px; background:rgba(255,255,255,0.96); border:1px solid #e0e0e0; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,0.10); padding:6px; z-index:120; gap:6px; align-items:center;">
+    <span id="snipEdit2DLabel" style="font:600 12px/1.2 system-ui, sans-serif; color:#0b3a6e; letter-spacing:.06em; text-transform:uppercase;">Editing Snip</span>
+    <button id="snipEdit2DFinish" class="icon-btn" title="Finish and return" aria-label="Finish and return" type="button" style="width:36px; height:36px; min-width:36px; min-height:36px; border-radius:10px;">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z" fill="#222"/></svg>
+    </button>
+    <button id="snipEdit2DCancel" class="icon-btn" title="Cancel" aria-label="Cancel" type="button" style="width:36px; height:36px; min-width:36px; min-height:36px; border-radius:10px;">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12.01 5.7 5.7 4.29 7.11 10.59 13.4 4.3 19.7 5.71 21.11 12 14.82 18.29 21.1 19.7 19.69 13.41 13.4 19.71 7.1z" fill="#222"/></svg>
+    </button>
+  </div>
   <div id="toolbox">
     <!-- Object Select toggle (affects left-click). Middle-click always pans. -->
     <button id="toggle2DSelect" class="icon-btn toggle-btn" title="Object Select (V)" aria-label="Object Select" aria-pressed="false">

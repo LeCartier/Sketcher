@@ -2109,6 +2109,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Mobile delete UI
 	const mobileDeleteBar = document.getElementById('mobileDeleteBar');
 	const mobileDeleteBtn = document.getElementById('mobileDeleteBtn');
+	const snipEditBar = document.getElementById('snipEditBar');
+	const snipEditBtn = document.getElementById('snipEditBtn');
 	const viewNorthBtn = document.getElementById('viewNorth');
 	const viewSouthBtn = document.getElementById('viewSouth');
 	const viewEastBtn = document.getElementById('viewEast');
@@ -2251,17 +2253,29 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		return false;
 	}
 	function __resolvePickedObjectFromHits(hits){
+		// First pass: return first non-helper real object (e.g., Overlay Snip)
 		for (const h of hits){
 			let o = h.object;
-			// Allow picking the 2D Overlay even though it's marked as helper
+			if (!__isHelperChain(o)){
+				// Prefer the 'Overlay Snip' root if this is part of a snip
+				let a = o;
+				while (a){ if (a.name === 'Overlay Snip') { o = a; break; } a = a.parent; }
+				// Else, climb to the nearest ancestor that is registered as a top-level object
+				while(o.parent && o.parent.type === 'Group' && objects.includes(o.parent)) o = o.parent;
+				return o;
+			}
+		}
+		// Second pass: allow 2D Overlay explicitly if nothing else
+		for (const h of hits){
+			let o = h.object;
 			if (__isHelperChain(o)){
 				let n = o;
-				let allowed = false;
-				while(n){ if (n.name === '2D Overlay'){ allowed = true; o = n; break; } n = n.parent; }
-				if (!allowed) continue;
+				while(n){ if (n.name === '2D Overlay'){ o = n; break; } n = n.parent; }
+				if (o && o.name === '2D Overlay'){
+					while(o.parent && o.parent.type === 'Group' && objects.includes(o.parent)) o = o.parent;
+					return o;
+				}
 			}
-			while(o.parent && o.parent.type === 'Group' && objects.includes(o.parent)) o = o.parent;
-			return o;
 		}
 		return null;
 	}
@@ -2409,6 +2423,29 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				mobileDeleteBar.style.display = shouldShow ? 'flex' : 'none';
 				if (shouldShow) placeMobileDeleteBar();
 			}
+			// Toggle Snip Edit bar: show when exactly one Overlay Snip is selected
+			if (snipEditBar) {
+				let showSnip = false;
+				let snipObj = null;
+				if (mode==='edit' && selectedObjects && selectedObjects.length === 1) {
+					const o = selectedObjects[0];
+					if (o && o.name === 'Overlay Snip') { showSnip = true; snipObj = o; }
+				}
+				snipEditBar.style.display = showSnip ? 'flex' : 'none';
+				if (showSnip) placeSnipEditBar();
+				// Wire button once
+				if (snipEditBtn && !snipEditBtn.__wired) {
+					snipEditBtn.addEventListener('click', ()=>{
+						if (selectedObjects && selectedObjects.length === 1 && selectedObjects[0] && selectedObjects[0].name==='Overlay Snip') {
+							try {
+								if (typeof window !== 'undefined' && typeof window.__openSnipFor2DEdit === 'function') { window.__openSnipFor2DEdit(selectedObjects[0]); }
+								else if (typeof __openSnipFor2DEdit === 'function') { __openSnipFor2DEdit(selectedObjects[0]); }
+							} catch{}
+						}
+					});
+					snipEditBtn.__wired = true;
+				}
+			}
 		} catch {}
 	}
 
@@ -2422,6 +2459,23 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const top = Math.round(r.bottom + 10);
 			mobileDeleteBar.style.left = left + 'px';
 			mobileDeleteBar.style.top = top + 'px';
+			// Match toolbox width exactly
+			mobileDeleteBar.style.width = Math.round(r.width) + 'px';
+		} catch {}
+	}
+
+	// Dock the Snip Edit bar at the top of the toolbox
+	function placeSnipEditBar(){
+		try {
+			if (!snipEditBar || snipEditBar.style.display === 'none') return;
+			if (!toolbox) return;
+			const r = toolbox.getBoundingClientRect();
+			const left = Math.round(r.left);
+			const top = Math.round(r.top - (snipEditBar.offsetHeight + 10));
+			snipEditBar.style.left = left + 'px';
+			snipEditBar.style.top = top + 'px';
+			// Match toolbox width exactly
+			snipEditBar.style.width = Math.round(r.width) + 'px';
 		} catch {}
 	}
 
@@ -3368,7 +3422,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (toggleDrawCreateBtn && drawCreateGroup) togglePanel(toggleDrawCreateBtn, drawCreateGroup);
 	if (toggleRoomBtn && roomGroup) togglePanel(toggleRoomBtn, roomGroup);
 	// On resize, keep the delete bar docked too
-	window.addEventListener('resize', () => { placeMobileDeleteBar(); });
+	window.addEventListener('resize', () => { placeMobileDeleteBar(); placeSnipEditBar(); });
 	if (toggleImportBtn && importGroup) togglePanel(toggleImportBtn, importGroup);
 	if (toggleSceneManagerBtn && sceneManagerGroup) togglePanel(toggleSceneManagerBtn, sceneManagerGroup);
 	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
@@ -3619,44 +3673,24 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			tweenCamera(camera, perspCamera, 600, () => { camera = perspCamera; controls.object = camera; controls.update(); });
 		}
 	});
-	// Double-click to show grabbers for single selection
+	// Double-click: show grabbers for single selection (snip edit via dedicated button)
 	renderer.domElement.addEventListener('dblclick', e => {
 		if (mode !== 'edit') return;
 			getPointer(e); raycaster.setFromCamera(pointer, camera);
 			const hits = raycaster.intersectObjects(selectableTargets(), true);
-			// If there is already a single selection, prioritize toggling it to handles
-			if (selectedObjects.length === 1) {
-				singleSelectionMode = 'handles';
-				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
-				return;
-			}
-			// Otherwise, use the hit object (if any)
-			if (hits.length){
-				const obj = __resolvePickedObjectFromHits(hits);
-				if (!obj) return;
-				selectedObjects = [obj];
-				singleSelectionMode = 'handles';
-				attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
-			}
+			// Else if there is already a single selection, toggle handles
+			if (selectedObjects.length === 1) { singleSelectionMode = 'handles'; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); return; }
+			// Else select hit and show handles
+			if (hits.length){ const obj = __resolvePickedObjectFromHits(hits); if (!obj) return; selectedObjects = [obj]; singleSelectionMode = 'handles'; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); }
 	});
-	// Capture-phase dblclick fallback in case controls intercept the bubble phase
+	// Capture-phase dblclick fallback; no snip auto-open here
 	window.addEventListener('dblclick', e => {
 		if (mode !== 'edit') return;
 		if (!(e.target && (e.target === renderer.domElement || renderer.domElement.contains(e.target)))) return;
-		if (selectedObjects.length === 1) {
-			singleSelectionMode = 'handles';
-			attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
-			return;
-		}
 		getPointer(e); raycaster.setFromCamera(pointer, camera);
-	const hits = raycaster.intersectObjects(selectableTargets(), true);
-		if (hits.length){
-			const obj = __resolvePickedObjectFromHits(hits);
-			if (!obj) return;
-			selectedObjects = [obj];
-			singleSelectionMode = 'handles';
-			attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI();
-		}
+		const hits = raycaster.intersectObjects(selectableTargets(), true);
+		if (selectedObjects.length === 1) { singleSelectionMode = 'handles'; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); return; }
+		if (hits.length){ const obj = __resolvePickedObjectFromHits(hits); if (!obj) return; selectedObjects = [obj]; singleSelectionMode = 'handles'; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); }
 	}, true);
 	}
 	// View button listeners will be wired by ui/views.js via public API
@@ -5816,6 +5850,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// Keep group's origin at sketch center; default offset is zero
 				group.position.set(0, 0, 0);
 				group.userData.defaultOffset = new THREE.Vector3(0, 0, 0);
+				group.userData.updateOverlayColors = updateOverlayColors; // Store for access during snip
 				// Keep color in sync each frame
 				const orig = renderer.render.bind(renderer);
 				renderer.render = function(sc, cam){ updateOverlayColors(); orig(sc, camera); };
@@ -5887,6 +5922,243 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// ---- Overlay Snip Feature (Lasso Mode) ----
 	(function initOverlaySnip(){
+		// Prefer performing the lasso snip in the 2D page for maximum visibility and usability
+		const prefer2DSnip = true;
+
+		// Helper: generate a simple id for a snip
+		function __makeSnipId(){ return 'snip-' + Math.random().toString(36).slice(2) + '-' + Date.now(); }
+		function __findSnipById(id){ try { const hits = []; scene.traverse(o=>{ if(o && o.name==='Overlay Snip' && o.userData && o.userData.snipId===id) hits.push(o); }); return hits[0]||null; } catch{ return null; } }
+		function __centerSnipPivotPostPlacement(snip){
+			try {
+				if (!snip) return;
+				const box = new THREE.Box3(); box.setFromObject(snip);
+				if (!box.isEmpty()){
+					const centerWS = new THREE.Vector3(); box.getCenter(centerWS);
+					const offsetWS = new THREE.Vector3().copy(centerWS).sub(snip.getWorldPosition(new THREE.Vector3()));
+					const contents = snip.getObjectByName('__OverlaySnipContents');
+					if (contents){
+						const centerLocal = snip.worldToLocal(centerWS.clone());
+						// Move contents opposite the local center so pivot lies at geometric center (XZ only)
+						contents.position.sub(new THREE.Vector3(centerLocal.x, 0, centerLocal.z));
+						// Compensate group so world pose remains unchanged (XZ only)
+						snip.position.add(new THREE.Vector3(offsetWS.x, 0, offsetWS.z));
+					}
+				}
+			} catch{}
+		}
+		function __openSnipFor2DEdit(snip){
+			try {
+				if (!snip || !snip.userData) return;
+				if (!snip.userData.snipId){ snip.userData.snipId = __makeSnipId(); }
+				const contents = snip.getObjectByName('__OverlaySnipContents');
+				const src = (contents && contents.userData && contents.userData.source2D) || snip.userData.source2D;
+				if (!src || !Array.isArray(src.objects) || !src.objects.length){ console.warn('This snip has no editable 2D source. Create a new snip to edit.'); return; }
+				const payload = { id: snip.userData.snipId, data: src };
+				try { sessionStorage.setItem('sketcher:2d:snipEdit', JSON.stringify(payload)); } catch{}
+				// Navigate to 2D editor in temp snip edit mode
+				const url = new URL('../../sketch2d.html', import.meta.url);
+				url.searchParams.set('editSnip', '1');
+				try { document.body.classList.add('page-leave'); } catch{}
+				setTimeout(()=>{ window.location.href = url.href; }, 170);
+			} catch{}
+		}
+		// Expose for external handlers
+		try { window.__openSnipFor2DEdit = __openSnipFor2DEdit; } catch{}
+		function __handleSnipEditResultIfAny(){
+			try {
+				const raw = sessionStorage.getItem('sketcher:2d:snipEditResult');
+				if (!raw) return;
+				const msg = JSON.parse(raw);
+				// consume
+				sessionStorage.removeItem('sketcher:2d:snipEditResult');
+				if (!msg || !msg.id || !msg.data || !Array.isArray(msg.data.objects)) return;
+				const snip = __findSnipById(msg.id);
+				if (!snip){ console.warn('Edited snip not found in scene, id=', msg.id); return; }
+				// Rebuild new contents from updated 2D data using the same builder
+				const temp = createOverlaySnipFrom2DData(msg.data);
+				if (!temp) return;
+				const newContents = temp.getObjectByName('__OverlaySnipContents');
+				if (!newContents) return;
+				// Update existing contents in-place to preserve its local transform, then compensate for docCenter changes
+				try {
+					const oldContents = snip.getObjectByName('__OverlaySnipContents');
+					if (oldContents) {
+						// Compute docCenter delta (feet) from previous to new baseline
+						const prevMeta = snip.userData && snip.userData.source2D ? snip.userData.source2D.meta : null;
+						const nextMeta = msg && msg.data ? msg.data.meta : null;
+						if (prevMeta && nextMeta && prevMeta.docCenter && nextMeta.docCenter) {
+							const ddx = (nextMeta.docCenter.x - prevMeta.docCenter.x);
+							const ddz = (nextMeta.docCenter.y - prevMeta.docCenter.y);
+							// Scale into snip local units (snip.scale applies to children)
+							const sx = (snip.scale && snip.scale.x) || 1;
+							const sz = (snip.scale && snip.scale.z) || 1;
+							oldContents.position.add(new THREE.Vector3(ddx * sx, 0, ddz * sz));
+						}
+						// Replace children under old contents group
+						try { const kids = oldContents.children.slice(); for (const k of kids) oldContents.remove(k); } catch{}
+						try { const kids2 = newContents.children.slice(); for (const k of kids2) oldContents.add(k); } catch{}
+						// Keep latest 2D source on the contents group for future edits
+						try { oldContents.userData = oldContents.userData || {}; oldContents.userData.source2D = msg.data; } catch{}
+					} else {
+						// Fallback: no existing contents found, insert the new group
+						snip.add(newContents);
+						try { newContents.userData = newContents.userData || {}; newContents.userData.source2D = msg.data; } catch{}
+					}
+				} catch{}
+				// Re-bind color updater to include new materials and apply once now
+				try { if (temp.userData && typeof temp.userData.__updateSnipColors==='function'){ snip.userData.__updateSnipColors = temp.userData.__updateSnipColors; snip.userData.__updateSnipColors(); } } catch{}
+				// Update source data and flags
+				try { snip.userData.source2D = msg.data; } catch{}
+				// Recompute gizmo/pivot center based on updated geometry while keeping world pose unchanged
+				try { __centerSnipPivotPostPlacement(snip); snip.userData.pivotAtSubsetCenter = true; } catch{}
+				// Ensure slight lift; avoid pivot recentering here to prevent drift
+				snip.position.y = Math.max(snip.position.y, 0.02);
+				// Keep selection on this snip
+				selectedObjects.length = 0; selectedObjects.push(snip);
+				attachTransformForSelection(); if(typeof transformControls!=='undefined' && transformControls) transformControls.setMode('rotate');
+				renderer.render(scene, camera);
+				console.log('Overlay Snip updated from 2D edit');
+			} catch(e){ console.warn('Failed to handle 2D snip edit result', e); }
+		}
+
+		// Helper: build an Overlay Snip 3D group from a subset of 2D data
+		function createOverlaySnipFrom2DData(data){
+			try {
+				if(!data || !Array.isArray(data.objects)) return null;
+				const snip = new THREE.Group(); snip.name = 'Overlay Snip'; snip.userData.__helper = false; snip.userData.__preserveMaterials = true;
+				// Persist the 2D source for later temp editing
+				try { snip.userData.source2D = data; } catch{}
+				const zLift = 0.02;
+				// Build geometry in the same local coordinate frame as the overlay (doc-centered)
+				const docCenter = (data.meta && data.meta.docCenter && isFinite(data.meta.docCenter.x) && isFinite(data.meta.docCenter.y)) ? data.meta.docCenter : { x:0, y:0 };
+				// Mark that this snip is anchored to doc center for exact placement
+				snip.userData.anchoredToDocCenter = !!(data.meta && data.meta.docCenter);
+				const hasSubsetCenter = !!(data.meta && data.meta.subsetCenter && isFinite(data.meta.subsetCenter.x) && isFinite(data.meta.subsetCenter.y));
+				// Color handling: cache base colors and adjust for background contrast like overlay
+				const getBgColor = ()=>{ const c = new THREE.Color(); try { renderer.getClearColor(c); } catch{} return c; };
+				const relLum = (c)=>{ const srgb=[c.r,c.g,c.b].map(v=> v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055, 2.4)); return 0.2126*srgb[0]+0.7152*srgb[1]+0.0722*srgb[2]; };
+				const contrastRatio = (a,b)=>{ const L1=Math.max(relLum(a),relLum(b)); const L2=Math.min(relLum(a),relLum(b)); return (L1+0.05)/(L2+0.05); };
+				const invertColor = (c)=> new THREE.Color(1-c.r, 1-c.g, 1-c.b);
+				const CONTRAST_MIN = 2.6;
+				const strokeCache = new Map(); const fillCache = new Map();
+				const trackedMats = []; // { type:'stroke'|'fill', mat, base:THREE.Color }
+				const normHex = (hex)=>{ if(!hex||typeof hex!=='string') return null; const h=hex.trim().toLowerCase(); if(h==='#00000000'||h==='transparent') return null; if(/^#?[0-9a-f]{6,8}$/.test(h)){ const s=h.startsWith('#')?h.slice(1):h; return '#'+s.slice(0,6); } return null; };
+				const getStrokeMat = (hex)=>{ const key = normHex(hex) || '#111111'; let rec = strokeCache.get(key); if(!rec){ const base = new THREE.Color(key); const m = new THREE.LineBasicMaterial({ color: base.clone(), transparent:false, depthTest:true }); rec = { mat:m, base }; strokeCache.set(key, rec); trackedMats.push({ type:'stroke', ...rec }); } return rec.mat; };
+				const getFillMat = (hex, opacity=0.26)=>{ const key = normHex(hex); if(!key) return null; let rec = fillCache.get(key); if(!rec){ const base = new THREE.Color(key); const m = new THREE.MeshBasicMaterial({ color: base.clone(), transparent:true, opacity:Math.max(0.05, Math.min(1, opacity)), side:THREE.DoubleSide, depthWrite:false }); rec = { mat:m, base }; fillCache.set(key, rec); trackedMats.push({ type:'fill', ...rec }); } return rec.mat; };
+				const updateSnipColors = ()=>{ const bg=getBgColor(); for(const rec of trackedMats){ try { const base=rec.base; let adj=base; if(contrastRatio(base,bg) < CONTRAST_MIN) adj = invertColor(base); rec.mat.color.set(adj); } catch{} } };
+				const addLine = (pts, closed, stroke)=>{
+					if(!pts || pts.length<2) return; const g = new THREE.BufferGeometry().setFromPoints(pts.map(p=> new THREE.Vector3(p.x - docCenter.x, zLift, p.y - docCenter.y)));
+					const line = closed ? new THREE.LineLoop(g, getStrokeMat(stroke)) : new THREE.Line(g, getStrokeMat(stroke)); snip.add(line);
+				};
+				const addRect = (a,b, stroke, fill)=>{
+					const minX=Math.min(a.x,b.x)-docCenter.x, maxX=Math.max(a.x,b.x)-docCenter.x; const minY=Math.min(a.y,b.y)-docCenter.y, maxY=Math.max(a.y,b.y)-docCenter.y;
+					const w=Math.max(0.001, maxX-minX), d=Math.max(0.001, maxY-minY); const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+					const fm = getFillMat(fill, 0.24); if(fm){ const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w,d), fm); mesh.rotation.x = -Math.PI/2; mesh.position.set(cx, zLift, cy); snip.add(mesh); }
+					// outline
+					const pts=[{x:minX + docCenter.x,y:minY + docCenter.y},{x:maxX + docCenter.x,y:minY + docCenter.y},{x:maxX + docCenter.x,y:maxY + docCenter.y},{x:minX + docCenter.x,y:maxY + docCenter.y}]; addLine([...pts, pts[0]], true, stroke);
+				};
+				const addEllipse = (a,b, stroke, fill)=>{
+					const cx=((a.x+b.x)/2) - docCenter.x, cy=((a.y+b.y)/2) - docCenter.y; const rx=Math.abs(a.x-b.x)/2, ry=Math.abs(a.y-b.y)/2;
+					const shape = new THREE.Shape(); const N = 72; for(let i=0;i<=N;i++){ const t=i/N*2*Math.PI; const x=cx+Math.cos(t)*rx, y=cy+Math.sin(t)*ry; if(i===0) shape.moveTo(x,y); else shape.lineTo(x,y); }
+					if(getFillMat(fill)){ const geo = new THREE.ShapeGeometry(shape); const mesh = new THREE.Mesh(geo, getFillMat(fill, 0.22)); mesh.rotation.x=-Math.PI/2; mesh.position.y=zLift; snip.add(mesh); }
+					const pts = shape.getPoints(N).map(p=>({x:p.x + docCenter.x,y:p.y + docCenter.y})); addLine(pts, true, stroke);
+				};
+				for(const o of data.objects){
+					const stroke = o.stroke || '#111111'; const fill = (o.fill && o.fill !== '#00000000') ? o.fill : null;
+					if(o.type==='line' && o.a && o.b){ addLine([o.a,o.b], false, stroke); }
+					else if(o.type==='path' && Array.isArray(o.pts) && o.pts.length>1){ addLine(o.pts, !!o.closed, stroke); }
+					else if(o.type==='rect' && o.a && o.b){ addRect(o.a, o.b, stroke, fill); }
+					else if(o.type==='ellipse' && o.a && o.b){ addEllipse(o.a, o.b, stroke, fill); }
+				}
+				// Always wrap children under an inner contents group; we'll center pivot after world placement
+				try {
+					const contents = new THREE.Group(); contents.name='__OverlaySnipContents';
+					const kids = snip.children.slice();
+					for(const ch of kids){ contents.add(ch); }
+					snip.add(contents);
+					// Store the 2D source on the contents group for reliable re-edit payloads
+					try { contents.userData = contents.userData || {}; contents.userData.source2D = data; } catch{}
+					snip.userData.pivotNeedsCentering = true;
+				} catch{}
+				// Do NOT recenter the snip otherwise; we want exact alignment with the overlay.
+				// Keep snip colors visible each frame
+				const baseRender = renderer.render.bind(renderer);
+				snip.userData.__updateSnipColors = updateSnipColors;
+				if(!renderer.__snipColorWrapped){
+					renderer.render = function(sc, cam){ try { updateSnipColors(); } catch{} baseRender(sc, cam); };
+					renderer.__snipColorWrapped = true;
+				}
+				return snip;
+			} catch(e){ console.warn('Overlay Snip build failed', e); return null; }
+		}
+
+		// On return from 2D, pick up snip result and create a 3D object
+		function handleSnipResultIfAny(){
+			try {
+				const raw = sessionStorage.getItem('sketcher:2d:snipResult');
+				if(!raw) return;
+				const data = JSON.parse(raw);
+				// consume the result
+				sessionStorage.removeItem('sketcher:2d:snipResult');
+				if(!data || !Array.isArray(data.objects) || data.objects.length===0){ console.log('Snip result empty'); return; }
+				const snip = createOverlaySnipFrom2DData(data);
+				if(!snip || !snip.children || snip.children.length===0){ console.warn('Snip result produced no geometry'); return; }
+				// assign id
+				try { snip.userData.snipId = __makeSnipId(); } catch{}
+				// place snip at overlay transform (if saved)
+				try {
+					const tRaw = sessionStorage.getItem('sketcher:snipOverlayTransform');
+					if(tRaw){
+						const t = JSON.parse(tRaw);
+						if(t && t.position && t.quaternion && t.scale){
+							// Base placement at overlay origin
+							snip.position.set(t.position[0], t.position[1], t.position[2]);
+							snip.quaternion.set(t.quaternion[0], t.quaternion[1], t.quaternion[2], t.quaternion[3]);
+							snip.scale.set(t.scale[0], t.scale[1], t.scale[2]);
+							// Apply world-space offset for subset center when pivot is centered, or when not doc-anchored
+							try {
+								const meta = data.meta || {};
+								const q = new THREE.Quaternion(t.quaternion[0], t.quaternion[1], t.quaternion[2], t.quaternion[3]);
+								// If we re-centered pivot, add that world offset so the snip stays aligned
+								if (snip.userData && snip.userData.pivotAtSubsetCenter){
+									let cx = 0, cz = 0;
+									if (data.meta && data.meta.subsetCenter && data.meta.docCenter){
+										cx = (data.meta.subsetCenter.x - data.meta.docCenter.x);
+										cz = (data.meta.subsetCenter.y - data.meta.docCenter.y);
+									} else if (snip.userData.pivotCenterLocal){
+										cx = snip.userData.pivotCenterLocal.x;
+										cz = snip.userData.pivotCenterLocal.z;
+									}
+									const pivotLocal = new THREE.Vector3(cx * (t.scale && t.scale[0] || 1), 0, cz * (t.scale && t.scale[2] || 1));
+									pivotLocal.applyQuaternion(q);
+									snip.position.add(pivotLocal);
+								}
+								// If not anchored to doc center, apply overlay subset delta for exact placement
+								if(!(snip.userData && snip.userData.anchoredToDocCenter) && meta.subsetCenter && meta.docCenter){
+									const dx = (meta.subsetCenter.x - meta.docCenter.x) * (t.scale && t.scale[0] || 1);
+									const dz = (meta.subsetCenter.y - meta.docCenter.y) * (t.scale && t.scale[2] || 1);
+									const offsetLocal = new THREE.Vector3(dx, 0, dz);
+									offsetLocal.applyQuaternion(q);
+									snip.position.add(offsetLocal);
+								}
+							} catch{}
+						}
+					}
+				} catch{}
+				// Lift slightly above ground
+				snip.position.y = Math.max(snip.position.y, 0.02);
+				// Add as a selectable object without restyling its materials
+				try { addObjectToScene(snip, { select: true }); if(typeof transformControls!=='undefined' && transformControls) transformControls.setMode('rotate'); } catch { scene.add(snip); selectedObjects.length = 0; selectedObjects.push(snip); attachTransformForSelection(); }
+				// Center pivot post-placement so gizmo sits on geometric center of extents (robust for single lines)
+				__centerSnipPivotPostPlacement(snip);
+				try { snip.userData.pivotAtSubsetCenter = true; } catch{}
+				renderer.render(scene, camera);
+				console.log('Overlay Snip added from 2D selection');
+			} catch(e){ console.warn('Failed to handle 2D snip result', e); }
+		}
+
+		// Check once on load and when window regains focus
+		try { window.addEventListener('focus', ()=>{ handleSnipResultIfAny(); __handleSnipEditResultIfAny(); }); setTimeout(()=>{ handleSnipResultIfAny(); __handleSnipEditResultIfAny(); }, 50); } catch{}
 		let snipMode = false;
 		let lassoPts = [];// ground plane (x,z)
 		let hoverPt = null;
@@ -5912,53 +6184,196 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 		function enterSnip(){
 			if (snipMode) return;
-			const overlay = scene.getObjectByName('2D Overlay'); if(!overlay){ alert('No 2D Overlay present.'); return; }
-			snipMode = true; lassoPts.length = 0;
+			
+			console.log('=== SNIP DEBUG START ===');
+			console.log('Scene children count:', scene.children.length);
+			console.log('Scene children names:', scene.children.map(c => c.name || c.type).filter(n => n));
+			
+			const overlay = scene.getObjectByName('2D Overlay'); 
+			console.log('Found overlay:', !!overlay);
+			
+			if(!overlay){ 
+				console.log('No 2D Overlay found in scene');
+				// Let's check if there's any 2D data in storage
+				try {
+					const raw = sessionStorage.getItem('sketcher:2d');
+					console.log('2D data in sessionStorage:', !!raw);
+					if (raw) {
+						const data = JSON.parse(raw);
+						console.log('2D objects count:', data.objects ? data.objects.length : 0);
+					}
+				} catch(e) {
+					console.log('Error checking 2D data:', e);
+				}
+				alert('No 2D Overlay present. Please create a 2D sketch first.'); 
+				return; 
+			}
+			
+			console.log('Overlay children count:', overlay.children.length);
+			console.log('Overlay visible:', overlay.visible);
+			console.log('Overlay position:', overlay.position);
+			overlay.traverse(child => {
+				console.log('Overlay child:', child.type, child.name, 'visible:', child.visible, 'material:', !!child.material);
+			});
+			
+			snipMode = true; 
+			lassoPts.length = 0;
+			
 			// Save camera state
 			savedCam.pos = camera.position.clone();
 			savedCam.target = controls.target.clone();
-			// Hide all except overlay
+			savedCam.up = camera.up.clone();
+			
+			console.log('Saved camera pos:', savedCam.pos);
+			console.log('Grid object:', !!grid);
+			
+			// Hide all except overlay, grid, and lights
 			savedVisibility.clear();
+			let hiddenCount = 0;
+			let keptCount = 0;
 			scene.traverse(o=>{
-				// Keep the overlay subtree and all lights visible during snip
-				if (o.isLight) return;
+				// Keep the overlay subtree, grid, and all lights visible during snip
+				if (o.isLight) {
+					console.log('Keeping light:', o.type);
+					keptCount++;
+					return;
+				}
+				if (o === grid) {
+					console.log('Keeping grid');
+					keptCount++;
+					return; // Keep the grid visible
+				}
 				let p = o;
-				while (p) { if (p === overlay) return; p = p.parent; }
-				if (o.isObject3D && !o.userData.__alwaysVisible) { savedVisibility.set(o, o.visible); o.visible = false; }
+				while (p) { if (p === overlay) {
+					console.log('Keeping overlay child:', o.type, o.name);
+					keptCount++;
+					return;
+				} p = p.parent; }
+				if (o.isObject3D && !o.userData.__alwaysVisible) { 
+					savedVisibility.set(o, o.visible); 
+					if (o.visible) hiddenCount++;
+					o.visible = false; 
+				}
 			});
-			// Ensure overlay itself is visible during snip; remember its prior state
+			
+			console.log('Hidden objects:', hiddenCount);
+			console.log('Kept objects:', keptCount);
+			
+			// Save original background color and set a light background for snip mode
+			const currentBgColor = new THREE.Color();
+			renderer.getClearColor(currentBgColor);
+			savedCam.bgColor = currentBgColor.clone();
+			renderer.setClearColor(0xf0f0f0); // Light gray background for better contrast
+			console.log('Set background to light gray for snip mode');
+			
+			// Ensure overlay itself is visible during snip
 			overlayPrevVisible = overlay.visible;
 			overlay.visible = true;
-			// Plan view: position camera above overlay center
+			console.log('Set overlay visible to true');
+			
+			// Force high-contrast overlay materials for better visibility
+			overlay.traverse(child => {
+				if (child.material) {
+					console.log('Updating material for:', child.type);
+					if (child.material.isLineBasicMaterial) {
+						child.material.color.set(0xff0000); // Bright red for lines
+						child.material.opacity = 1.0;
+						// Note: linewidth doesn't work in WebGL - let's try a different approach
+						child.material.transparent = false;
+						child.material.depthTest = false; // Ensure always visible
+						console.log('Set line material to red');
+					} else if (child.material.isMeshBasicMaterial) {
+						child.material.color.set(0xff0000); // Bright red for fills
+						child.material.opacity = 0.8;
+						child.material.transparent = true;
+						child.material.depthTest = false; // Ensure always visible
+						console.log('Set mesh material to red');
+					}
+				}
+				// Also log the geometry to see if there are actual vertices
+				if (child.geometry) {
+					console.log('Child geometry:', child.geometry.type, 'vertices:', child.geometry.attributes.position?.count || 0);
+				}
+			});
+			
+			// Add a temporary test cube to verify visibility during snip
+			const testCube = new THREE.Mesh(
+				new THREE.BoxGeometry(2, 0.5, 2), // Bigger and flatter cube
+				new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true })
+			);
+			testCube.name = '__SnipTestCube';
+			testCube.position.copy(overlay.position);
+			testCube.position.y += 1; // Slightly above overlay
+			scene.add(testCube);
+			console.log('Added test cube at:', testCube.position);
+			
+			// Position camera for top-down view of overlay
 			overlay.updateMatrixWorld();
 			const bb = new THREE.Box3().setFromObject(overlay);
-			const center = bb.getCenter(new THREE.Vector3());
-			const size = bb.getSize(new THREE.Vector3());
-			// Compute height so overlay fits in view given perspective FOV and aspect
-			const aspect = (renderer.domElement.clientWidth || 1) / Math.max(1, renderer.domElement.clientHeight || 1);
-			const fovY = (camera.fov || 75) * Math.PI/180;
-			const fovX = 2 * Math.atan(Math.tan(fovY/2) * aspect);
-			const distForX = (size.x/2) / Math.tan(fovX/2);
-			const distForZ = (size.z/2) / Math.tan(fovY/2);
-			const margin = Math.max(2, 0.1 * Math.max(size.x, size.z));
-			const height = Math.min(2000, Math.max(5, Math.max(distForX, distForZ) + margin));
-			camera.position.set(center.x, height, center.z);
-			// Use north-up for top view to avoid up-vector singularity
-			savedCam.up = camera.up.clone();
-			camera.up.set(0,0,1);
-			controls.target.copy(center);
-			camera.lookAt(center);
+			console.log('Overlay bounding box:', bb);
+			console.log('Bounding box isEmpty:', bb.isEmpty());
+			
+			if (bb.isEmpty()) {
+				console.warn('Overlay has no geometry - using default camera position');
+				camera.position.set(0, 20, 0);
+				controls.target.set(0, 0, 0);
+			} else {
+				const center = bb.getCenter(new THREE.Vector3());
+				const size = bb.getSize(new THREE.Vector3());
+				console.log('Overlay center:', center);
+				console.log('Overlay size:', size);
+				
+				// Calculate appropriate height to see the whole overlay - much closer!
+				const maxSize = Math.max(size.x, size.z);
+				const height = Math.max(8, maxSize * 0.7); // Much closer - 70% of max dimension
+				console.log('Calculated height:', height);
+				
+				// Position camera slightly off-center for better visibility
+				camera.position.set(center.x + maxSize * 0.05, height, center.z + maxSize * 0.05);
+				controls.target.copy(center);
+			}
+			
+			// Set up for top-down view
+			camera.up.set(0, 0, 1); // North up
+			camera.lookAt(controls.target);
+			console.log('Camera position after setup:', camera.position);
+			console.log('Camera target:', controls.target);
+			
+			// Disable rotation during snip
 			if ('enableRotate' in controls) controls.enableRotate = false;
-			// Force a render so the user immediately sees the overlay framed
-			try { renderer.render(scene, camera); } catch {}
-			const hud = document.getElementById('snipStatus'); if(hud) hud.style.display='block';
-			console.log('Overlay Snip: Lasso mode ON. Click to add points, double-click or Enter to finish, ESC to cancel.');
+			
+			// Update controls and render
+			controls.update();
+			console.log('About to render...');
+			renderer.render(scene, camera);
+			console.log('Render completed');
+			
+			// Show status HUD
+			const hud = document.getElementById('snipStatus'); 
+			if(hud) hud.style.display='block';
+			
+			console.log('=== SNIP DEBUG END ===');
+			console.log('Snip mode active - overlay should be visible from above');
 		}
 		function exitSnip(apply){
 			if(!snipMode) return;
 			const overlay = scene.getObjectByName('2D Overlay');
 			if (!overlay){ snipMode=false; return; }
+			
+			console.log('Exiting snip mode, apply:', apply);
+			
+			// Restore overlay materials to original state
+			try {
+				const updateOverlayColors = overlay.userData.updateOverlayColors;
+				if (typeof updateOverlayColors === 'function') {
+					updateOverlayColors();
+				}
+			} catch (e) {
+				console.warn('Could not restore overlay colors:', e);
+			}
+			
 			if (apply && lassoPts.length>2){
+				console.log('Creating snip from', lassoPts.length, 'lasso points');
 				// Build selection polygon and convert subset
 				const selectedChildren = [];
 				overlay.traverse(child=>{
@@ -5990,17 +6405,50 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					overlay.updateMatrixWorld(); const ovM=overlay.matrixWorld; const pos=new THREE.Vector3(), quat=new THREE.Quaternion(), scl=new THREE.Vector3(); ovM.decompose(pos,quat,scl); snip.position.copy(pos); snip.quaternion.copy(quat); snip.scale.copy(scl); scene.add(snip); selectedObjects.length=0; selectedObjects.push(snip); attachTransformForSelection(); console.log('Overlay Snip: created object from', selectedChildren.length, 'overlay elements');
 				} else { console.log('Overlay Snip: no elements inside lasso'); }
 			}
-			// Restore scene
+			
+			// Restore scene visibility
 			savedVisibility.forEach((vis,obj)=>{ obj.visible = vis; });
+			
+			// Remove test cube
+			const testCube = scene.getObjectByName('__SnipTestCube');
+			if (testCube) scene.remove(testCube);
+			
 			// Restore overlay visibility if we changed it
-			try { const overlay = scene.getObjectByName('2D Overlay'); if (overlay && overlayPrevVisible !== null) overlay.visible = overlayPrevVisible; } catch{}
+			try { 
+				const overlay = scene.getObjectByName('2D Overlay'); 
+				if (overlay && overlayPrevVisible !== null) overlay.visible = overlayPrevVisible; 
+			} catch{}
+			
+			// Restore camera state
 			if(savedCam.pos) camera.position.copy(savedCam.pos);
 			if(savedCam.target) controls.target.copy(savedCam.target);
 			if(savedCam.up) camera.up.copy(savedCam.up);
+			if(savedCam.bgColor) renderer.setClearColor(savedCam.bgColor);
+			
+			// Re-enable rotation
 			if ('enableRotate' in controls) controls.enableRotate = true;
-			try { renderer.render(scene, camera); } catch {}
-			lassoPts.length=0; hoverPt=null; snipMode=false; const hud=document.getElementById('snipStatus'); if(hud) hud.style.display='none';
-			try { if (overlay2D && overlay2D.getContext) { const ctx=overlay2D.getContext('2d'); ctx.clearRect(0,0,overlay2D.width, overlay2D.height); } } catch {}
+			
+			// Update controls and render
+			controls.update();
+			renderer.render(scene, camera);
+			
+			// Clean up snip state
+			lassoPts.length=0; 
+			hoverPt=null; 
+			snipMode=false; 
+			
+			const hud=document.getElementById('snipStatus'); 
+			if(hud) hud.style.display='none';
+			
+			// Clear lasso overlay
+			try { 
+				if (overlay2D && overlay2D.getContext) { 
+					const ctx=overlay2D.getContext('2d'); 
+					ctx.clearRect(0,0,overlay2D.width, overlay2D.height); 
+				} 
+			} catch {}
+			
+			console.log('Snip mode exited');
 		}
 		function drawLassoOverlay(){
 			if(!snipMode) return;
@@ -6018,7 +6466,30 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// Augment main render loop to draw lasso (wrap renderer.render once)
 			if(!renderer.__snipWrapped){ const baseRender = renderer.render.bind(renderer); renderer.render=(sc,cam)=>{ baseRender(sc,cam); drawLassoOverlay(); }; renderer.__snipWrapped=true; }
 		} catch{}
-		try { const btn=document.getElementById('snipOverlay'); if(btn) btn.addEventListener('click', ()=>{ if(snipMode){ exitSnip(false); } else { enterSnip(); } }); } catch{}
+		try { const btn=document.getElementById('snipOverlay'); if(btn) btn.addEventListener('click', ()=>{
+			if(prefer2DSnip){
+				// Save current overlay transform for placement
+				try {
+					const overlay = scene.getObjectByName('2D Overlay');
+					if(overlay){
+						overlay.updateMatrixWorld();
+						const pos = overlay.position.clone(); const q = overlay.quaternion.clone(); const s = overlay.scale.clone();
+						sessionStorage.setItem('sketcher:snipOverlayTransform', JSON.stringify({ position:[pos.x,pos.y,pos.z], quaternion:[q.x,q.y,q.z,q.w], scale:[s.x,s.y,s.z] }));
+					}
+				} catch{}
+				try { sessionStorage.setItem('sketcher:snipIntent','1'); } catch{}
+				// Navigate to 2D page in snip mode
+				try {
+					const url = new URL('../../sketch2d.html', import.meta.url).href;
+					window.location.href = url + '?snip=1';
+				} catch{
+					// Fallback relative
+					window.location.href = './sketch2d.html?snip=1';
+				}
+				return;
+			}
+			if(snipMode){ exitSnip(false); } else { enterSnip(); }
+		}); } catch{}
 	})();
 }
 

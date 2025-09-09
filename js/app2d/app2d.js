@@ -9,7 +9,7 @@ import {
   scaleObject as scaleObjectMod,
   rotateObject as rotateObjectMod
 } from './features/selection-2d.js';
-import { hitTestObject, eraseObjectAt as eraseObjectAtMod, erasePixelAt as erasePixelAtMod } from './features/erase-2d.js';
+import { hitTestObject, eraseObjectAt as eraseObjectAtMod, erasePixelAt as erasePixelAtMod, setHitTestWorldPerPx } from './features/erase-2d.js';
 import { exportPNG as exportPNGMod, exportPDF as exportPDFMod } from './features/export-2d.js';
 
 const canvas = document.getElementById('grid2d');
@@ -38,6 +38,128 @@ const objects = []; // drawn shapes
 const undoStack = []; const redoStack = []; const undoLimit = 100;
 let spacePanActive = false; // hold Space to pan temporarily
 let pinch = { active:false, startDist:0, startScale:1, startCenterWorld:{x:0,y:0} };
+
+// Temp Snip Edit mode state
+let tempSnipEdit = { active:false, id:null };
+
+// 2D Snip mode (lasso selection) for handing subset back to 3D
+const snip2D = { active: false, lasso: [], hover: null };
+function pointInPoly2D(pt, poly){
+  let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+    const inter = ((yi>pt.y)!=(yj>pt.y)) && (pt.x < (xj-xi)*(pt.y-yi)/(yj-yi+1e-9)+xi); if(inter) c=!c;
+  } return c;
+}
+function drawSnipLasso(){
+  if(!snip2D.active || snip2D.lasso.length===0) return;
+  ctx.save();
+  ctx.setLineDash([6,4]); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,160,0,0.9)'; ctx.fillStyle = 'rgba(255,160,0,0.12)';
+  ctx.beginPath();
+  for(let i=0;i<snip2D.lasso.length;i++){
+    const p = worldToScreen(snip2D.lasso[i]);
+    if(i===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+  }
+  if(snip2D.hover){ const hp = worldToScreen(snip2D.hover); ctx.lineTo(hp.x, hp.y); }
+  if(snip2D.lasso.length>2) ctx.closePath();
+  ctx.stroke(); if(snip2D.lasso.length>2) ctx.fill();
+  ctx.restore();
+}
+function computeDocCenter(){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const o of objects){
+    if(o.type==='line' && o.a && o.b){ minX=Math.min(minX,o.a.x,o.b.x); maxX=Math.max(maxX,o.a.x,o.b.x); minY=Math.min(minY,o.a.y,o.b.y); maxY=Math.max(maxY,o.a.y,o.b.y); }
+    else if((o.type==='rect'||o.type==='ellipse') && o.a && o.b){ minX=Math.min(minX,o.a.x,o.b.x); maxX=Math.max(maxX,o.a.x,o.b.x); minY=Math.min(minY,o.a.y,o.b.y); maxY=Math.max(maxY,o.a.y,o.b.y); }
+    else if(o.type==='path' && Array.isArray(o.pts)){ for(const p of o.pts){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); } }
+  }
+  if(!(isFinite(minX)&&isFinite(maxX)&&isFinite(minY)&&isFinite(maxY))) return { x:0, y:0 };
+  return { x:(minX+maxX)/2, y:(minY+maxY)/2 };
+}
+function zoomToFit2D(padCss=24){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const o of objects){
+    if(o.type==='line' && o.a && o.b){ minX=Math.min(minX,o.a.x,o.b.x); maxX=Math.max(maxX,o.a.x,o.b.x); minY=Math.min(minY,o.a.y,o.b.y); maxY=Math.max(maxY,o.a.y,o.b.y); }
+    else if((o.type==='rect'||o.type==='ellipse') && o.a && o.b){ minX=Math.min(minX,o.a.x,o.b.x); maxX=Math.max(maxX,o.a.x,o.b.x); minY=Math.min(minY,o.a.y,o.b.y); maxY=Math.max(maxY,o.a.y,o.b.y); }
+    else if(o.type==='path' && Array.isArray(o.pts)){ for(const p of o.pts){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); } }
+  }
+  const CSSW = W/dpr, CSSH = H/dpr; const pad = padCss; const availW = Math.max(1,CSSW-2*pad), availH = Math.max(1,CSSH-2*pad);
+  if(!(isFinite(minX)&&isFinite(maxX)&&isFinite(minY)&&isFinite(maxY))){ view.scale=1; view.x=0; view.y=0; draw(); return; }
+  const dw = Math.max(1e-3, maxX - minX), dh = Math.max(1e-3, maxY - minY);
+  const kx = availW / (dw * view.pxPerFt);
+  const ky = availH / (dh * view.pxPerFt);
+  view.scale = Math.max(0.2, Math.min(6, Math.min(kx, ky)));
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
+  const s = view.scale * view.pxPerFt;
+  const cx = (minX + maxX)/2, cy = (minY + maxY)/2;
+  view.x = cx - (CSSW/2)/s;
+  view.y = cy - (CSSH/2)/s;
+  draw();
+}
+function anyPolygonVertexInsideBBox(poly, bb){
+  for(const p of poly){ if(pointInBBox(p, bb)) return true; }
+  return false;
+}
+// Geometry helpers for strict lasso selection
+function segmentsIntersect(p1, p2, q1, q2){
+  const o = (a,b,c)=> (b.y-a.y)*(c.x-b.x) - (b.x-a.x)*(c.y-b.y);
+  const d1=o(p1,p2,q1), d2=o(p1,p2,q2), d3=o(q1,q2,p1), d4=o(q1,q2,p2);
+  const s1 = Math.sign(d1), s2 = Math.sign(d2), s3 = Math.sign(d3), s4 = Math.sign(d4);
+  const proper = (s1!==s2) && (s3!==s4);
+  if(proper) return true;
+  const onSeg = (a,b,c)=> Math.min(a.x,b.x)-1e-9<=c.x && c.x<=Math.max(a.x,b.x)+1e-9 && Math.min(a.y,b.y)-1e-9<=c.y && c.y<=Math.max(a.y,b.y)+1e-9 && Math.abs(o(a,b,c))<1e-9;
+  return onSeg(p1,p2,q1) || onSeg(p1,p2,q2) || onSeg(q1,q2,p1) || onSeg(q1,q2,p2);
+}
+function polygonEdges(poly){ const edges=[]; if(!poly||poly.length<2) return edges; for(let i=0;i<poly.length;i++){ const a=poly[i], b=poly[(i+1)%poly.length]; edges.push([a,b]); } return edges; }
+function polylineEdges(pts, closed){ const edges=[]; if(!pts||pts.length<2) return edges; const n=pts.length; for(let i=0;i<n-1;i++){ edges.push([pts[i], pts[i+1]]); } if(closed && n>2) edges.push([pts[n-1], pts[0]]); return edges; }
+function anyEdgeIntersects(pts, lasso){ const le=polygonEdges(lasso); const se=polylineEdges(pts, true); for(const [a,b] of se){ for(const [c,d] of le){ if(segmentsIntersect(a,b,c,d)) return true; } } return false; }
+function rectCorners(o){ return [{x:o.a.x,y:o.a.y},{x:o.a.x,y:o.b.y},{x:o.b.x,y:o.b.y},{x:o.b.x,y:o.a.y}]; }
+function ellipsePoints(o, N=48){ const cx=(o.a.x+o.b.x)/2, cy=(o.a.y+o.b.y)/2; const rx=Math.abs(o.a.x-o.b.x)/2, ry=Math.abs(o.a.y-o.b.y)/2; const pts=[]; for(let i=0;i<N;i++){ const t=i/N*2*Math.PI; pts.push({x:cx+Math.cos(t)*rx, y:cy+Math.sin(t)*ry}); } return pts; }
+function objectRoughlyInPoly(o, poly){
+  try {
+    // Require a vertex inside OR any edge intersection. Avoid broad bbox heuristics.
+    if(o.type==='line' && o.a && o.b){
+      if(pointInPoly2D(o.a, poly) || pointInPoly2D(o.b, poly)) return true;
+      return anyEdgeIntersects([o.a,o.b], poly);
+    }
+    if(o.type==='rect' && o.a && o.b){
+      const pts = rectCorners(o);
+      if(pts.some(p=>pointInPoly2D(p, poly))) return true;
+      return anyEdgeIntersects(pts, poly);
+    }
+    if(o.type==='ellipse' && o.a && o.b){
+      const pts = ellipsePoints(o, 72);
+      if(pts.some(p=>pointInPoly2D(p, poly))) return true;
+      return anyEdgeIntersects(pts, poly);
+    }
+    if(o.type==='path' && Array.isArray(o.pts)){
+      if(o.pts.some(p=>pointInPoly2D(p, poly))) return true;
+      return anyEdgeIntersects(o.pts, poly);
+    }
+  } catch{}
+  return false;
+}
+function finalizeSnip2D(apply){
+  if(!snip2D.active){ return; }
+  if(apply && snip2D.lasso.length>=3){
+    const selected=[]; for(const o of objects){ if(objectRoughlyInPoly(o, snip2D.lasso)){ selected.push(deepCopyObject(o)); } }
+    // Compute centers for correct placement in 3D
+    const docCenter = computeDocCenter();
+    // Subset center from union bbox of selected
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(const o of selected){
+      try { const bb = getObjectBBox(o); if(bb){ minX=Math.min(minX, bb.x); minY=Math.min(minY, bb.y); maxX=Math.max(maxX, bb.x+bb.w); maxY=Math.max(maxY, bb.y+bb.h); } } catch{}
+    }
+    const subsetCenter = (isFinite(minX)&&isFinite(minY)&&isFinite(maxX)&&isFinite(maxY)) ? { x:(minX+maxX)/2, y:(minY+maxY)/2 } : { x:0, y:0 };
+    const cleaned = selected.map(o=>({ ...o, thickness: (typeof o.thickness==='number' && isFinite(o.thickness)) ? o.thickness : 1 }));
+    const result = { objects: cleaned, meta:{ docCenter, subsetCenter } };
+    try { sessionStorage.setItem('sketcher:2d:snipResult', JSON.stringify(result)); } catch{}
+  }
+  try { sessionStorage.removeItem('sketcher:snipIntent'); } catch{}
+  // Navigate back to 3D
+  try {
+    const url = new URL('../index.html', location.href);
+    window.location.href = url.toString();
+  } catch { window.location.href = './index.html'; }
+}
 // Erase state
 const erasing = { active:false, radiusFt: 0.5, points: [], cursor:{x:0,y:0,visible:false} }; // radius in feet
 // Pixel-erase strokes (non-destructive mask of objects layer)
@@ -94,6 +216,88 @@ function applyHUDValue(){
 }
 
 function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
+
+// ---- Temp Snip Edit Mode wiring ----
+function isSnipEditRequested(){
+  try { return new URLSearchParams(location.search).get('editSnip') === '1'; } catch { return false; }
+}
+function loadSnipEditPayload(){
+  try {
+    const raw = sessionStorage.getItem('sketcher:2d:snipEdit');
+  if (!raw) return null; const msg = JSON.parse(raw); try { sessionStorage.removeItem('sketcher:2d:snipEdit'); } catch{}; return msg;
+  } catch { return null; }
+}
+function enterTempSnipEdit(msg){
+  try {
+    tempSnipEdit.active = true; tempSnipEdit.id = msg.id || null;
+  try { tempSnipEdit.docCenter = (msg && msg.data && msg.data.meta && msg.data.meta.docCenter) ? { x: msg.data.meta.docCenter.x, y: msg.data.meta.docCenter.y } : null; } catch{}
+  // Cancel any pending autosave to avoid writing temp state into main overlay
+  try { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } } catch{}
+    document.body.classList.add('snip-edit-mode');
+    const bar = document.getElementById('snipEdit2DBar'); if (bar) bar.style.display = 'flex';
+  // Hydrate objects array from payload
+    objects.length = 0;
+    if (msg && msg.data && Array.isArray(msg.data.objects)){
+      for(const o of msg.data.objects){ try { objects.push(deepCopyObject(o)); } catch{} }
+    }
+  // Reset view and zoom to fit for context
+  view.x = 0; view.y = 0; view.scale = 1;
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
+  // Ensure canvas dims are current, then fit
+  try { resize(); } catch{}
+  zoomToFit2D(28);
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
+  // Next-frame safety in case layout updates after navigation
+  try { requestAnimationFrame(()=>{ try { resize(); zoomToFit2D(28); } catch{} }); } catch{}
+    setStatus('Editing snip — Finish to update 3D, or Cancel');
+  // Ensure no underlay/erase are carried into temp edit
+  underlay.type = null; underlay.image = null; underlay.worldRect = null;
+  eraseStrokes = [];
+    // Ensure selection/edit is enabled in temp edit for immediate manipulation
+    try {
+      selectToggle = true; const b=document.getElementById('toggle2DSelect'); if(b) b.setAttribute('aria-pressed','true');
+      selection.index = -1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null;
+    } catch{}
+    // Wire buttons
+    const finish = document.getElementById('snipEdit2DFinish');
+    const cancel = document.getElementById('snipEdit2DCancel');
+    if (finish && !finish.__wired){ finish.addEventListener('click', finishTempSnipEdit); finish.__wired = true; }
+    if (cancel && !cancel.__wired){ cancel.addEventListener('click', cancelTempSnipEdit); cancel.__wired = true; }
+  } catch{}
+}
+function computeSubsetCenter(objs){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const o of objs){ try { const bb = getObjectBBox(o); if(bb){ minX=Math.min(minX, bb.x); minY=Math.min(minY, bb.y); maxX=Math.max(maxX, bb.x+bb.w); maxY=Math.max(maxY, bb.y+bb.h); } } catch{} }
+  return (isFinite(minX)&&isFinite(minY)&&isFinite(maxX)&&isFinite(maxY)) ? { x:(minX+maxX)/2, y:(minY+maxY)/2 } : { x:0, y:0 };
+}
+function finishTempSnipEdit(){
+  try {
+    if (!tempSnipEdit.active || !tempSnipEdit.id) { navigateBackTo3D(); return; }
+  // New requirement: the edited snip becomes the new baseline
+  const docCenter = computeDocCenter();
+    const subsetCenter = computeSubsetCenter(objects);
+    const data = { objects: objects.map(o=>{ const c=deepCopyObject(o); if(c.thickness==null||!isFinite(c.thickness)) c.thickness=1; return c; }), meta:{ docCenter, subsetCenter } };
+    const msg = { id: tempSnipEdit.id, data };
+    try { sessionStorage.setItem('sketcher:2d:snipEditResult', JSON.stringify(msg)); } catch{}
+  } finally {
+    navigateBackTo3D();
+  }
+}
+function cancelTempSnipEdit(){ navigateBackTo3D(); }
+function navigateBackTo3D(){
+  try {
+    const url = new URL('../index.html', location.href);
+    window.location.href = url.toString();
+  } catch { window.location.href = './index.html'; }
+}
+
+// On load, check if temp snip edit is requested
+try {
+  if (isSnipEditRequested()){
+    const payload = loadSnipEditPayload();
+    if (payload && payload.data && Array.isArray(payload.data.objects)) enterTempSnipEdit(payload);
+  }
+} catch{}
 
 // Keep the 2D delete bar docked just below the toolbox when visible
 function placeMobileDeleteBar2D(){
@@ -221,7 +425,9 @@ function drawObject(o, g = ctx){
   g.save();
   g.lineJoin = 'round'; g.lineCap = 'round';
   // Keep line width in screen pixels (do not multiply by view.scale) so geometry stays visually pinned to the grid
-  g.strokeStyle = o.stroke; g.lineWidth = Math.max(0.5, o.thickness);
+  const sw = (typeof o.thickness === 'number' && isFinite(o.thickness)) ? o.thickness : 1;
+  if(o.thickness == null || !isFinite(o.thickness)) { try { o.thickness = sw; } catch{} }
+  g.strokeStyle = o.stroke || '#111'; g.lineWidth = Math.max(0.5, sw);
   g.fillStyle = o.fill || 'transparent';
   switch(o.type){
     case 'path': {
@@ -509,6 +715,7 @@ function draw(){
   ctx.clearRect(0, 0, W, H);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   // Underlay first
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
   if(underlay.image && underlay.worldRect){
     const s = view.scale * view.pxPerFt;
     const r = underlay.worldRect;
@@ -577,6 +784,8 @@ function draw(){
     ctx.strokeStyle = 'rgba(0,128,0,0.9)'; ctx.lineWidth = 1; ctx.setLineDash([4,3]);
     ctx.stroke(); ctx.restore();
   }
+  // Snip lasso overlay (draw last)
+  if(snip2D.active){ drawSnipLasso(); }
 }
 
 function rebuildEraseMask(){
@@ -684,8 +893,11 @@ function clearAll(){
   rebuildEraseMask();
   draw();
   // Persist and broadcast immediately so 3D can reset overlay to center
-  try { if (bc2D) bc2D.postMessage(toJSON()); } catch{}
-  try { sessionStorage.setItem('sketcher:2d', JSON.stringify(toJSON())); localStorage.setItem('sketcher:2d', JSON.stringify(toJSON())); } catch{}
+  // Skip during temp snip edit to avoid overwriting the original overlay
+  if (!tempSnipEdit.active) {
+    try { if (bc2D) bc2D.postMessage(toJSON()); } catch{}
+    try { sessionStorage.setItem('sketcher:2d', JSON.stringify(toJSON())); localStorage.setItem('sketcher:2d', JSON.stringify(toJSON())); } catch{}
+  }
 }
 
 const undoBtn = document.getElementById('undo'); if(undoBtn) undoBtn.addEventListener('click', undo);
@@ -710,6 +922,8 @@ function toJSON(){
   return { view, objects, erase: { strokes: eraseStrokes }, underlay: serializeUnderlay(), scale: { feetPerInch }, meta: { units: 'feet', createdAt, updatedAt: Date.now() } };
 }
 function saveToSession(){
+  // Avoid overwriting the main overlay while editing a snip
+  if (tempSnipEdit.active) { return; }
   try {
     const data = toJSON();
     const str = JSON.stringify(data);
@@ -719,15 +933,85 @@ function saveToSession(){
   } catch {}
 }
 let saveTimer = null;
-function scheduleSave(){ if(saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(saveToSession, 200); }
+function scheduleSave(){
+  // Do not schedule autosaves in temp snip edit mode
+  if (tempSnipEdit.active) { return; }
+  if(saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveToSession, 200);
+}
 
-// Save JSON before navigating back to 3D
+// Temp Snip Edit Mode: if invoked with ?editSnip=1 and session payload, load subset, tweak theme, and show Finish/Cancel
+(function setupTempSnipEdit(){
+  try {
+    const params = new URLSearchParams(location.search);
+    const isEditingSnip = params.get('editSnip') === '1';
+    const editRaw = sessionStorage.getItem('sketcher:2d:snipEdit');
+    if (!isEditingSnip || !editRaw) return;
+    const payload = JSON.parse(editRaw||'{}');
+    // Clear to avoid stale reuse; 3D owns the payload copy
+    try { sessionStorage.removeItem('sketcher:2d:snipEdit'); } catch{}
+    const snipId = payload && payload.id;
+    const data = payload && payload.data;
+    // Mark temp edit active and capture metadata so autosave/broadcast are suppressed
+    try {
+      tempSnipEdit.active = true; tempSnipEdit.id = snipId || null;
+      const dc = data && data.meta && data.meta.docCenter; if (dc && isFinite(dc.x) && isFinite(dc.y)) tempSnipEdit.docCenter = { x: dc.x, y: dc.y };
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    } catch{}
+    // Apply alternate color accents for temp edit (class on body)
+    try { document.body.classList.add('snip-edit-mode'); } catch{}
+    // Replace current canvas data with the subset for editing
+    if (data && Array.isArray(data.objects)){
+      objects.length = 0; objects.push(...data.objects);
+      if (data.view) { Object.assign(view, data.view); }
+      // Reset erase in edit; snips shouldn't carry erase mask
+      eraseStrokes = [];
+      // Ensure current canvas size and then fit to subset extents with padding
+      try { resize(); } catch{}
+      draw();
+      zoomToFit2D(28);
+      try { requestAnimationFrame(()=>{ try { resize(); zoomToFit2D(28); } catch{} }); } catch{}
+      setStatus('Editing Snip: make changes, then Finish or Cancel');
+    }
+    // Inject Finish/Cancel buttons near the top-right nav
+    try {
+      const nav = document.getElementById('to3D') && document.getElementById('to3D').parentElement ? document.getElementById('to3D').parentElement : document.body;
+      const bar = document.createElement('div'); bar.id = 'snipEditBar'; bar.style.position='fixed'; bar.style.top='16px'; bar.style.right='16px'; bar.style.display='flex'; bar.style.gap='8px'; bar.style.zIndex='20';
+      const finish = document.createElement('button'); finish.textContent='Finish'; finish.className='btn'; finish.style.background='#1e88e5'; finish.style.color='#fff'; finish.style.borderRadius='8px'; finish.style.padding='8px 12px'; finish.style.border='none'; finish.style.font='600 13px system-ui, sans-serif'; finish.title='Finish and return to 3D';
+      const cancel = document.createElement('button'); cancel.textContent='Cancel'; cancel.className='btn'; cancel.style.background='#555'; cancel.style.color='#fff'; cancel.style.borderRadius='8px'; cancel.style.padding='8px 12px'; cancel.style.border='none'; cancel.style.font='600 13px system-ui, sans-serif'; cancel.title='Discard changes';
+      bar.appendChild(finish); bar.appendChild(cancel); document.body.appendChild(bar);
+      finish.addEventListener('click', ()=>{
+        try {
+          // Build a 2D subset payload similar to snip result but keyed by snip id
+          const docCenter = (()=>{ try { const d = data && data.meta && data.meta.docCenter; if (d && isFinite(d.x) && isFinite(d.y)) return d; } catch{} return computeDocCenter(); })();
+          // Compute subset center from union bbox of edited objects
+          let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity; for(const o of objects){ try { const bb = getObjectBBox(o); if(bb){ minX=Math.min(minX, bb.minX); minY=Math.min(minY, bb.minY); maxX=Math.max(maxX, bb.maxX); maxY=Math.max(maxY, bb.maxY); } } catch{} }
+          const subsetCenter = (isFinite(minX)&&isFinite(minY)&&isFinite(maxX)&&isFinite(maxY)) ? { x:(minX+maxX)/2, y:(minY+maxY)/2 } : { x:0, y:0 };
+          const edited = { objects: objects.map(o=>deepCopyObject(o)), meta: { docCenter, subsetCenter } };
+          sessionStorage.setItem('sketcher:2d:snipEditResult', JSON.stringify({ id: snipId, data: edited }));
+        } catch{}
+        // Return to 3D
+        try { document.body.classList.add('page-leave'); } catch{}
+        const url = new URL('./index.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170);
+      });
+      cancel.addEventListener('click', ()=>{
+        // Just return without writing a result
+        try { document.body.classList.add('page-leave'); } catch{}
+        const url = new URL('./index.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170);
+      });
+    } catch{}
+  } catch{}
+})();
+
+// Save JSON before navigating back to 3D (normal 2D flow)
 const to3D = document.getElementById('to3D');
 if(to3D){ to3D.addEventListener('click', (e)=>{ e.preventDefault(); saveToSession(); try { document.body.classList.add('page-leave'); } catch{} const url = new URL('./index.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170); }); }
 
 // Restore if any prior 2D exists
 (function restore2D(){
   try {
+  // In temp snip edit mode, do not restore the full overlay from session/local
+  if (isSnipEditRequested() || (tempSnipEdit && tempSnipEdit.active)) { return; }
     // If navigating with a sketchId, load it from IndexedDB; else restore session/local
     const params = new URLSearchParams(location.search);
     const sketchId = params.get('sketchId');
@@ -1128,6 +1412,15 @@ function parseDXF(text){
 // Pointer handling
 let pointersDown = new Map();
 function onPointerDown(e){
+  if(snip2D.active){
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
+    const local = eventToLocal(e); const world = screenToWorld(local);
+    if(snip2D.lasso.length===0){ snip2D.lasso = [world]; } else { snip2D.lasso.push(world); }
+    snip2D.hover = world;
+    setStatus('Snip: double-click or press Enter to finish');
+    draw();
+    return;
+  }
   try { canvas.setPointerCapture(e.pointerId); } catch {}
   const local = eventToLocal(e);
   const world = screenToWorld(local);
@@ -1162,7 +1455,8 @@ function onPointerDown(e){
       }
     }
     // hit-test objects from top
-    const rFeet = 6 / (view.scale * view.pxPerFt);
+  // Strict selection tolerance: ~1 CSS pixel in world feet
+  const rFeet = 1 / (view.scale * view.pxPerFt);
     let hitIdx = -1;
     for(let i=objects.length-1;i>=0;i--){ const o = objects[i]; const ht = hitTestObject(o, world, rFeet); if(ht && ht.hit){ hitIdx=i; break; } }
     selection.index = hitIdx;
@@ -1262,7 +1556,8 @@ function onPointerDown(e){
   } else if(tool === 'offset'){
     // Pick a path and nearest segment; live preview offset distance by cursor
     // Find top-most path under cursor (or nearest segment within small radius)
-    const rFeet = 6 / (view.scale * view.pxPerFt);
+  // Strict selection tolerance: ~1 CSS pixel in world feet
+  const rFeet = 1 / (view.scale * view.pxPerFt);
     let hit = { idx:-1, seg:null, obj:null };
     for(let i=objects.length-1;i>=0;i--){ const o=objects[i]; if(o.type!=='path' || !Array.isArray(o.pts)) continue; const seg = findNearestPathSegment(o, world); if(!seg) continue; if(seg.dist<=rFeet){ hit={ idx:i, seg, obj:o }; break; } }
     if(hit.idx>=0){
@@ -1274,7 +1569,8 @@ function onPointerDown(e){
     }
   } else if(tool === 'fillet' || tool === 'chamfer'){
     // Pick a path vertex (interior) to modify; supports open and closed polylines
-    const rFeet = 6 / (view.scale * view.pxPerFt);
+  // Strict selection tolerance: ~1 CSS pixel in world feet
+  const rFeet = 1 / (view.scale * view.pxPerFt);
     let pick = { idx:-1, vi:-1 };
     for(let i=objects.length-1;i>=0;i--){ const o=objects[i]; if(o.type!=='path' || !Array.isArray(o.pts) || o.pts.length<3) continue; const v = findNearestPathVertex(o, world, rFeet); if(!v) continue; if(o.closed || (v.i>0 && v.i<o.pts.length-1)){ pick={ idx:i, vi:v.i }; break; } }
     if(pick.idx>=0){
@@ -1291,6 +1587,7 @@ function onPointerDown(e){
   }
 }
 function onPointerMove(e){
+  if(snip2D.active){ const local = eventToLocal(e); const world = screenToWorld(local); snip2D.hover = world; draw(); return; }
   const local = eventToLocal(e);
   const world = screenToWorld(local);
   if(pointersDown.has(e.pointerId)) pointersDown.set(e.pointerId, { x: local.x, y: local.y });
@@ -1302,7 +1599,8 @@ function onPointerMove(e){
     const center = { x: (pts[0].x + pts[1].x)/2, y: (pts[0].y + pts[1].y)/2 };
     const before = pinch.startCenterWorld;
     const scale = Math.max(0.2, Math.min(6, pinch.startScale * (dist / pinch.startDist)));
-    view.scale = scale;
+  view.scale = scale;
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
     const after = screenToWorld(center);
     view.x += before.x - after.x;
     view.y += before.y - after.y;
@@ -1441,6 +1739,7 @@ function onPointerMove(e){
   draw(); scheduleSave();
 }
 function onPointerUp(e){
+  if(snip2D.active){ try { canvas.releasePointerCapture(e.pointerId); } catch{} return; }
   try { canvas.releasePointerCapture(e.pointerId); } catch{}
   pointersDown.delete(e.pointerId);
   if(pinch.active && pointersDown.size<2){ pinch.active = false; setStatus('Ready'); }
@@ -1579,6 +1878,7 @@ canvas.addEventListener('pointerup', onPointerUp);
 canvas.addEventListener('pointercancel', onPointerUp);
 // Finish polyline on double-click (mouse)
 canvas.addEventListener('dblclick', (e)=>{
+  if(snip2D.active){ e.preventDefault(); finalizeSnip2D(true); return; }
   if(tool==='polyline' && drawing && drawing.type==='path' && drawing.__mode==='polyline'){
     // Drop the trailing preview point if duplicated
     if(drawing.pts.length>=2){
@@ -1608,7 +1908,8 @@ function handleWheelEvent(e){
     // Clamp dy to avoid huge jumps
     const dy = Math.max(-800, Math.min(800, dyRaw));
     const z = Math.exp(-dy * 0.001);
-    view.scale = Math.max(0.2, Math.min(6, view.scale * z));
+  view.scale = Math.max(0.2, Math.min(6, view.scale * z));
+  try { if(view.pxPerFt>0) setHitTestWorldPerPx(1/(view.scale*view.pxPerFt)); } catch{}
     const worldAfter = screenToWorld(pivot);
     view.x += worldBefore.x - worldAfter.x;
     view.y += worldBefore.y - worldAfter.y;
@@ -1641,6 +1942,7 @@ document.addEventListener('wheel', (e) => {
 window.addEventListener('keydown', e => {
   if(e.target && (e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA' || e.target.isContentEditable)) return;
   const k = e.key.toLowerCase();
+  if(snip2D.active){ if(k==='enter'){ e.preventDefault(); finalizeSnip2D(true); return; } if(k==='escape'){ e.preventDefault(); finalizeSnip2D(false); return; } }
   if((e.ctrlKey||e.metaKey) && !e.shiftKey && k==='z'){ e.preventDefault(); undo(); }
   else if((e.ctrlKey||e.metaKey) && (e.shiftKey && k==='z')){ e.preventDefault(); redo(); }
   else if(k==='escape') {
@@ -1756,6 +2058,15 @@ canvas.style.touchAction = 'none';
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 setStatus('Ready');
+
+// Activate 2D snip mode if requested via URL parameter (?snip=1) or session intent
+try {
+  const params = new URLSearchParams(location.search);
+  if(params.get('snip')==='1' || sessionStorage.getItem('sketcher:snipIntent')==='1'){
+    snip2D.active = true; snip2D.lasso = []; snip2D.hover = null; selectToggle = false; setTool('pan');
+    zoomToFit2D(); setStatus('Snip: click to lasso selection; double-click/Enter to finish; Esc to cancel');
+  }
+} catch{}
 // Wire select toggle button
 const selectBtn = document.getElementById('toggle2DSelect');
 if(selectBtn){ selectBtn.addEventListener('click', ()=>{ selectToggle = !selectToggle; selectBtn.setAttribute('aria-pressed', String(selectToggle)); if(!selectToggle){ selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; draw(); } }); }

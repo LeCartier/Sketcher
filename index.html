@@ -42,6 +42,16 @@
     <div id="placingName" class="placing-name">…</div>
     <button id="placingCancel" class="placing-cancel" title="Cancel placement" aria-label="Cancel placement" type="button">×</button>
   </div>
+  <!-- Quick Snip Edit button (appears near toolbox when a snip is selected) -->
+  <div id="snipEditBar" role="group" aria-label="Snip actions" style="display:none;">
+    <button id="snipEditBtn" class="icon-btn" title="Edit snip in 2D" aria-label="Edit snip in 2D" type="button">
+      <span class="sr-only">Edit snip in 2D</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z" fill="#222"/>
+        <path d="M20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.34a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z" fill="#222"/>
+      </svg>
+    </button>
+  </div>
   <!-- Processing banner for texture/geometry preparation -->
   <div id="processingBanner" style="display:none; position:fixed; left:12px; bottom:12px; background:rgba(30,30,30,0.85); color:#fff; padding:10px 12px; border-radius:8px; z-index:10; font-size:13px;">
     <div id="processingTitle" style="font-weight:600; margin-bottom:4px;">Preparing assets…</div>

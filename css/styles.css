@@ -56,7 +56,8 @@ canvas { display: block; touch-action: none; }
 	border: 1px solid #e0e0e0;
 	border-radius: 14px; /* match toolbox */
 	box-shadow: 0 2px 12px rgba(0,0,0,0.10);
-	width: var(--toolbox-width);
+	width: var(--toolbox-width); /* JS may override to exact px width */
+	box-sizing: border-box;
 	padding: 8px 4px; /* match toolbox vertical padding */
 	z-index: 120;
 	align-items: center;
@@ -68,6 +69,8 @@ canvas { display: block; touch-action: none; }
 	min-width: 48px;
 	min-height: 48px;
 	border-radius: 12px;
+	/* center the button itself; override global .icon-btn margin-right */
+	margin: 0;
 }
 #mobileDeleteBar .icon-btn svg { width: 24px; height: 24px; }
 @media (max-width: 640px) {
@@ -109,6 +112,26 @@ canvas { display: block; touch-action: none; }
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* Snip Edit bar (mirrors mobileDeleteBar footprint; sits at top of toolbox) */
+#snipEditBar {
+	display: none;
+	position: fixed;
+	left: 24px;
+	top: 0;
+	background: rgba(255,255,255,0.96);
+	border: 1px solid #e0e0e0;
+	border-radius: 14px;
+	box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+	width: var(--toolbox-width); /* JS may override to exact px width */
+	box-sizing: border-box;
+	padding: 8px 4px;
+	z-index: 120;
+	align-items: center;
+	justify-content: center;
+}
+#snipEditBar .icon-btn { width: 48px; height: 48px; min-width: 48px; min-height: 48px; border-radius: 12px; margin: 0; }
+#snipEditBar .icon-btn svg { width: 24px; height: 24px; }
 #placingPopup .placing-cancel {
 	position: absolute;
 	top: 6px;
