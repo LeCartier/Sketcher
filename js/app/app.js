@@ -628,10 +628,11 @@ export async function init() {
 									// Arm primitive creation state (pinch-to-scale workflow)
 									window.__xrPrim = { 
 										tool: d.tool, 
-										stage: 'attached', // 'attached' -> 'scaling' -> 'complete'
+										stage: 'attached', // 'attached' -> 'scaling' -> 'locked' -> 'complete'
 										preview: null, 
 										initialPos: null,
 										baseScale: 0.1, // Starting size in meters
+										lockedScale: null, // Scale locked when one hand releases
 										leftHand: null,
 										rightHand: null
 									};
@@ -1143,14 +1144,14 @@ export async function init() {
 		} catch {}
 	}
 
+	// Snap highlight via module (create before arEdit that depends on it)
+	const snapVisuals = createSnapVisuals({ THREE, scene });
+
 	// AR editing helper (controllers or hands)
-	const arEdit = createAREdit(THREE, scene, renderer);
+	const arEdit = createAREdit(THREE, scene, renderer, { snapping, snapVisuals });
 	try { arEdit.setGizmoEnabled(false); } catch {}
 	// Initialize ground lock state
 	try { arEdit.setGroundLocked(arGroundLocked); } catch {}
-
-	// Snap highlight via module
-	const snapVisuals = createSnapVisuals({ THREE, scene });
 
 	// Room Scan service will be initialized after core scene state is created (see below)
 
@@ -5256,7 +5257,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 								} 
 								else if (prim.stage === 'scaling') {
 									// Stage 2: Both hands pinching - scale based on hand distance
-									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand.pinching) {
+									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand && prim.rightHand.pinching) {
 										const currentDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 										const scaleFactor = Math.max(0.1, currentDistance / prim.initialDistance);
 										const newScale = prim.initialScale * scaleFactor;
@@ -5269,36 +5270,50 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										if (prim.preview) {
 											prim.preview.position.copy(centerPos);
 											
-											// Update geometry based on new scale
-											const prevGeom = prim.preview.geometry;
-											let newGeom = null;
-											
-											if (prim.tool === 'box') {
-												newGeom = new THREE.BoxGeometry(newScale, newScale, newScale);
-											} else if (prim.tool === 'sphere') {
-												newGeom = new THREE.SphereGeometry(newScale/2, 20, 16);
-											} else if (prim.tool === 'cylinder') {
-												newGeom = new THREE.CylinderGeometry(newScale/2, newScale/2, newScale, 20);
-											} else if (prim.tool === 'cone') {
-												newGeom = new THREE.ConeGeometry(newScale/2, newScale, 20);
-											}
-											
-											if (newGeom) {
-												prim.preview.geometry = newGeom;
-												try { prevGeom?.dispose?.(); } catch {}
-											}
+											// Use scale transform instead of geometry recreation for better performance
+											const scaleFactor3D = newScale / prim.baseScale;
+											prim.preview.scale.set(scaleFactor3D, scaleFactor3D, scaleFactor3D);
 										}
 									} else {
-										// One or both hands stopped pinching - finalize primitive
+										// One hand stopped pinching - lock the scale
+										console.log('One hand released - locking scale');
+										prim.stage = 'locked';
+										prim.lockedScale = prim.preview ? prim.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+									}
+								}
+								else if (prim.stage === 'locked') {
+									// Stage 3: Scale is locked, wait for both hands to release
+									const bothHandsReleased = (!prim.leftHand || !prim.leftHand.pinching) && (!prim.rightHand || !prim.rightHand.pinching);
+									
+									if (bothHandsReleased) {
+										console.log('Both hands released - finalizing primitive');
+										// Finalize primitive
 										try {
 											if (prim.preview) {
 												const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
-												const finalPrimitive = new THREE.Mesh(prim.preview.geometry.clone(), activeMat);
-												finalPrimitive.position.copy(prim.preview.position);
-												finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
-												// Add to scene WITHOUT automatic selection/gizmo
-												addObjectToScene(finalPrimitive, { select: false });
-												if (saveSessionDraftSoon) saveSessionDraftSoon();
+												
+												// Create final geometry with locked scale
+												let finalGeom = null;
+												const scale = prim.lockedScale.x; // Use uniform scale
+												if (prim.tool === 'box') {
+													finalGeom = new THREE.BoxGeometry(prim.baseScale * scale, prim.baseScale * scale, prim.baseScale * scale);
+												} else if (prim.tool === 'sphere') {
+													finalGeom = new THREE.SphereGeometry(prim.baseScale * scale / 2, 20, 16);
+												} else if (prim.tool === 'cylinder') {
+													finalGeom = new THREE.CylinderGeometry(prim.baseScale * scale / 2, prim.baseScale * scale / 2, prim.baseScale * scale, 20);
+												} else if (prim.tool === 'cone') {
+													finalGeom = new THREE.ConeGeometry(prim.baseScale * scale / 2, prim.baseScale * scale, 20);
+												}
+												
+												if (finalGeom) {
+													const finalPrimitive = new THREE.Mesh(finalGeom, activeMat);
+													finalPrimitive.position.copy(prim.preview.position);
+													finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
+													// Add to scene WITHOUT automatic selection/gizmo
+													addObjectToScene(finalPrimitive, { select: false });
+													if (saveSessionDraftSoon) saveSessionDraftSoon();
+													console.log('Primitive created successfully:', finalPrimitive.name);
+												}
 											}
 										} catch(e) {
 											console.warn('Failed to create primitive:', e);
@@ -5312,6 +5327,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											}
 										} catch {}
 										window.__xrPrim = null;
+									} else {
+										// Keep primitive at locked position/scale
+										const activeHand = prim.rightHand || prim.leftHand;
+										if (prim.preview && activeHand) {
+											prim.preview.position.copy(activeHand.pos);
+											prim.preview.scale.copy(prim.lockedScale);
+										}
 									}
 								}
 							}

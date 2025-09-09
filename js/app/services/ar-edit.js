@@ -10,7 +10,10 @@
 //   // on session end:
 //   arEdit.stop();
 
-export function createAREdit(THREE, scene, renderer){
+export function createAREdit(THREE, scene, renderer, options = {}){
+  // Face snapping dependencies (passed in via options)
+  const { snapping, snapVisuals } = options;
+  
   const state = {
     enabled: true,
     gizmo: true,
@@ -31,7 +34,83 @@ export function createAREdit(THREE, scene, renderer){
   allowScale: true, // when false, two-hand pinch will not scale the target (used by 1:1 mode)
   onTransform: null, // optional callback invoked with (object) after a meaningful transform change
   groundLocked: false, // when true, constrains Y movement for scene-level operations
+  
+  // Face snapping state
+  faceSnapEnabled: true, // Enable face snapping in VR
+  faceSnapDistance: 0.15, // Distance threshold for face snapping (15cm)
+  faceSnapActive: false, // Whether face snapping is currently active
+  faceSnapTarget: null, // The object being snapped to
+  faceSnapDelta: null, // Current snap delta vector
   };
+
+  // Face snapping helper functions
+  function getAllSnapTargets() {
+    if (!state.root) return [];
+    const targets = [];
+    state.root.traverse((obj) => {
+      if (!obj || obj === state.perActive) return; // Skip self
+      if (obj.userData?.__helper || obj.name?.startsWith('__')) return; // Skip helpers
+      if (!obj.visible || !(obj.isMesh || obj.type === 'Group')) return; // Only visible meshes/groups
+      targets.push(obj);
+    });
+    return targets;
+  }
+
+  function computeFaceSnap(movingObj) {
+    if (!state.faceSnapEnabled || !snapping || !movingObj) return null;
+    
+    try {
+      const movingBox = new THREE.Box3().setFromObject(movingObj);
+      if (movingBox.isEmpty()) return null;
+      
+      const targets = getAllSnapTargets();
+      const excludeSet = new Set([movingObj]);
+      
+      const snapResult = snapping.computeSnapDelta(
+        THREE, 
+        movingBox, 
+        targets, 
+        excludeSet, 
+        state.faceSnapDistance, // snap enter distance
+        0.02, // snap overlap tolerance
+        { axisPreference: null }
+      );
+      
+      if (snapResult.axis && snapResult.other) {
+        return {
+          delta: snapResult.delta,
+          axis: snapResult.axis,
+          targetObj: snapResult.other,
+          movingBox: movingBox,
+          targetBox: snapResult.otherBox
+        };
+      }
+    } catch (e) {
+      console.warn('Face snap computation error:', e);
+    }
+    
+    return null;
+  }
+
+  function applyFaceSnap(targetObj, snapInfo) {
+    if (!snapInfo || !snapInfo.delta) return;
+    
+    try {
+      // Apply the snap delta to the target object's position
+      const currentPos = targetObj.position.clone();
+      const newPos = currentPos.add(snapInfo.delta);
+      targetObj.position.copy(newPos);
+      
+      // Update face snap state
+      state.faceSnapActive = true;
+      state.faceSnapTarget = snapInfo.targetObj;
+      state.faceSnapDelta = snapInfo.delta;
+      
+      console.log(`VR Face snap applied: ${snapInfo.axis} axis, delta: ${snapInfo.delta.length().toFixed(3)}m`);
+    } catch (e) {
+      console.warn('Error applying face snap:', e);
+    }
+  }
 
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
@@ -41,17 +120,43 @@ export function createAREdit(THREE, scene, renderer){
     state.perActive = null; 
     clearManip(); 
     clearSnapHelper(); 
+    clearFaceSnapVisuals();
     console.log('AR Edit: setPerObjectEnabled called with:', on, 'state.perObject now:', state.perObject);
   }
   function setScaleEnabled(on){ state.allowScale = !!on; }
   function setGroundLocked(on){ state.groundLocked = !!on; }
   function setOnTransform(fn){ state.onTransform = (typeof fn === 'function') ? fn : null; }
+  function setFaceSnapEnabled(on){ state.faceSnapEnabled = !!on; if(!on) clearFaceSnapVisuals(); }
   function getDirtyInfo(){ return { any: state.dirtySet.size > 0, nodes: Array.from(state.dirtySet) }; }
   function clearDirty(){ state.dirtySet.clear(); }
+  
+  function clearFaceSnapVisuals() {
+    try {
+      if (snapVisuals && snapVisuals.hideFaceSnapHighlights) {
+        snapVisuals.hideFaceSnapHighlights();
+      }
+      state.faceSnapActive = false;
+      state.faceSnapTarget = null;
+      state.faceSnapDelta = null;
+    } catch (e) {
+      console.warn('Error clearing face snap visuals:', e);
+    }
+  }
   function start(session){ state.session = session || null; }
-  function stop(){ state.session = null; clearManip(); removeGizmo(); clearSnapHelper(); }
+  function stop(){ state.session = null; clearManip(); removeGizmo(); clearSnapHelper(); clearFaceSnapVisuals(); }
 
-  function clearManip(){ if(state.target){ delete state.target.userData._grab; delete state.target.userData._bi; } state.one=null; state.two=null; }
+  function clearManip(){ 
+    if(state.target){ 
+      delete state.target.userData._grab; 
+      delete state.target.userData._bi; 
+    } 
+    state.one=null; 
+    state.two=null; 
+    // Clear all highlight systems when manipulation ends
+    clearSnapHelper(); 
+    state.snapped = false; 
+    clearFaceSnapVisuals(); 
+  }
 
   function ensureGizmo(){
     if (state.gizmoGroup) return;
@@ -258,9 +363,26 @@ export function createAREdit(THREE, scene, renderer){
         const sel = pickChildAt(newly.x, newly.y, newly.z, newly.radius || HAND_SPHERE_R);
         if (sel){ state.perActive = sel; state.one = null; state.two = null; }
       }
-      if (!stillGrabbing){ state.perActive = null; state.one = null; state.two = null; updateGizmo([]); return; }
+      if (!stillGrabbing){ 
+        state.perActive = null; 
+        state.one = null; 
+        state.two = null; 
+        updateGizmo([]); 
+        // Clear all highlights when per-object grabbing ends
+        clearSnapHelper(); 
+        state.snapped = false; 
+        clearFaceSnapVisuals(); 
+        return; 
+      }
       effectiveTarget = state.perActive || null;
-      if (!effectiveTarget){ updateGizmo([]); return; }
+      if (!effectiveTarget){ 
+        updateGizmo([]); 
+        // Clear highlights when no target is selected
+        clearSnapHelper(); 
+        state.snapped = false; 
+        clearFaceSnapVisuals(); 
+        return; 
+      }
       try { targetBox = new THREE.Box3().setFromObject(effectiveTarget); } catch { targetBox = null; }
       // Recompute points using the specific target box for accurate collision gating
       const points = collectActivePoints(frame, localSpace, targetBox);
@@ -268,7 +390,14 @@ export function createAREdit(THREE, scene, renderer){
     }
 
     // Whole-scene mode: operate on the configured target as before
-    if (!effectiveTarget) { updateGizmo([]); return; }
+    if (!effectiveTarget) { 
+      updateGizmo([]); 
+      // Clear highlights when no effective target in whole-scene mode
+      clearSnapHelper(); 
+      state.snapped = false; 
+      clearFaceSnapVisuals(); 
+      return; 
+    }
     try { targetBox = new THREE.Box3().setFromObject(effectiveTarget); } catch { targetBox = null; }
     const points = collectActivePoints(frame, localSpace, targetBox);
     return updateWithTarget(points, effectiveTarget, targetBox);
@@ -324,6 +453,42 @@ export function createAREdit(THREE, scene, renderer){
         desiredLocalQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle);
       }
       
+      // VR Face Snapping: Check for magnetic snap to nearby faces
+      let faceSnapInfo = null;
+      if (state.faceSnapEnabled && state.perObject && targetObj) {
+        // Create a temporary transform to test snapping
+        const originalPos = targetObj.position.clone();
+        targetObj.position.copy(desiredLocalPos);
+        targetObj.updateMatrixWorld(true);
+        
+        faceSnapInfo = computeFaceSnap(targetObj);
+        
+        // Restore original position
+        targetObj.position.copy(originalPos);
+        targetObj.updateMatrixWorld(true);
+        
+        if (faceSnapInfo) {
+          console.log(`VR Face snap detected: ${faceSnapInfo.axis} axis, distance: ${faceSnapInfo.delta.length().toFixed(3)}m`);
+          
+          // Apply the snap delta to the desired position
+          desiredLocalPos.add(faceSnapInfo.delta);
+          
+          // Show orange highlights on both objects
+          if (snapVisuals && snapVisuals.showFaceSnapHighlights) {
+            snapVisuals.showFaceSnapHighlights(targetObj, faceSnapInfo.targetObj);
+          }
+          
+          state.faceSnapActive = true;
+          state.faceSnapTarget = faceSnapInfo.targetObj;
+        } else {
+          // Clear face snap visuals if no snap detected
+          clearFaceSnapVisuals();
+        }
+      } else {
+        // Clear face snap visuals if face snapping is disabled
+        clearFaceSnapVisuals();
+      }
+      
       try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
       try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
       if (state.perObject && targetObj && ( !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) )){
@@ -364,7 +529,7 @@ export function createAREdit(THREE, scene, renderer){
         }
         // Do not engage two-hand orbit/scale unless both are colliding
   // Clear snap highlight since scaling interaction ended / not active
-  try { clearSnapHelper(); state.snapped = false; } catch {}
+  try { clearSnapHelper(); state.snapped = false; clearFaceSnapVisuals(); } catch {}
   return;
       }
       const p0=both[0], p1=both[1]; const midW=new THREE.Vector3((p0.x+p1.x)/2, (p0.y+p1.y)/2, (p0.z+p1.z)/2);
@@ -468,6 +633,7 @@ export function createAREdit(THREE, scene, renderer){
       state.one = null; state.two = null;
       // Hide snap visual when not manipulating
       clearSnapHelper(); state.snapped = false;
+      clearFaceSnapVisuals(); // Also clear face snap visuals when not manipulating
     }
 
   // Passive push disabled; object only responds when grabbing
@@ -501,5 +667,5 @@ export function createAREdit(THREE, scene, renderer){
     }
   }
 
-  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setGroundLocked, setOnTransform, getDirtyInfo, clearDirty, start, stop, update };
+  return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setGroundLocked, setOnTransform, setFaceSnapEnabled, getDirtyInfo, clearDirty, start, stop, update };
 }

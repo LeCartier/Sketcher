@@ -6,6 +6,7 @@
 
 export function createSnapVisuals({ THREE, scene }) {
   let snapHighlight = null;
+  let faceSnapHighlights = []; // For VR face snapping - stores highlight meshes for both objects
 
   function ensure() {
     if (snapHighlight) return snapHighlight;
@@ -18,7 +19,59 @@ export function createSnapVisuals({ THREE, scene }) {
     return snapHighlight;
   }
 
-  function hide() { if (snapHighlight) snapHighlight.visible = false; }
+  function ensureFaceSnapHighlights() {
+    if (faceSnapHighlights.length === 0) {
+      // Create two orange wireframe box helpers for VR face snapping
+      for (let i = 0; i < 2; i++) {
+        const box = new THREE.Box3();
+        const helper = new THREE.Box3Helper(box, 0xff6600); // Orange color
+        helper.name = `__VRFaceSnapHighlight_${i}`;
+        helper.renderOrder = 10003; // Render on top
+        helper.userData.__helper = true;
+        helper.visible = false;
+        // Make the wireframe more prominent
+        if (helper.material) {
+          helper.material.linewidth = 3;
+          helper.material.transparent = true;
+          helper.material.opacity = 0.9;
+          helper.material.depthTest = false;
+        }
+        scene.add(helper);
+        faceSnapHighlights.push(helper);
+      }
+    }
+    return faceSnapHighlights;
+  }
+
+  function hide() { 
+    if (snapHighlight) snapHighlight.visible = false; 
+    hideFaceSnapHighlights();
+  }
+
+  function hideFaceSnapHighlights() {
+    faceSnapHighlights.forEach(helper => {
+      if (helper) helper.visible = false;
+    });
+  }
+
+  function showFaceSnapHighlights(movingObj, targetObj) {
+    const helpers = ensureFaceSnapHighlights();
+    
+    try {
+      // Update bounding boxes and show highlights
+      if (movingObj && helpers[0]) {
+        helpers[0].box.setFromObject(movingObj);
+        helpers[0].visible = true;
+      }
+      if (targetObj && helpers[1]) {
+        helpers[1].box.setFromObject(targetObj);
+        helpers[1].visible = true;
+      }
+    } catch (e) {
+      console.warn('Error updating face snap highlights:', e);
+      hideFaceSnapHighlights();
+    }
+  }
 
   function showAt(movingBox, snapInfo) {
     const hl = ensure();
@@ -55,5 +108,5 @@ export function createSnapVisuals({ THREE, scene }) {
     hl.visible = true;
   }
 
-  return { ensure, hide, showAt };
+  return { ensure, hide, showAt, showFaceSnapHighlights, hideFaceSnapHighlights };
 }
