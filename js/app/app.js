@@ -695,24 +695,14 @@ export async function init() {
 				} catch{}
 				const bDraw = xrHud.createDraw3DButton(()=>{ 
 					try { 
-						if (!vrDraw) return; 
-						const currentlyActive = vrDraw.isActive();
-						const on = !currentlyActive; 
-						console.log(`Draw button clicked: currently ${currentlyActive ? 'ACTIVE' : 'INACTIVE'}, switching to ${on ? 'ACTIVE' : 'INACTIVE'}`);
-						if (on) {
-							// Enable draw mode and show submenu
-							vrDraw.setEnabled(true); 
-							setHudButtonActiveByLabel('Draw', true);
-							xrHud.showDrawSubmenu(vrDraw);
-							console.log('VR Draw: ENABLED via button');
-						} else {
-							// Disable draw mode and hide submenu
-							vrDraw.setEnabled(false); 
-							setHudButtonActiveByLabel('Draw', false);
-							xrHud.hideDrawSubmenu();
-							console.log('VR Draw: DISABLED via button');
-						}
-						if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!on); 
+						if (!vrDraw) return;
+						// Open the draw submenu without changing draw enablement state.
+						// Start/Stop is controlled from inside the submenu via its explicit toggle.
+						xrHud.showDrawSubmenu(vrDraw);
+						// Keep Draw button highlight in sync with current active state
+						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
+						// Ensure AR edit remains enabled unless drawing is already active
+						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!(vrDraw.isActive && vrDraw.isActive())); } catch {}
 					} catch{} 
 				});
 				xrHudButtons.push(bDraw);
@@ -851,7 +841,7 @@ export async function init() {
 				} catch(e){ console.warn('alignModelToGround failed', e); }
 			}
 
-		// Helper: toggle HUD button active visual by label (orange when active)
+		// Helper: toggle HUD button active visual by label (green tile when active)
 		function setHudButtonActiveByLabel(label, active){
 			try {
 				if (!xrHudButtons || !xrHudButtons.length) return;
@@ -862,24 +852,23 @@ export async function init() {
 						if (!meta) continue;
 						if (meta.label === label){
 							mesh.userData.__hudButton.active = !!active;
-							
+							// Colors
+							const ACTIVE_COLOR = 0x22cc66; // green
+							const DEFAULT_BG = 0x2a2a2a;
 							// Handle different button types
 							if (mesh.material) {
-								// Standard text buttons with direct materials
-								if (active) mesh.material.color.setHex(0xff8800);
-								else mesh.material.color.setHex(0xffffff);
+								// Text-only buttons: tint text color
+								mesh.material.color.setHex(active ? ACTIVE_COLOR : 0xffffff);
 								mesh.material.needsUpdate = true;
 							} else if (mesh.isGroup) {
-								// 3D button groups - find and tint the background mesh
-								const bgMesh = mesh.children.find(child => 
-									child.isMesh && 
-									child.material && 
-									child.material.color &&
-									child.renderOrder === 10000 // Background mesh has this render order
-								);
+								// 3D tile buttons: find background mesh and tint it; also sync stored base/hover mats
+								const bgMesh = mesh.children.find(child => child.isMesh && child.material && child.material.color && child.renderOrder === 10000);
+								const hudBtn = mesh.userData.__hudButton;
 								if (bgMesh && bgMesh.material) {
-									if (active) bgMesh.material.color.setHex(0xff8800); // Orange highlight
-									else bgMesh.material.color.setHex(0x2a2a2a); // Updated default background color
+									const target = active ? ACTIVE_COLOR : DEFAULT_BG;
+									if (hudBtn && hudBtn.base) { hudBtn.base.color.setHex(target); hudBtn.base.needsUpdate = true; }
+									if (hudBtn && hudBtn.hover) { hudBtn.hover.color.setHex(target); hudBtn.hover.needsUpdate = true; }
+									bgMesh.material.color.setHex(target);
 									bgMesh.material.needsUpdate = true;
 								}
 							}

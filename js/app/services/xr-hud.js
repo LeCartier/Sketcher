@@ -87,15 +87,35 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const r=36; ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(w-r,0); ctx.quadraticCurveTo(w,0,w,r); ctx.lineTo(w,h-r); ctx.quadraticCurveTo(w,h,w-r,h); ctx.lineTo(r,h); ctx.quadraticCurveTo(0,h,0,h-r); ctx.lineTo(0,r); ctx.quadraticCurveTo(0,0,r,0); ctx.closePath(); ctx.fill();
     // top sheen
     ctx.fillStyle=hl; ctx.fillRect(0,0,w,Math.max(6, Math.floor(h*0.04)));
-    // label (support simple stacking for two-word labels)
-    ctx.fillStyle=fg; ctx.font='bold 88px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    const parts = (label||'').split(' ');
-    if (parts.length > 1) {
-      // draw two stacked lines
-      ctx.fillText(parts.slice(0, Math.ceil(parts.length/2)).join(' '), w/2, h/2 - 34);
-      ctx.fillText(parts.slice(Math.ceil(parts.length/2)).join(' '), w/2, h/2 + 34);
+    // label (support simple stacking for multi-word labels). Increase base size by ~33% and scale-to-fit.
+    ctx.fillStyle=fg; ctx.textAlign='center'; ctx.textBaseline='middle';
+    const raw = String(label||'');
+    const words = raw.split(' ').filter(Boolean);
+    const topLine = words.length > 1 ? words.slice(0, Math.ceil(words.length/2)).join(' ') : raw;
+    const bottomLine = words.length > 1 ? words.slice(Math.ceil(words.length/2)).join(' ') : null;
+    const margin = Math.floor(w * 0.08);
+    const basePx = Math.round(88 * 1.33); // ~117px
+    let fontPx = basePx;
+    const maxW = w - 2*margin;
+    const maxH = h - 2*margin;
+    // Find a font size that fits both width and height constraints
+    while (fontPx > 12){
+      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+      const lineH = Math.round(fontPx * 1.1);
+      const widthTop = ctx.measureText(topLine).width;
+      const widthBottom = bottomLine ? ctx.measureText(bottomLine).width : 0;
+      const widest = Math.max(widthTop, widthBottom);
+      const totalH = bottomLine ? (lineH * 2) : lineH;
+      if (widest <= maxW && totalH <= maxH) break;
+      fontPx -= 2;
+    }
+    ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+    const lineH = Math.round(fontPx * 1.15);
+    if (bottomLine){
+      ctx.fillText(topLine, w/2, h/2 - lineH*0.5);
+      ctx.fillText(bottomLine, w/2, h/2 + lineH*0.5);
     } else {
-      ctx.fillText(label,w/2,h/2);
+      ctx.fillText(topLine, w/2, h/2);
     }
     const tex=new THREE.CanvasTexture(c); if(THREE.SRGBColorSpace) tex.colorSpace=THREE.SRGBColorSpace; tex.needsUpdate=true; return tex;
   }
@@ -125,10 +145,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Background panel with improved contrast
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x2a2a2a, // Darker background for better contrast
-      transparent: true, 
-      opacity: 0.95, // More opaque
-      depthTest: false, 
+      color: 0x2a2a2a,
+      transparent: false,
+      opacity: 1.0,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false
     });
@@ -145,42 +165,42 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     case 'box':
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-      new THREE.MeshBasicMaterial({ color: 0x66d9ff, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter blue
+      new THREE.MeshBasicMaterial({ color: 0x66d9ff, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }) // Bright blue, opaque
         );
         break;
       case 'sphere':
         primitiveMesh = new THREE.Mesh(
           new THREE.SphereGeometry(iconScale * 0.5, 12, 8),
-      new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter red
+      new THREE.MeshBasicMaterial({ color: 0xff6666, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }) // Bright red, opaque
         );
         break;
       case 'cylinder':
         primitiveMesh = new THREE.Mesh(
           new THREE.CylinderGeometry(iconScale * 0.4, iconScale * 0.4, iconScale, 12),
-      new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter green
+      new THREE.MeshBasicMaterial({ color: 0x66ff66, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }) // Bright green, opaque
         );
         break;
       case 'cone':
         primitiveMesh = new THREE.Mesh(
           new THREE.ConeGeometry(iconScale * 0.4, iconScale, 12),
-      new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter orange
+      new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }) // Bright orange, opaque
         );
         break;
       default:
         // Fallback to a simple cube
         primitiveMesh = new THREE.Mesh(
           new THREE.BoxGeometry(iconScale, iconScale, iconScale),
-      new THREE.MeshBasicMaterial({ color: 0xdddddd, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }) // Much brighter gray
+      new THREE.MeshBasicMaterial({ color: 0xdddddd, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }) // Bright gray, opaque
         );
     }
     
     if (primitiveMesh) {
   primitiveMesh.renderOrder = 10003; // Higher render order than text and flash
   primitiveMesh.position.z = 0.012; // Push further forward to avoid blending dimming
-      
-      // Add subtle rotation for better 3D visibility - facing user
-      primitiveMesh.rotation.x = Math.PI * 0.1;  // 18 degrees
-      primitiveMesh.rotation.y = Math.PI * 0.15; // 27 degrees (removed 180 flip)
+      // Ensure icon faces outward (+Z in HUD local space)
+      primitiveMesh.rotation.set(0, 0, 0);
+      // Mark as 3D icon for per-frame camera-facing alignment
+      primitiveMesh.userData.__icon3D = true;
       
       buttonGroup.add(primitiveMesh);
     }
@@ -228,10 +248,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Tile background (same style as other tile buttons)
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x2a2a2a, // Same dark background as other tiles
-      transparent: true, 
-      opacity: 0.95, 
-      depthTest: false, 
+      color: 0x2a2a2a,
+      transparent: false,
+      opacity: 1.0,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false
     });
@@ -243,19 +263,27 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.28; // Same scale as other tiles
     const iconGroup = new THREE.Group();
     
-    // Add label text (same style as other tile buttons)
-    const textScale = iconScale * 0.4;
+    // Add label text (increase by ~33% and fit-to-width)
     const textCanvas = document.createElement('canvas');
-    textCanvas.width = 256; textCanvas.height = 64;
+    textCanvas.width = 512; textCanvas.height = 128;
     const textCtx = textCanvas.getContext('2d');
-    textCtx.fillStyle = '#ffffff'; // Bright white text
-    textCtx.font = 'bold 32px Arial'; // Same size as other tiles
+    textCtx.fillStyle = '#ffffff';
     textCtx.textAlign = 'center';
     textCtx.textBaseline = 'middle';
-    textCtx.fillText('Draw', 128, 32);
+    let px = Math.round(32 * 1.33);
+    const labelStr = 'Draw';
+    const maxTextW = textCanvas.width * 0.9;
+    while (px > 12){
+      textCtx.font = `bold ${px}px Arial`;
+      if (textCtx.measureText(labelStr).width <= maxTextW) break;
+      px -= 2;
+    }
+    textCtx.font = `bold ${px}px Arial`;
+    textCtx.clearRect(0,0,textCanvas.width,textCanvas.height);
+    textCtx.fillText(labelStr, textCanvas.width/2, textCanvas.height/2);
     
     const textTexture = new THREE.CanvasTexture(textCanvas);
-    const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.25);
+  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.3);
     const textMat = new THREE.MeshBasicMaterial({ 
       map: textTexture, 
       transparent: true, 
@@ -264,7 +292,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       toneMapped: false
     });
     const textMesh = new THREE.Mesh(textGeom, textMat);
-    textMesh.position.y = -BUTTON_H * 0.28; // Position at bottom
+  textMesh.position.y = -BUTTON_H * 0.28; // Keep at bottom; slightly taller area
     textMesh.position.z = 0.002;
     textMesh.renderOrder = 10001;
     buttonGroup.add(textMesh);
@@ -272,14 +300,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Create draw icon: pencil/pen shape
     // Pencil body (cylinder)
     const bodyGeom = new THREE.CylinderGeometry(iconScale * 0.08, iconScale * 0.08, iconScale * 0.6, 8);
-  const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }); // Bright orange
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }); // Bright orange, opaque
     const bodyMesh = new THREE.Mesh(bodyGeom, bodyMat);
     bodyMesh.renderOrder = 10001;
     iconGroup.add(bodyMesh);
     
     // Pencil tip (cone)
     const tipGeom = new THREE.ConeGeometry(iconScale * 0.08, iconScale * 0.15, 8);
-  const tipMat = new THREE.MeshBasicMaterial({ color: 0x999999, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }); // Bright gray
+  const tipMat = new THREE.MeshBasicMaterial({ color: 0x999999, depthTest: false, depthWrite: false, side: THREE.FrontSide, toneMapped: false, transparent: false }); // Bright gray, opaque
     const tipMesh = new THREE.Mesh(tipGeom, tipMat);
     tipMesh.position.y = -iconScale * 0.375; // Position at bottom of pencil
     tipMesh.renderOrder = 10001;
@@ -298,11 +326,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     lineMesh.renderOrder = 10001;
     iconGroup.add(lineMesh);
     
-    // Position the icon group in the upper area of the tile
+  // Position the icon group in the upper area of the tile
     iconGroup.position.y = BUTTON_H * 0.1; // Centered in upper area
   iconGroup.position.z = 0.006; // Push forward to avoid z-fighting/alpha blending dimming
-    iconGroup.rotation.x = Math.PI * 0.1;  // Slight tilt
-    iconGroup.rotation.z = Math.PI * 0.1;  // Slight angle like holding a pencil
+  // Remove extra tilts so the icon faces outward (+Z in HUD local space)
+  iconGroup.rotation.set(0, 0, 0);
+  // Mark as 3D icon group for per-frame camera-facing alignment
+  iconGroup.userData.__icon3D = true;
     
     buttonGroup.add(iconGroup);
     
@@ -349,12 +379,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     // Tile background (maintains the existing aesthetic)
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     const bgMat = new THREE.MeshBasicMaterial({ 
-      color: 0x2a2a2a, // Slightly lighter dark background for better contrast
-      transparent: true, 
-      opacity: 0.95, // Slightly more opaque
-      depthTest: false, 
+      color: 0x2a2a2a,
+      transparent: false,
+      opacity: 1.0,
+      depthTest: false,
       depthWrite: false,
-      toneMapped: false // Prevent XR tone mapping from dimming HUD tiles
+      toneMapped: false
     });
     const bgMesh = new THREE.Mesh(bgGeom, bgMat);
     bgMesh.renderOrder = 10000;
@@ -364,20 +394,28 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const iconScale = Math.min(BUTTON_W, BUTTON_H) * 0.28; // Slightly larger icons
     const iconGroup = new THREE.Group();
     
-    // Add label text (bigger and brighter, at bottom of tile)
-    const textScale = iconScale * 0.4; // Larger text
+    // Add label text (increase by ~33% and fit-to-width)
     const textCanvas = document.createElement('canvas');
-    textCanvas.width = 256; textCanvas.height = 64; // Taller canvas for bigger text
+    textCanvas.width = 512; textCanvas.height = 128;
     const textCtx = textCanvas.getContext('2d');
-    textCtx.fillStyle = '#ffffff'; // Bright white text
-    textCtx.font = 'bold 32px Arial'; // Bigger, bold font (33% larger)
+    textCtx.fillStyle = '#ffffff';
     textCtx.textAlign = 'center';
     textCtx.textBaseline = 'middle';
-    textCtx.fillText(label, 128, 32);
+    let px = Math.round(32 * 1.33);
+    const maxTextW = textCanvas.width * 0.9;
+    const labelStr = String(label||'');
+    while (px > 12){
+      textCtx.font = `bold ${px}px Arial`;
+      if (textCtx.measureText(labelStr).width <= maxTextW) break;
+      px -= 2;
+    }
+    textCtx.font = `bold ${px}px Arial`;
+    textCtx.clearRect(0,0,textCanvas.width,textCanvas.height);
+    textCtx.fillText(labelStr, textCanvas.width/2, textCanvas.height/2);
     
     const textTexture = new THREE.CanvasTexture(textCanvas);
     if (THREE.SRGBColorSpace) textTexture.colorSpace = THREE.SRGBColorSpace;
-    const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.25); // Larger text area
+  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.3); // Slightly taller to accommodate increased size
     const textMat = new THREE.MeshBasicMaterial({ 
       map: textTexture, 
       transparent: true, 
@@ -695,9 +733,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   iconGroup.position.y = BUTTON_H * 0.1; // Position above text
   iconGroup.position.z = 0.006; // Push slightly further forward (6mm) for safety vs. alpha dimming
       
-      // Add subtle rotation for better 3D visibility - flipped to face user
-      iconGroup.rotation.x = Math.PI * 0.05;  // 9 degrees
-      iconGroup.rotation.y = Math.PI * 0.08 + Math.PI; // 14.4 degrees + 180 degrees (face user)
+      // Ensure icon faces outward (+Z in HUD local space) without extra tilts
+      iconGroup.rotation.set(0, 0, 0);
+      // Mark as 3D icon group for per-frame camera-facing alignment
+      iconGroup.userData.__icon3D = true;
       
       iconGroup.renderOrder = 10002; // Higher render order than background
       
@@ -705,6 +744,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       iconGroup.traverse((child) => {
         if (child.isMesh) {
           child.renderOrder = 10003;
+          // Mark meshes that are part of the 3D icon as well
+          child.userData.__icon3D = true;
         }
       });
       
@@ -1119,6 +1160,41 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     } catch {}
   // For palm anchor, do not fallback to camera when not placed (menu should hide). For controller anchor, allow fallback.
   if (!placed && anchor.type === 'controller' && camWorldPos && camWorldQuat){ const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camWorldQuat); const up=new THREE.Vector3(0,1,0).applyQuaternion(camWorldQuat); const pos=camWorldPos.clone().add(forward.multiplyScalar(0.5)).add(up.multiplyScalar(-0.05)); hud.position.lerp(pos,0.35); hud.quaternion.slerp(camWorldQuat,0.35); }
+    // Make all 3D icons face the camera each frame (yaw/pitch), preserving tile/text quads.
+    try {
+      if (xrCam && hud) {
+        const camPos = camWorldPos.clone();
+        const worldY = new THREE.Vector3(0,1,0);
+        hud.traverse((obj)=>{
+          try {
+            if (!obj || !obj.userData || !obj.userData.__icon3D) return;
+            // Compute world-space position of the icon object
+            const worldPos = new THREE.Vector3();
+            obj.getWorldPosition(worldPos);
+            // Direction from icon to camera
+            const toCam = new THREE.Vector3().subVectors(camPos, worldPos).normalize();
+            // Build a facing quaternion: z -> toCam, y -> world up (best-effort)
+            const z = toCam.clone();
+            const y = worldY.clone();
+            let x = new THREE.Vector3().crossVectors(y, z);
+            if (x.lengthSq() < 1e-6) x.set(1,0,0); else x.normalize();
+            const zFixed = new THREE.Vector3().crossVectors(x, y).normalize();
+            const m = new THREE.Matrix4().makeBasis(x, y, zFixed);
+            const q = new THREE.Quaternion().setFromRotationMatrix(m);
+            // Apply in local space by converting world quaternion to parent space
+            if (obj.parent) {
+              const parentWorldQ = new THREE.Quaternion();
+              obj.parent.getWorldQuaternion(parentWorldQ);
+              const parentWorldQInv = parentWorldQ.clone().invert();
+              const localQ = q.clone().premultiply(parentWorldQInv);
+              obj.quaternion.slerp(localQ, 0.6);
+            } else {
+              obj.quaternion.slerp(q, 0.6);
+            }
+          } catch {}
+        });
+      }
+    } catch {}
     // Enforce visibility rules: menu shows when toggled AND no grab/squeeze; if palm-anchored, also require left hand open
     try {
   const palmReq = (anchor.type === 'palm');
@@ -1585,6 +1661,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   // Draw mode submenu functionality
   let drawSubmenuActive = false;
   let drawSubmenuButtons = [];
+  let drawStartStopButton = null; // reference to Start/Stop toggle tile
   
   function showDrawSubmenu(vrDrawService) {
     if (drawSubmenuActive) return;
@@ -1600,6 +1677,25 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       if (btn.mesh) btn.mesh.visible = false;
     }
     
+    // Start/Stop toggle button (explicit control for draw mode)
+    const startStopLabel = (vrDrawService && vrDrawService.isActive && vrDrawService.isActive()) ? 'Stop' : 'Start';
+    drawStartStopButton = createTile3DButton(startStopLabel, () => {
+      try {
+        if (!vrDrawService) return;
+        const active = vrDrawService.isActive && vrDrawService.isActive();
+        const next = !active;
+        vrDrawService.setEnabled(!!next);
+        // Update label to reflect new state
+        if (drawStartStopButton && typeof drawStartStopButton.setLabel === 'function') {
+          drawStartStopButton.setLabel(next ? 'Stop' : 'Start');
+        }
+        // Reflect state on main Draw button highlight
+        if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', !!next);
+        // Coordinate with AR edit if globally available
+        try { if (window.arEdit && typeof window.arEdit.setEnabled === 'function') window.arEdit.setEnabled(!next); } catch {}
+      } catch {}
+    });
+
     // Color selection buttons
     const colorRed = createTile3DButton('Red', () => {
       if (vrDrawService) vrDrawService.setColor(0xff0000);
@@ -1637,8 +1733,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       } else {
         hideDrawSubmenu();
       }
-      // Keep Draw button visually active
-      if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', true);
+      // Keep Draw button visually in sync with current state
+      try {
+        const isActive = vrDrawService && vrDrawService.isActive && vrDrawService.isActive();
+        if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', !!isActive);
+      } catch {}
     });
 
     // Provide explicit exit control separate from Return
@@ -1650,6 +1749,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     });
     
     drawSubmenuButtons = [
+      drawStartStopButton,
       colorRed, colorGreen, colorBlue, colorYellow,
       thinLine, mediumLine, thickLine,
       clearButton, returnButton, exitButton
@@ -1677,6 +1777,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       }
     }
     drawSubmenuButtons = [];
+  drawStartStopButton = null;
     
     // Restore main menu buttons with slight delay to prevent immediate re-triggering
     setTimeout(() => {
@@ -1687,7 +1788,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
   
   function arrangeSubmenuButtons() {
-  // Arrange submenu buttons in a 4x3 grid (added Exit)
+  // Arrange submenu buttons in a 4x3+ grid; first row starts with Start/Stop
   const cols = 4;
     const buttonSpacing = BUTTON_W + GRID_GAP_X;
     const rowSpacing = BUTTON_H + GRID_GAP_Y;
