@@ -2584,6 +2584,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let __sketchOverrideActive = false;  // whether overrides are active
 	// Track attached sketch outline nodes so we can remove/dispose on exit
 	const __sketchOutlineNodes = new Set();
+	// Feature flag: outlines disabled for a clean, crisp sketch look
+	const SKETCH_OUTLINES_ENABLED = false;
 
 	// Procedural fallback textures (lightweight, immediate)
 	function makeNoiseCanvas(w=256,h=256,opts={}){
@@ -2699,7 +2701,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		try { if (bgColorPicker) bgColorPicker.disabled = true; } catch {}
 		try { if (gridColorPicker) gridColorPicker.disabled = true; } catch {}
 		renderer.setClearColor('#ffffff');
-		setGridColor('#999999');
+		// Lighter grid for less visual noise in sketch mode
+		setGridColor('#d0d0d0');
 		__sketchOverrideActive = true;
 	}
 	function restoreSketchOverridesIfAny(){
@@ -2804,15 +2807,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const proc = getProceduralSharedMaterial(style);
 		applyUniformMaterial(proc);
 		setMaterialButtons(style);
-		// Sketch style specifics: overrides, outlines, and per-mesh grey shades
+		// Sketch style specifics: overrides; outlines intentionally disabled for clean look
 		if (style === 'sketch'){
 			applySketchOverrides();
 			disposeSketchOutlines();
-			// Build plane/feature-edge outlines and attach to each mesh so they follow
-			forEachMeshInScene(m => {
-				const lines = makeSketchLinesForMesh(m);
-				if (lines) { try { m.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
-			});
+			// If outlines are re-enabled in the future, guard with flag
+			if (SKETCH_OUTLINES_ENABLED) {
+				forEachMeshInScene(m => {
+					const lines = makeSketchLinesForMesh(m);
+					if (lines) { try { m.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
+				});
+			}
 		} else {
 			disposeSketchOutlines();
 		}
