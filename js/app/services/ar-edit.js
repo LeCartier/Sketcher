@@ -36,7 +36,13 @@ export function createAREdit(THREE, scene, renderer){
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
-  function setPerObjectEnabled(on){ state.perObject = !!on; state.perActive = null; clearManip(); clearSnapHelper(); }
+  function setPerObjectEnabled(on){ 
+    state.perObject = !!on; 
+    state.perActive = null; 
+    clearManip(); 
+    clearSnapHelper(); 
+    console.log('AR Edit: setPerObjectEnabled called with:', on, 'state.perObject now:', state.perObject);
+  }
   function setScaleEnabled(on){ state.allowScale = !!on; }
   function setGroundLocked(on){ state.groundLocked = !!on; }
   function setOnTransform(fn){ state.onTransform = (typeof fn === 'function') ? fn : null; }

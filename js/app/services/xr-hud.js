@@ -779,13 +779,28 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     buttonGroup.userData.__hudButton.base = baseBgMat;
     buttonGroup.userData.__hudButton.hover = hoverBgMat;
     
-    // Function to update label
+    // Function to update label (recompute font size to fit)
     function setLabel(next) {
-      buttonGroup.userData.__hudButton.label = next;
-      // Update text mesh
-      textCtx.clearRect(0, 0, 256, 64); // Updated canvas size
-      textCtx.fillText(next, 128, 32); // Updated coordinates
-      textTexture.needsUpdate = true;
+      try {
+        const labelStr = String(next || '');
+        buttonGroup.userData.__hudButton.label = labelStr;
+        // Clear
+        textCtx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+        // Redraw with scale-to-fit
+        textCtx.fillStyle = '#ffffff';
+        textCtx.textAlign = 'center';
+        textCtx.textBaseline = 'middle';
+        let px = Math.round(32 * 1.33);
+        const maxTextW = textCanvas.width * 0.9;
+        while (px > 12) {
+          textCtx.font = `bold ${px}px Arial`;
+          if (textCtx.measureText(labelStr).width <= maxTextW) break;
+          px -= 2;
+        }
+        textCtx.font = `bold ${px}px Arial`;
+        textCtx.fillText(labelStr, textCanvas.width / 2, textCanvas.height / 2);
+        if (textTexture) textTexture.needsUpdate = true;
+      } catch {}
     }
     
     // Function to add/update status indicator (like green dot)
@@ -1297,8 +1312,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               // Check global cooldown to prevent accidental clicks after menu transitions
               const now = performance.now();
               if (now >= globalClickCooldownUntil) {
+                console.log('XR HUD: Button clicked:', top.userData?.__hudButton?.label);
                 const handler = top.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
                 try { const fl = top.userData && top.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch{}
+              } else {
+                console.log('XR HUD: Button click ignored due to cooldown');
               }
             }
             update.__xrTriggerPrev.set(src, pressed);

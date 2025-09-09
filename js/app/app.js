@@ -483,17 +483,26 @@ export async function init() {
 		    setXRInteractionMode(!xrInteractionRay);
 				} catch {}
 			});
+			// Do not highlight active background for text-only toggle
+			try { if (bInteract?.mesh?.userData?.__hudButton) bInteract.mesh.userData.__hudButton.noActiveBackground = true; } catch{}
 			// Toggle per-object vs whole-scene manipulation
 			const bMode = xrHud.createTile3DButton('Objects', ()=>{
 				try {
 					arPerObject = !arPerObject;
+					console.log('XR: Object/Scene mode switched to:', arPerObject ? 'Objects' : 'Scene');
 					arEdit.setPerObjectEnabled(arPerObject);
 					// Update button label to show current mode (not the mode we're switching to)
 					bMode.setLabel(arPerObject ? 'Objects' : 'Scene');
-				} catch {}
+					console.log('XR: Button label updated to:', arPerObject ? 'Objects' : 'Scene');
+				} catch (e) {
+					console.error('XR: Object/Scene button error:', e);
+				}
 			});
+			// Do not highlight active background for text-only toggle
+			try { if (bMode?.mesh?.userData?.__hudButton) bMode.mesh.userData.__hudButton.noActiveBackground = true; } catch{}
 			// Set initial label to reflect default state (arPerObject = false = Scene mode)
 			bMode.setLabel('Scene');
+			console.log('XR: Initial Object/Scene button label set to: Scene (arPerObject =', arPerObject, ')');
 			// Lock ground: snap AR content ground to XR local-floor (translate up, yaw align, optional scale within constraints)
 			const bLock = xrHud.createTile3DButton('Lock Ground', ()=>{
 				try {
@@ -521,6 +530,8 @@ export async function init() {
 					bMatMode.setLabel(arMatMode === 'normal' ? 'Mat' : (arMatMode === 'outline' ? 'Outline' : 'Lite'));
 				} catch {}
 			});
+			// Do not highlight active background for text-only toggle
+			try { if (bMatMode?.mesh?.userData?.__hudButton) bMatMode.mesh.userData.__hudButton.noActiveBackground = true; } catch{}
 			const bAlign = xrHud.createTile3DButton('Align Tile', ()=>{
 				try {
 					const session = renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
@@ -861,6 +872,8 @@ export async function init() {
 								mesh.material.color.setHex(active ? ACTIVE_COLOR : 0xffffff);
 								mesh.material.needsUpdate = true;
 							} else if (mesh.isGroup) {
+								// Respect buttons that should not show active background (text-only toggles)
+								if (meta && meta.noActiveBackground) { continue; }
 								// 3D tile buttons: find background mesh and tint it; also sync stored base/hover mats
 								const bgMesh = mesh.children.find(child => child.isMesh && child.material && child.material.color && child.renderOrder === 10000);
 								const hudBtn = mesh.userData.__hudButton;
