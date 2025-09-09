@@ -15,6 +15,7 @@ export function createFPQuality({ THREE, renderer, scene }) {
   envPMREM: null,
   envTexture: null,
   originalEnv: null,
+  // physicallyCorrectLights is removed in newer three.js; avoid toggling it
   originalPhysicallyCorrect: null,
   };
 
@@ -82,10 +83,9 @@ export function createFPQuality({ THREE, renderer, scene }) {
     }
     // Remove fill light if present
     if (state.fillLight){ scene.remove(state.fillLight); state.fillLight.dispose?.(); state.fillLight=null; }
-    // Restore environment & renderer flags
+  // Restore environment
     try {
       if (state.originalEnv !== undefined) scene.environment = state.originalEnv;
-      if (state.originalPhysicallyCorrect !== null && typeof state.originalPhysicallyCorrect === 'boolean') renderer.physicallyCorrectLights = state.originalPhysicallyCorrect;
     } catch{}
   }
 
@@ -137,8 +137,7 @@ export function createFPQuality({ THREE, renderer, scene }) {
   async function ensureEnvironment({ intensity = 1.0 } = {}){
     try {
       if (state.originalEnv === null) state.originalEnv = scene.environment || undefined;
-      if (state.originalPhysicallyCorrect === null) state.originalPhysicallyCorrect = !!renderer.physicallyCorrectLights;
-      renderer.physicallyCorrectLights = true;
+  // No-op: renderer.physicallyCorrectLights has been removed; rely on modern lighting pipeline
       if (!state.envTexture){
         // Lazy-load HDR environment only once
         const { RGBELoader } = await import('../../vendor/RGBELoader.js');

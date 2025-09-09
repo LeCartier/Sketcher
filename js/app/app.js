@@ -165,7 +165,6 @@ export async function init() {
 	renderer.xr.enabled = true;
 	// XR visual quality/perf tuning for Meta Quest
 	try {
-		renderer.physicallyCorrectLights = true;
 		if (THREE && THREE.ACESFilmicToneMapping !== undefined) renderer.toneMapping = THREE.ACESFilmicToneMapping;
 		if (THREE && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
 	// Slight foveation improves perf on Quest; 0 = full res center, 1 = aggressive peripheral reduction
@@ -1674,12 +1673,12 @@ export async function init() {
 		grid,
 		loadWebXRPolyfillIfNeeded,
 	});
-
 	// Soft snapping config (feet): snap when within SNAP_ENTER; allow pushing past with up to SNAP_OVERLAP before releasing
-	const SNAP_ENABLED = true;
+	let SNAP_ENABLED = true; // soft snap on by default
 	const SNAP_ENTER = 0.3; // start snapping within this gap
 	const SNAP_OVERLAP = 0.06; // allow up to this much overlap while still snapping
 	let snapGuard = false; // prevent re-entrant snaps
+	try { window.__setSoftSnapEnabled = (v)=>{ SNAP_ENABLED = !!v; if (!SNAP_ENABLED) { try{ snapVisuals.hide(); }catch{} } }; } catch{}
 
 	function getWorldBoxOf(object){
 		const box = new THREE.Box3();
@@ -2471,6 +2470,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (!toolbox) return;
 			const r = toolbox.getBoundingClientRect();
 			const left = Math.round(r.left);
+			// Sit just above the toolbox with a small gap, accounting for bar height
 			const top = Math.round(r.top - (snipEditBar.offsetHeight + 10));
 			snipEditBar.style.left = left + 'px';
 			snipEditBar.style.top = top + 'px';
@@ -2584,8 +2584,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let __sketchOverrideActive = false;  // whether overrides are active
 	// Track attached sketch outline nodes so we can remove/dispose on exit
 	const __sketchOutlineNodes = new Set();
-	// Feature flag: outlines disabled for a clean, crisp sketch look
-	const SKETCH_OUTLINES_ENABLED = false;
+	// Feature flag: outlines enabled for a clean, crisp sketch look
+	const SKETCH_OUTLINES_ENABLED = true;
 
 	// Procedural fallback textures (lightweight, immediate)
 	function makeNoiseCanvas(w=256,h=256,opts={}){
@@ -2627,7 +2627,18 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		return mat;
 	}
 	function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
-	function __isMaterialOverrideChain(node){ let n=node; while(n){ if (n.userData && n.userData.__materialOverride) return true; n = n.parent; } return false; }
+	function __isMaterialOverrideChain(node){
+		// Skip global overrides when any ancestor explicitly preserves materials
+		let n = node;
+		while (n) {
+			if (n.userData) {
+				if (n.userData.__materialOverride === true) return true;
+				if (n.userData.__preserveMaterials === true) return true;
+			}
+			n = n.parent;
+		}
+		return false;
+	}
 	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; ensureOriginalMaterial(m); m.material = sharedMat; }); }
 	function restoreOriginalMaterialsRespectingOverrides(){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
 	function applyStyleToSubtree(root, style){
@@ -2728,31 +2739,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		});
 		__sketchOutlineNodes.clear();
 	}
-	function jitterEdgesGeometry(egeo, amount){
-		// returns a new BufferGeometry with jittered positions
-		const src = egeo.attributes.position;
-		const dst = new Float32Array(src.array.length);
-		for (let i=0;i<src.count;i++){
-			const ix = i*3;
-			dst[ix]   = src.array[ix]   + (Math.random()-0.5)*amount;
-			dst[ix+1] = src.array[ix+1] + (Math.random()-0.5)*amount;
-			dst[ix+2] = src.array[ix+2] + (Math.random()-0.5)*amount;
-		}
-		const g = new THREE.BufferGeometry();
-		g.setAttribute('position', new THREE.BufferAttribute(dst, 3));
-		return g;
-	}
 	function makeSketchLinesForMesh(m){
 		const srcGeo = m.geometry; if (!srcGeo) return null;
-		try { if (!srcGeo.boundingSphere) srcGeo.computeBoundingSphere(); } catch {}
-		const r = (srcGeo.boundingSphere && Number.isFinite(srcGeo.boundingSphere.radius)) ? srcGeo.boundingSphere.radius : 1;
-		const egeo = new THREE.EdgesGeometry(srcGeo, 1);
+		// Build crisp feature/silhouette edges with a moderate threshold to reduce clutter
+		const threshold = 30; // degrees
+		const egeo = new THREE.EdgesGeometry(srcGeo, threshold);
+		if (!egeo || !egeo.attributes || !egeo.attributes.position || egeo.attributes.position.count === 0) return null;
 		const grp = new THREE.Group();
-		// Single jittered stroke for a hand-drawn outline
-		const jitterBase = Math.max(0.0015, Math.min(0.01, r * 0.0025));
-		const jgeo = jitterEdgesGeometry(egeo, jitterBase);
-		const mat = new THREE.LineBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.85 });
-		const lines = new THREE.LineSegments(jgeo, mat);
+		const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: false, opacity: 1.0, depthTest: true, depthWrite: false });
+		const lines = new THREE.LineSegments(egeo, mat);
+		// Slightly bias ordering so lines appear atop their surfaces when depths are equal
+		lines.renderOrder = 2;
 		grp.add(lines);
 		// Mark as helper/non-selectable and disable raycasting so it can't be picked or moved
 		grp.name = '__sketchOutline'; grp.userData.__helper = true; lines.userData.__helper = true;
@@ -2814,6 +2811,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			// If outlines are re-enabled in the future, guard with flag
 			if (SKETCH_OUTLINES_ENABLED) {
 				forEachMeshInScene(m => {
+					// Do not add outlines to preserved/override subtrees (e.g., overlay snips)
+					if (__isMaterialOverrideChain(m)) return;
 					const lines = makeSketchLinesForMesh(m);
 					if (lines) { try { m.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
 				});
@@ -3420,7 +3419,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					} catch {}
 				}
 				// After any toggle, keep the delete bar docked below toolbox
-				placeMobileDeleteBar();
+				placeMobileDeleteBar(); placeSnipEditBar();
 			});
 		}
 	if (togglePrimsBtn && primsGroup) togglePanel(togglePrimsBtn, primsGroup);
@@ -3433,6 +3432,30 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (toggleUtilsBtn && utilsGroup) togglePanel(toggleUtilsBtn, utilsGroup);
 	if (toggleViewsBtn && viewsGroup) togglePanel(toggleViewsBtn, viewsGroup);
 	if (toggleSettingsBtn && settingsGroup) togglePanel(toggleSettingsBtn, settingsGroup);
+
+	// While collapsible groups animate open/close, continuously reposition the docked bars so they visually stay attached
+	let __dockBarsRAF = null;
+	function __startDockBarsFollow(){
+		if (__dockBarsRAF != null) return;
+		const step = ()=>{
+			try { placeMobileDeleteBar(); placeSnipEditBar(); } catch {}
+			__dockBarsRAF = requestAnimationFrame(step);
+		};
+		__dockBarsRAF = requestAnimationFrame(step);
+	}
+	function __stopDockBarsFollow(){
+		if (__dockBarsRAF != null){ cancelAnimationFrame(__dockBarsRAF); __dockBarsRAF = null; }
+		try { placeMobileDeleteBar(); placeSnipEditBar(); } catch {}
+	}
+	try {
+		const collapsibles = document.querySelectorAll('#toolbox .collapse');
+		collapsibles.forEach(el=>{
+			el.addEventListener('transitionrun', ()=>__startDockBarsFollow(), { passive: true });
+			el.addEventListener('transitionstart', ()=>__startDockBarsFollow(), { passive: true });
+			el.addEventListener('transitionend', ()=>__stopDockBarsFollow(), { passive: true });
+			el.addEventListener('transitioncancel', ()=>__stopDockBarsFollow(), { passive: true });
+		});
+	} catch {}
 
 	// Room: wire Host/Join buttons
 	(function wireRoomButtons(){
@@ -5977,8 +6000,49 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// consume
 				sessionStorage.removeItem('sketcher:2d:snipEditResult');
 				if (!msg || !msg.id || !msg.data || !Array.isArray(msg.data.objects)) return;
-				const snip = __findSnipById(msg.id);
-				if (!snip){ console.warn('Edited snip not found in scene, id=', msg.id); return; }
+				let snip = __findSnipById(msg.id);
+				if (!snip && msg.uuid) {
+					try { snip = scene.getObjectByProperty('uuid', msg.uuid) || null; } catch {}
+				}
+				if (!snip) {
+					// Fallback 1: if exactly one Overlay Snip exists, assume it's the target
+					try {
+						const allSnips = []; scene.traverse(o=>{ if(o && o.name==='Overlay Snip') allSnips.push(o); });
+						if (allSnips.length === 1) snip = allSnips[0] || null;
+					} catch {}
+				}
+				if (!snip && Array.isArray(msg.pos)){
+					// Fallback 2: nearest snip to saved world position
+					try {
+						const target = new THREE.Vector3(msg.pos[0]||0, msg.pos[1]||0, msg.pos[2]||0);
+						let best=null, bestD=Infinity;
+						scene.traverse(o=>{
+							if (!o || o.name!=='Overlay Snip') return;
+							const p = new THREE.Vector3(); try { o.getWorldPosition(p); } catch { return; }
+							const d = p.distanceToSquared(target);
+							if (d < bestD) { best = o; bestD = d; }
+						});
+						if (best) snip = best;
+					} catch {}
+				}
+				if (!snip){
+					console.warn('Edited snip not found in scene, id=', msg.id, '— will retry briefly.');
+					// Retry a few times in case the scene is still hydrating
+					let tries = 0; const maxTries = 20; // ~2s @100ms
+					const timer = setInterval(()=>{
+						tries++;
+						let s = __findSnipById(msg.id);
+						if (!s && msg.uuid) { try { s = scene.getObjectByProperty('uuid', msg.uuid) || null; } catch {} }
+						if (s) {
+							clearInterval(timer);
+							try { sessionStorage.setItem('sketcher:2d:snipEditResult', JSON.stringify(msg)); } catch {}
+							// Re-enter handler to process now that snip is present
+							__handleSnipEditResultIfAny();
+						}
+						if (tries >= maxTries) { clearInterval(timer); console.warn('Giving up finding edited snip after retries.'); }
+					}, 100);
+					return;
+				}
 				// Rebuild new contents from updated 2D data using the same builder
 				const temp = createOverlaySnipFrom2DData(msg.data);
 				if (!temp) return;
