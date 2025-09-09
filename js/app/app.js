@@ -191,6 +191,8 @@ export async function init() {
 	// AR scale helpers and XR HUD (3D ray-interactive)
 	let xrHud3D = null; // THREE.Group
 	let xrHudButtons = []; // [{ mesh, onClick }]
+	// VR Draw service instance (declare at module scope for render loop access)
+	let vrDraw = null;
 	// XR HUD service instance
 	let arOneToOne = true; // last chosen scale mode
 	let arBaseBox = null;  // Box3 in meters after prepareModelForAR
@@ -680,34 +682,46 @@ export async function init() {
 					} catch{} 
 				});
 				// VR Draw toggle button
-				let vrDraw = null; try { if (window.createVRDraw) vrDraw = window.createVRDraw({ THREE, scene, 
-					shouldDraw: ()=>{ 
-						// Additional global gating can go here (e.g., paused state)
-						return true; 
-					},
-					shouldBlockHandForMenu: (handedness)=>{
-						// Block drawing for a hand only if that hand is currently supposed to interact with a visible menu.
-						// Policy: when any HUD tile group is visible (main buttons or prims submenu) we still allow drawing
-						// with both hands EXCEPT the left hand while main menu (not primitives submenu) is visible.
-						try {
-							const mainVisible = xrHudButtons.some(b=>b?.mesh?.visible);
-							const primsVisible = primsMenu?.visible === true;
-							// If primitives submenu is open we also allow left-hand drawing because submenu is on left palm already handled by direct presses.
-							if (handedness === 'left' && mainVisible && !primsVisible) return true; // block left drawing when main menu showing
-							return false;
-						} catch { return false; }
+				try { 
+					if (window.createVRDraw) {
+						vrDraw = window.createVRDraw({ THREE, scene, 
+							shouldDraw: ()=>{ 
+								// Additional global gating can go here (e.g., paused state)
+								return true; 
+							},
+							shouldBlockHandForMenu: (handedness)=>{
+								// Block drawing for a hand only if that hand is currently supposed to interact with a visible menu.
+								// Policy: when any HUD tile group is visible (main buttons or prims submenu) we still allow drawing
+								// with both hands EXCEPT the left hand while main menu (not primitives submenu) is visible.
+								try {
+									const mainVisible = xrHudButtons.some(b=>b?.mesh?.visible);
+									const primsVisible = primsMenu?.visible === true;
+									// If primitives submenu is open we also allow left-hand drawing because submenu is on left palm already handled by direct presses.
+									if (handedness === 'left' && mainVisible && !primsVisible) return true; // block left drawing when main menu showing
+									return false;
+								} catch { return false; }
+							}
+						});
+						console.log('VR Draw service initialized:', !!vrDraw);
+					} else {
+						console.warn('window.createVRDraw not available - VR Draw will not work');
 					}
-				}); 
-					// Connect VR draw to collaboration
-					if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
-					// Connect VR draw to real-time collaboration for live drawing
-					if (vrDraw && vrDraw.setCollaborationService && collab) vrDraw.setCollaborationService(collab);
-					// Make vrDraw globally accessible for XR HUD fingertip color management
-					window.vrDraw = vrDraw;
-				} catch{}
+				} catch(e) {
+					console.error('Failed to initialize VR Draw:', e);
+				}
+				// Connect VR draw to collaboration
+				if (vrDraw && vrDraw.setOnLineCreated) vrDraw.setOnLineCreated(line=>{ try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(line, 'vr'); } catch{} });
+				// Connect VR draw to real-time collaboration for live drawing
+				if (vrDraw && vrDraw.setCollaborationService && collab) vrDraw.setCollaborationService(collab);
+				// Make vrDraw globally accessible for XR HUD fingertip color management
+				window.vrDraw = vrDraw;
 				const bDraw = xrHud.createDraw3DButton(()=>{ 
 					try { 
-						if (!vrDraw) return;
+						console.log('Draw button clicked, vrDraw:', !!vrDraw, 'isActive:', vrDraw?.isActive?.());
+						if (!vrDraw) {
+							console.warn('vrDraw not available when Draw button clicked');
+							return;
+						}
 						// Open the draw submenu without changing draw enablement state.
 						// Start/Stop is controlled from inside the submenu via its explicit toggle.
 						xrHud.showDrawSubmenu(vrDraw);
@@ -715,7 +729,9 @@ export async function init() {
 						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
 						// Ensure AR edit remains enabled unless drawing is already active
 						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!(vrDraw.isActive && vrDraw.isActive())); } catch {}
-					} catch{} 
+					} catch(e) { 
+						console.error('Draw button click error:', e);
+					} 
 				});
 				xrHudButtons.push(bDraw);
 				
@@ -5553,7 +5569,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
 					// VR draw update (independent of AR edit target)
-					try { if (vrDraw){ if (vrDraw.isActive()) { vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); } else { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(true); } } } catch{}
+					try { 
+						if (vrDraw) { 
+							if (vrDraw.isActive()) { 
+								vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); 
+							} else { 
+								if (arEdit && arEdit.setEnabled) arEdit.setEnabled(true); 
+							} 
+						} 
+					} catch(e) {
+						console.warn('VR Draw update error:', e);
+					}
 					// Ground lock is now handled by the AR edit service constraints to prevent stuttering
 				}
 			}
