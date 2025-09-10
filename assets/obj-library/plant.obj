@@ -1,0 +1,58 @@
+# Simple plant pot OBJ file for testing
+# Cylindrical pot with slight taper
+
+# Bottom circle (8 vertices)
+v  0.2  0.0  0.0
+v  0.14 0.0  0.14
+v  0.0  0.0  0.2
+v -0.14 0.0  0.14
+v -0.2  0.0  0.0
+v -0.14 0.0 -0.14
+v  0.0  0.0 -0.2
+v  0.14 0.0 -0.14
+
+# Top circle (slightly larger, 8 vertices)
+v  0.25 0.3  0.0
+v  0.18 0.3  0.18
+v  0.0  0.3  0.25
+v -0.18 0.3  0.18
+v -0.25 0.3  0.0
+v -0.18 0.3 -0.18
+v  0.0  0.3 -0.25
+v  0.18 0.3 -0.18
+
+# Bottom face (using center point)
+v  0.0  0.0  0.0
+
+# Top face (using center point)
+v  0.0  0.3  0.0
+
+# Bottom face triangles
+f 17 1 2
+f 17 2 3
+f 17 3 4
+f 17 4 5
+f 17 5 6
+f 17 6 7
+f 17 7 8
+f 17 8 1
+
+# Top face triangles
+f 18 9 10
+f 18 10 11
+f 18 11 12
+f 18 12 13
+f 18 13 14
+f 18 14 15
+f 18 15 16
+f 18 16 9
+
+# Side faces (connecting bottom to top)
+f 1 9 10 2
+f 2 10 11 3
+f 3 11 12 4
+f 4 12 13 5
+f 5 13 14 6
+f 6 14 15 7
+f 7 15 16 8
+f 8 16 9 1

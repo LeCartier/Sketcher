@@ -1,0 +1,28 @@
+# Simple book OBJ file for testing
+# Rectangular book lying flat
+
+# Book dimensions: 0.3 x 0.2 x 0.05 meters
+
+# Bottom face
+v -0.15 0.0 -0.1
+v  0.15 0.0 -0.1
+v  0.15 0.0  0.1
+v -0.15 0.0  0.1
+
+# Top face
+v -0.15 0.05 -0.1
+v  0.15 0.05 -0.1
+v  0.15 0.05  0.1
+v -0.15 0.05  0.1
+
+# Bottom face
+f 1 2 3 4
+
+# Top face
+f 5 8 7 6
+
+# Side faces
+f 1 5 6 2
+f 2 6 7 3
+f 3 7 8 4
+f 4 8 5 1

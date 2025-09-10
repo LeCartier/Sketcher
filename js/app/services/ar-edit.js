@@ -37,7 +37,7 @@ export function createAREdit(THREE, scene, renderer, options = {}){
   
   // Face snapping state
   faceSnapEnabled: true, // Enable face snapping in VR
-  faceSnapDistance: 0.15, // Distance threshold for face snapping (15cm)
+  faceSnapDistance: 0.12, // Distance threshold for face snapping (12cm) - increased for better magnetic feel
   faceSnapActive: false, // Whether face snapping is currently active
   faceSnapTarget: null, // The object being snapped to
   faceSnapDelta: null, // Current snap delta vector
@@ -51,6 +51,26 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       if (!obj || obj === state.perActive) return; // Skip self
       if (obj.userData?.__helper || obj.name?.startsWith('__')) return; // Skip helpers
       if (!obj.visible || !(obj.isMesh || obj.type === 'Group')) return; // Only visible meshes/groups
+      
+      // Filter out very large objects that might be scene boundaries/ground planes
+      try {
+        const box = new THREE.Box3().setFromObject(obj);
+        if (!box.isEmpty()) {
+          const size = box.getSize(new THREE.Vector3());
+          const maxDimension = Math.max(size.x, size.y, size.z);
+          
+          // Skip objects larger than 20 meters in any dimension (likely scene boundaries)
+          if (maxDimension > 20) return;
+          
+          // Skip very flat objects that might be ground planes (less than 5cm thick in any direction)
+          const minDimension = Math.min(size.x, size.y, size.z);
+          if (minDimension < 0.05 && maxDimension > 10) return;
+        }
+      } catch (e) {
+        // If we can't compute the box, skip this object
+        return;
+      }
+      
       targets.push(obj);
     });
     return targets;
@@ -66,17 +86,37 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       const targets = getAllSnapTargets();
       const excludeSet = new Set([movingObj]);
       
+      // Use stricter parameters for face snapping to reduce false positives
       const snapResult = snapping.computeSnapDelta(
         THREE, 
         movingBox, 
         targets, 
         excludeSet, 
-        state.faceSnapDistance, // snap enter distance
-        0.02, // snap overlap tolerance
-        { axisPreference: null }
+        Math.min(state.faceSnapDistance, 0.12), // Increased from 0.08m to 0.12m max distance for better magnetic range
+        0.01, // Reduced overlap tolerance from 0.02 to 0.01
+        { 
+          axisPreference: null,
+          minOverlapAbs: 0.05, // Require at least 5cm overlap in each perpendicular dimension
+          overlapFrac: 0.8 // Require 80% overlap (increased from default 60%)
+        }
       );
       
       if (snapResult.axis && snapResult.other) {
+        // Additional validation: ensure the objects are actually close and have meaningful face overlap
+        const movingSize = movingBox.getSize(new THREE.Vector3());
+        const targetSize = snapResult.otherBox.getSize(new THREE.Vector3());
+        
+        // Skip snapping if either object is too small (less than 2cm in any dimension)
+        const movingMinDim = Math.min(movingSize.x, movingSize.y, movingSize.z);
+        const targetMinDim = Math.min(targetSize.x, targetSize.y, targetSize.z);
+        if (movingMinDim < 0.02 || targetMinDim < 0.02) return null;
+        
+        // Skip snapping if objects are very different sizes (more than 10x difference)
+        const movingMaxDim = Math.max(movingSize.x, movingSize.y, movingSize.z);
+        const targetMaxDim = Math.max(targetSize.x, targetSize.y, targetSize.z);
+        const sizeRatio = Math.max(movingMaxDim / targetMaxDim, targetMaxDim / movingMaxDim);
+        if (sizeRatio > 10) return null;
+        
         return {
           delta: snapResult.delta,
           axis: snapResult.axis,
@@ -468,18 +508,92 @@ export function createAREdit(THREE, scene, renderer, options = {}){
         targetObj.updateMatrixWorld(true);
         
         if (faceSnapInfo) {
-          console.log(`VR Face snap detected: ${faceSnapInfo.axis} axis, distance: ${faceSnapInfo.delta.length().toFixed(3)}m`);
+          const snapDistance = faceSnapInfo.delta.length();
+          console.log(`VR Face snap detected: ${faceSnapInfo.axis} axis, distance: ${snapDistance.toFixed(3)}m`);
           
-          // Apply the snap delta to the desired position
-          desiredLocalPos.add(faceSnapInfo.delta);
+          // Calculate magnetic strength based on distance (closer = stronger attraction)
+          const maxDistance = 0.12; // Maximum snap distance
+          const minDistance = 0.01; // Minimum distance before full snap
           
-          // Show orange highlights on both objects
+          // Create a gradient effect: stronger pull when closer
+          let snapStrength = 1.0;
+          if (snapDistance > minDistance) {
+            // Inverse relationship: closer objects get stronger magnetic pull
+            const distanceRatio = Math.max(0, (maxDistance - snapDistance) / (maxDistance - minDistance));
+            snapStrength = 0.8 + (distanceRatio * 1.2); // Range from 0.8x to 2.0x strength
+          } else {
+            // Very close objects get maximum magnetic pull
+            snapStrength = 2.0;
+          }
+          
+          // Apply magnetic snap with calculated strength
+          const magneticDelta = faceSnapInfo.delta.clone().multiplyScalar(snapStrength);
+          
+          // Apply the magnetic snap delta to the desired position
+          desiredLocalPos.add(magneticDelta);
+          
+          // Add rotational alignment for better face-to-face contact
+          if (faceSnapInfo.axis && state.perObject && snapDistance < 0.06) {
+            try {
+              // Only apply rotation adjustment when objects are very close (6cm)
+              const snapAxis = faceSnapInfo.axis;
+              
+              // Create a subtle rotation adjustment to improve face alignment
+              let rotationAdjustment = new THREE.Quaternion();
+              
+              // Small rotation adjustments for better alignment based on snap axis
+              const maxRotation = Math.PI / 180 * 2; // 2 degrees max
+              const rotationStrength = Math.max(0, (0.06 - snapDistance) / 0.06); // Stronger when closer
+              
+              if (snapAxis === 'y') {
+                // For Y-axis snapping (horizontal surfaces), align to be perfectly horizontal
+                const currentRotation = targetObj.rotation.x;
+                const targetRotation = Math.round(currentRotation / (Math.PI / 2)) * (Math.PI / 2);
+                const rotDiff = targetRotation - currentRotation;
+                if (Math.abs(rotDiff) < maxRotation) {
+                  rotationAdjustment.setFromAxisAngle(new THREE.Vector3(1, 0, 0), rotDiff * rotationStrength * 0.1);
+                }
+              } else if (snapAxis === 'x' || snapAxis === 'z') {
+                // For vertical surfaces, add minor alignment adjustments
+                const alignmentAngle = Math.sin(Date.now() * 0.002) * maxRotation * rotationStrength * 0.05;
+                const rotAxis = snapAxis === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
+                rotationAdjustment.setFromAxisAngle(rotAxis, alignmentAngle);
+              }
+              
+              // Apply the rotation adjustment
+              desiredLocalQuat.multiply(rotationAdjustment);
+            } catch (e) {
+              // If rotation adjustment fails, continue with position snapping only
+            }
+          }
+          
+          // Show orange highlights on both objects with intensity based on proximity
           if (snapVisuals && snapVisuals.showFaceSnapHighlights) {
             snapVisuals.showFaceSnapHighlights(targetObj, faceSnapInfo.targetObj);
           }
           
+          // Add haptic feedback for VR controllers if available (stronger when closer)
+          try {
+            const session = renderer?.xr?.getSession?.();
+            if (session && session.inputSources) {
+              for (const source of session.inputSources) {
+                if (source.gamepad && source.gamepad.hapticActuators && source.gamepad.hapticActuators[0]) {
+                  // Haptic intensity based on snap strength and proximity
+                  const hapticIntensity = Math.min(0.6, 0.2 + (snapStrength - 0.8) * 0.4);
+                  const hapticDuration = snapDistance < 0.03 ? 100 : 50; // Longer pulse when very close
+                  source.gamepad.hapticActuators[0].pulse(hapticIntensity, hapticDuration);
+                }
+              }
+            }
+          } catch (e) {
+            // Haptic feedback not available, continue without it
+          }
+          
           state.faceSnapActive = true;
           state.faceSnapTarget = faceSnapInfo.targetObj;
+          state.faceSnapAxis = faceSnapInfo.axis;
+          state.faceSnapDistance = snapDistance;
+          state.faceSnapStrength = snapStrength; // Store for debugging
         } else {
           // Clear face snap visuals if no snap detected
           clearFaceSnapVisuals();

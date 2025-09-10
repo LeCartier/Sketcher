@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -31,7 +31,8 @@ export async function init() {
 			import('./services/ar-materials.js'),
 			import('./services/collab.js'),
 			import('./features/alignment-tile.js'),
-			import('./services/fp-quality.js')
+			import('./services/fp-quality.js'),
+			import('./services/obj-library.js')
 		]);
 
 	// Version badge
@@ -571,34 +572,97 @@ export async function init() {
 					);
 				} catch {}
 			});
-			// Room controls in XR: dispatch to app-level handler
-			const bRoomHost = xrHud.createTile3DButton('Host', async ()=>{
-				try {
-					const r = await showRoomOverlay('host'); if (!r) return;
-					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
-				} catch {}
-			});
-			const bRoomJoin = xrHud.createTile3DButton('Join', async ()=>{
-				try {
-					const r = await showRoomOverlay('join'); if (!r) return;
-					window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
-				} catch {}
-			});
 			// Initialize to default style
 			try { xrHud.setHandVizStyle?.(handStyle); } catch {}
 				// Initialize interaction button visuals
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
-			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands, bRoomHost, bRoomJoin];
+				// --- VR Room submenu for collaboration features ---
+				let roomMenu = null; // THREE.Group holding room buttons
+				let roomButtons = []; // HUD button records for room
+				let bRoomHost = null; // Will be created in buildRoomMenu
+				let bRoomJoin = null; // Will be created in buildRoomMenu
+				
+				function buildRoomMenu(){
+					if (roomMenu) return;
+					roomMenu = new THREE.Group();
+					roomMenu.visible = false;
+					roomMenu.name = 'XR HUD Room Menu';
+					roomMenu.userData.__helper = true;
+					
+					// Expose for HUD targeting logic
+					try { window.__roomMenuGroup = roomMenu; } catch{}
+					
+					// Create Host and Join buttons for the sub-menu
+					bRoomHost = xrHud.createTile3DButton('Host', async ()=>{
+						try {
+							const r = await showRoomOverlay('host'); 
+							if (!r) return;
+							window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'host', room: r.trim() } }));
+							// Close the room menu after action
+							toggleVRRoomMenu(false);
+						} catch {}
+					});
+					
+					bRoomJoin = xrHud.createTile3DButton('Join', async ()=>{
+						try {
+							const r = await showRoomOverlay('join'); 
+							if (!r) return;
+							window.dispatchEvent(new CustomEvent('sketcher:room', { detail: { action: 'join', room: r.trim() } }));
+							// Close the room menu after action
+							toggleVRRoomMenu(false);
+						} catch {}
+					});
+					
+					// Back button to return to main menu
+					const bRoomBack = xrHud.createTile3DButton('Back', ()=>{
+						try {
+							toggleVRRoomMenu(false);
+						} catch {}
+					});
+					
+					roomButtons = [bRoomHost, bRoomJoin, bRoomBack];
+					for (const btn of roomButtons) {
+						if (btn?.mesh) roomMenu.add(btn.mesh);
+					}
+					
+					try { if (xrHud && xrHud.group) xrHud.group.add(roomMenu); } catch{}
+				}
+				
+				function toggleVRRoomMenu(force){
+					buildRoomMenu();
+					const show = (typeof force === 'boolean') ? force : !roomMenu.visible;
+					roomMenu.visible = show; 
+					setMainMenuVisible(!show);
+					// Global flag for HUD service to filter ray targets
+					try { window.__xrRoomOpen = show; } catch{}
+				}
+				
+				// Expose toggle for debugging
+				try { window.toggleVRRoomMenu = toggleVRRoomMenu; } catch{}
+				
+				// Add new VR Room button that opens the room submenu
+				const bRoom = xrHud.createTile3DButton('Room', ()=>{ 
+					try { 
+						// Add brief cooldown to prevent accidental submenu clicks
+						if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(200);
+						toggleVRRoomMenu(); 
+					} catch{} 
+				});
+
 				// --- VR Primitives submenu + multi-click placement state ---
 				let primsMenu = null; // THREE.Group holding primitive buttons
 				let primsButtons = []; // HUD button records for primitives
 				function __cancelVRPrimitiveDraft(){
 					try {
-						if (window.__xrPrim && window.__xrPrim.preview){ const pm = window.__xrPrim.preview; try { if (pm.parent) pm.parent.remove(pm); } catch{} try { pm.geometry?.dispose?.(); } catch{} }
+						if (window.__xrPrim && window.__xrPrim.preview){ 
+							const pm = window.__xrPrim.preview; 
+							try { if (pm.parent) pm.parent.remove(pm); } catch{} 
+							try { pm.geometry?.dispose?.(); pm.material?.dispose?.(); } catch{} 
+						}
 					} catch {}
-					try { window.__xrPrim = null; } catch {}
+					try { window.__xrPrim = null; console.log('Primitive creation mode cancelled'); } catch {}
 				}
 				function buildPrimsMenu(){
 					if (primsMenu) return; primsMenu = new THREE.Group(); primsMenu.visible = false; primsMenu.name='XR HUD Prims Menu'; primsMenu.userData.__helper = true;
@@ -635,9 +699,16 @@ export async function init() {
 										initialPos: null,
 										baseScale: 0.1, // Starting size in meters
 										lockedScale: null, // Scale locked when one hand releases
+										lockedPosition: null, // Position locked when scaling completes
 										leftHand: null,
-										rightHand: null
+										rightHand: null,
+										leftPinching: false,
+										rightPinching: false
 									};
+									console.log(`Primitive creation mode activated: ${d.tool}`);
+									console.log('Instructions: Move to position with one hand, then pinch with BOTH hands to scale');
+									// Close primitives menu to avoid interference
+									toggleVRPrimitivesMenu(false);
 								} catch{}
 							});
 						}
@@ -676,11 +747,175 @@ export async function init() {
 				// Add new VR Prims button that opens a primitives submenu
 				const bPrims = xrHud.createTile3DButton('Prims', ()=>{ 
 					try { 
+						// Cancel any active primitive creation when opening menu
+						if (window.__xrPrim) {
+							__cancelVRPrimitiveDraft();
+						}
 						// Add brief cooldown to prevent accidental submenu clicks
 						if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(200);
 						toggleVRPrimitivesMenu(); 
 					} catch{} 
 				});
+
+				// --- VR Equip submenu for OBJ library ---
+				let objMenu = null; // THREE.Group holding object buttons
+				let objButtons = []; // HUD button records for objects
+				
+				function buildObjMenu(){
+					if (objMenu) return;
+					objMenu = new THREE.Group();
+					objMenu.visible = false;
+					objMenu.name = 'XR HUD Equip Menu';
+					objMenu.userData.__helper = true;
+					
+					// Expose for HUD targeting logic
+					try { window.__objMenuGroup = objMenu; } catch{}
+					
+					// Trigger loading if not already done
+					objLibrary.loadAllObjects().then(() => {
+						console.log('OBJ library loaded, rebuilding menu...');
+						// Clear existing buttons and rebuild with loaded objects
+						rebuildObjButtons();
+					}).catch(error => {
+						console.error('Failed to load OBJ library:', error);
+						// Build menu with fallback message
+						rebuildObjButtons();
+					});
+					
+					// Build initial menu (may be empty until loading completes)
+					rebuildObjButtons();
+					
+					try { if (xrHud && xrHud.group) xrHud.group.add(objMenu); } catch{}
+				}
+				
+				function rebuildObjButtons(){
+					// Clear existing buttons
+					objButtons.forEach(btn => {
+						if (btn.mesh && btn.mesh.parent) {
+							btn.mesh.parent.remove(btn.mesh);
+						}
+					});
+					objButtons = [];
+					
+					// Get available objects from library (limit to 9)
+					const availableObjects = objLibrary.getAvailableObjects().slice(0, 9);
+					
+					// Create buttons for each object
+					for (const objData of availableObjects) {
+						try {
+							// Create preview mesh for the button
+							const preview = objLibrary.createPreviewMesh(objData);
+							const displayName = objData.filename.replace('.obj', '').replace(/[-_]/g, ' ');
+							
+							const btn = xrHud.createOBJ3DButton(preview, displayName, ()=>{
+								try {
+									// Place object in VR when clicked
+									const handPositions = [];
+									
+									// Try to get hand positions for placement
+									const frame = renderer?.xr?.getFrame?.();
+									const session = renderer?.xr?.getSession?.();
+									if (frame && session) {
+										const localSpace = xrLocalSpace;
+										if (localSpace) {
+											for (const source of session.inputSources) {
+												if (source.hand) {
+													const pose = frame.getPose(source.targetRaySpace, localSpace);
+													if (pose) {
+														handPositions.push(new THREE.Vector3().setFromMatrixPosition(pose.transform.matrix));
+													}
+												}
+											}
+										}
+									}
+									
+									// Determine placement position
+									let placementPos = new THREE.Vector3(0, 0, -1); // Default 1m in front
+									
+									if (handPositions.length > 0) {
+										// Use average hand position if available
+										placementPos = handPositions.reduce((sum, pos) => sum.add(pos), new THREE.Vector3())
+											.divideScalar(handPositions.length);
+										// Move slightly away from hands
+										placementPos.add(new THREE.Vector3(0, -0.2, 0.3));
+									}
+									
+									// Place the object in the scene
+									const placedObject = objLibrary.placeObjectInScene(objData, placementPos);
+									if (placedObject) {
+										console.log(`Placed ${objData.filename} at:`, placementPos);
+									}
+									
+									// Close equip menu
+									toggleVREquipMenu(false);
+								} catch(error) {
+									console.error(`Failed to place object ${objData.filename}:`, error);
+								}
+							});
+							
+							objButtons.push(btn);
+							objMenu.add(btn.mesh);
+						} catch(error) {
+							console.error(`Failed to create button for ${objData.filename}:`, error);
+						}
+					}
+					
+					// Add Back button
+					const backBtn = xrHud.createTile3DButton('Back', ()=>{
+						try {
+							// Trigger cooldown to prevent immediate clicking of main menu button
+							if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(300);
+							toggleVREquipMenu(false);
+						} catch{}
+					});
+					objButtons.push(backBtn);
+					objMenu.add(backBtn.mesh);
+					
+					// Simple grid layout (3 columns)
+					try {
+						const bw = 0.01905; // BUTTON_SIZE from HUD system
+						const bh = bw;
+						const gap = bw * 0.32;
+						const cols = 3;
+						const rows = Math.ceil(objButtons.length / cols);
+						const totalW = cols * bw + (cols - 1) * gap;
+						const totalH = rows * bh + (rows - 1) * gap;
+						
+						for (let i = 0; i < objButtons.length; i++) {
+							const r = Math.floor(i / cols);
+							const c = i % cols;
+							const x = -totalW / 2 + c * (bw + gap) + bw / 2;
+							const y = totalH / 2 - r * (bh + gap) - bh / 2;
+							
+							// Increase forward bias so submenu cleanly occludes main HUD buttons
+							objButtons[i].mesh.position.set(x, y, 0.01);
+							try { objButtons[i].mesh.renderOrder = 50; } catch{}
+						}
+					} catch {}
+				}
+				
+				function toggleVREquipMenu(force){
+					try { buildObjMenu(); } catch{}
+					const show = (typeof force === 'boolean') ? force : !objMenu.visible;
+					objMenu.visible = show;
+					setMainMenuVisible(!show);
+					
+					// Global flag for HUD service to filter ray targets
+					try { window.__xrObjsOpen = show; } catch{}
+				}
+				
+				// Expose toggle for debugging
+				try { window.toggleVREquipMenu = toggleVREquipMenu; } catch{}
+				
+				// Add new VR Equip button that opens the objects submenu
+				const bEquip = xrHud.createTile3DButton('Equip', ()=>{ 
+					try { 
+						// Add brief cooldown to prevent accidental submenu clicks
+						if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(200);
+						toggleVREquipMenu(); 
+					} catch{} 
+				});
+
 				// VR Draw toggle button
 				try { 
 					if (window.createVRDraw) {
@@ -690,14 +925,19 @@ export async function init() {
 								return true; 
 							},
 							shouldBlockHandForMenu: (handedness)=>{
-								// Block drawing for a hand only if that hand is currently supposed to interact with a visible menu.
-								// Policy: when any HUD tile group is visible (main buttons or prims submenu) we still allow drawing
-								// with both hands EXCEPT the left hand while main menu (not primitives submenu) is visible.
+								// Block drawing for a hand in these specific cases:
+								// 1. If primitive creation mode is active
+								// 2. If main HUD menu is visible and it's the left hand (since HUD is on left palm)
 								try {
+									// Always block if primitive creation is active
+									if (window.__xrPrim) return true;
+									
 									const mainVisible = xrHudButtons.some(b=>b?.mesh?.visible);
 									const primsVisible = primsMenu?.visible === true;
-									// If primitives submenu is open we also allow left-hand drawing because submenu is on left palm already handled by direct presses.
-									if (handedness === 'left' && mainVisible && !primsVisible) return true; // block left drawing when main menu showing
+									const objsVisible = objMenu?.visible === true;
+									const roomVisible = roomMenu?.visible === true;
+									// If primitives, objects, or room submenu is open we also allow left-hand drawing because submenu is on left palm already handled by direct presses.
+									if (handedness === 'left' && mainVisible && !primsVisible && !objsVisible && !roomVisible) return true; // block left drawing when main menu showing
 									return false;
 								} catch { return false; }
 							}
@@ -749,6 +989,9 @@ export async function init() {
 				function shortRoom(r){ if(!r) return ''; return r.length > 8 ? r.slice(0,8)+'…' : r; }
 				function refresh(){
 					try {
+						// Only update if room buttons exist (they're created lazily when sub-menu is first opened)
+						if (!bRoomHost || !bRoomJoin) return;
+						
 						if (!currentRoom){
 							bRoomHost.setLabel('Host');
 							bRoomJoin.setLabel('Join');
@@ -798,8 +1041,17 @@ export async function init() {
 				window.addEventListener('sketcher:collab-status', (ev)=>{ try { const st = ev.detail?.status; if(st){ lastStatus = st; if(st==='LEFT'){ currentRoom=null; isHost=false; userCount=1; } refresh(); } } catch{} });
 			})();
 			xrHudButtons.push(bPrims);
+			xrHudButtons.push(bEquip);
+			xrHudButtons.push(bRoom);
 			return xrHudButtons;
 		}
+	});
+
+	// Initialize OBJ Library service
+	const objLibrary = createOBJLibrary({
+		THREE,
+		OBJLoader,
+		scene
 	});
 
 		// State for ground lock
@@ -5180,13 +5432,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												const ip = idxPose.transform.position;
 												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
 												
-												// Check for pinch gesture
+												// Check for pinch gesture with more lenient threshold for primitive mode
 												if (thJ) {
 													const thumbPose = frame.getJointPose(thJ, ref);
 													if (thumbPose && thumbPose.transform && thumbPose.transform.position) {
 														const tp = thumbPose.transform.position;
 														const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
-														isPinching = dist < 0.05; // Increased to 5cm for easier detection
+														isPinching = dist < 0.045; // More lenient 4.5cm for primitive creation
 													}
 												}
 											}
@@ -5218,10 +5470,14 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										prim.rightHand = handData;
 									}
 									
-									// Debug: Log hand detection for debugging
-									if (prim.stage === 'attached' && isPinching) {
-										console.log(`${src.handedness} hand pinching detected in primitive creation mode`);
+									// Debug: Log hand detection for debugging only when state changes
+									const handKey = `${src.handedness}Pinching`;
+									if (!prim[handKey] && isPinching) {
+										console.log(`${src.handedness} hand pinching START in primitive creation mode`);
+									} else if (prim[handKey] && !isPinching) {
+										console.log(`${src.handedness} hand pinching END in primitive creation mode`);
 									}
+									prim[handKey] = isPinching;
 								}
 							}
 							
@@ -5242,19 +5498,28 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									if (!attachHand) continue;
 									
 									if (!prim.preview) {
-										// Create initial primitive at small size
+										// Create initial primitive at small size with semi-transparent material for preview
 										console.log('Creating primitive preview for tool:', prim.tool);
 										const initialScale = prim.baseScale;
-										if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(initialScale, initialScale, initialScale), activeMat);
-										else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(initialScale/2, 20, 16), activeMat);
-										else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(initialScale/2, initialScale/2, initialScale, 20), activeMat);
-										else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(initialScale/2, initialScale, 20), activeMat);
+										const previewMat = activeMat.clone();
+										previewMat.transparent = true;
+										previewMat.opacity = 0.6;
+										previewMat.wireframe = false;
+										
+										if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(initialScale, initialScale, initialScale), previewMat);
+										else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(initialScale/2, 20, 16), previewMat);
+										else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(initialScale/2, initialScale/2, initialScale, 20), previewMat);
+										else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(initialScale/2, initialScale, 20), previewMat);
 										
 										if (prim.preview) {
 											prim.preview.userData.__helper = true;
+											prim.preview.userData.__primitivePreview = true;
 											scene.add(prim.preview);
 											prim.initialPos = attachHand.pos.clone();
 											console.log('Primitive preview created and added to scene');
+											
+											// Add visual instruction hint
+											console.log('Primitive mode: Move to position, then pinch with BOTH hands to scale');
 										}
 									}
 									
@@ -5269,13 +5534,18 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										prim.stage = 'scaling';
 										prim.initialDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 										prim.initialScale = prim.baseScale;
+										
+										// Make preview more opaque during scaling
+										if (prim.preview && prim.preview.material) {
+											prim.preview.material.opacity = 0.8;
+										}
 									}
 								} 
 								else if (prim.stage === 'scaling') {
 									// Stage 2: Both hands pinching - scale based on hand distance
 									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand && prim.rightHand.pinching) {
 										const currentDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
-										const scaleFactor = Math.max(0.1, currentDistance / prim.initialDistance);
+										const scaleFactor = Math.max(0.1, Math.min(5.0, currentDistance / prim.initialDistance)); // Clamp scale
 										const newScale = prim.initialScale * scaleFactor;
 										
 										// Update primitive scale and position (center between hands)
@@ -5292,17 +5562,26 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										}
 									} else {
 										// One hand stopped pinching - lock the scale
-										console.log('One hand released - locking scale');
+										console.log('One hand released - locking scale and position');
 										prim.stage = 'locked';
 										prim.lockedScale = prim.preview ? prim.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+										prim.lockedPosition = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+										
+										// Make preview fully opaque when locked
+										if (prim.preview && prim.preview.material) {
+											prim.preview.material.opacity = 1.0;
+											prim.preview.material.wireframe = true; // Show as wireframe when locked
+										}
+										
+										console.log('Primitive locked - pinch with BOTH hands again to finalize');
 									}
 								}
 								else if (prim.stage === 'locked') {
-									// Stage 3: Scale is locked, wait for both hands to release
-									const bothHandsReleased = (!prim.leftHand || !prim.leftHand.pinching) && (!prim.rightHand || !prim.rightHand.pinching);
+									// Stage 3: Scale is locked, wait for both hands to pinch simultaneously again to finalize
+									const bothHandsPinching = prim.leftHand && prim.rightHand && prim.leftHand.pinching && prim.rightHand.pinching;
 									
-									if (bothHandsReleased) {
-										console.log('Both hands released - finalizing primitive');
+									if (bothHandsPinching) {
+										console.log('Both hands pinching again - finalizing primitive');
 										// Finalize primitive
 										try {
 											if (prim.preview) {
@@ -5322,8 +5601,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												}
 												
 												if (finalGeom) {
-													const finalPrimitive = new THREE.Mesh(finalGeom, activeMat);
-													finalPrimitive.position.copy(prim.preview.position);
+													// Use original material, not preview material
+													const finalMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+													const finalPrimitive = new THREE.Mesh(finalGeom, finalMat);
+													finalPrimitive.position.copy(prim.lockedPosition || prim.preview.position);
 													finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
 													// Add to scene WITHOUT automatic selection/gizmo
 													addObjectToScene(finalPrimitive, { select: false });
@@ -5340,15 +5621,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											if (prim.preview) {
 												if (prim.preview.parent) prim.preview.parent.remove(prim.preview);
 												prim.preview.geometry?.dispose?.();
+												prim.preview.material?.dispose?.();
 											}
 										} catch {}
 										window.__xrPrim = null;
 									} else {
-										// Keep primitive at locked position/scale
+										// Keep primitive at locked position/scale, just follow one hand for repositioning
 										const activeHand = prim.rightHand || prim.leftHand;
-										if (prim.preview && activeHand) {
+										if (prim.preview && activeHand && prim.lockedPosition && prim.lockedScale) {
+											// Allow repositioning while locked but keep scale
 											prim.preview.position.copy(activeHand.pos);
 											prim.preview.scale.copy(prim.lockedScale);
+											// Update locked position for final creation
+											prim.lockedPosition.copy(activeHand.pos);
 										}
 									}
 								}

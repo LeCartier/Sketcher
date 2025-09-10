@@ -94,12 +94,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const topLine = words.length > 1 ? words.slice(0, Math.ceil(words.length/2)).join(' ') : raw;
     const bottomLine = words.length > 1 ? words.slice(Math.ceil(words.length/2)).join(' ') : null;
     const margin = Math.floor(w * 0.08);
-    const basePx = Math.round(88 * 1.33); // ~117px
+    const basePx = Math.round(88 * 1.77); // ~156px (increased from 1.33 to 1.77 for 33% larger text)
     let fontPx = basePx;
     const maxW = w - 2*margin;
     const maxH = h - 2*margin;
     // Find a font size that fits both width and height constraints
-    while (fontPx > 12){
+    while (fontPx > 16){ // Also increased minimum font size from 12 to 16
       ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
       const lineH = Math.round(fontPx * 1.1);
       const widthTop = ctx.measureText(topLine).width;
@@ -240,6 +240,87 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     return { mesh: buttonGroup, onClick, setLabel };
   }
 
+  function createOBJ3DButton(objPreview, filename, onClick) {
+    // Create a group to hold the 3D object preview and background
+    const buttonGroup = new THREE.Group();
+    buttonGroup.userData.__hudButton = { label: filename, onClick, base: null, hover: null };
+    
+    // Tile background (same style as primitive buttons)
+    const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
+    const bgMat = new THREE.MeshBasicMaterial({ 
+      color: 0x1e1e23, 
+      transparent: true, 
+      opacity: 0.78,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false
+    });
+    const bgMesh = new THREE.Mesh(bgGeom, bgMat);
+    bgMesh.renderOrder = 10000;
+    buttonGroup.add(bgMesh);
+    
+    // Add the 3D object preview
+    if (objPreview) {
+      // Clone the preview to avoid modifying the original
+      const previewClone = objPreview.clone();
+      previewClone.renderOrder = 10003; // Higher render order than text and flash
+      previewClone.position.z = 0.012; // Push further forward to avoid blending dimming
+      
+      // Mark as 3D icon for per-frame camera-facing alignment
+      previewClone.userData.__icon3D = true;
+      
+      buttonGroup.add(previewClone);
+    } else {
+      // Fallback icon if preview failed to load
+      const fallbackIcon = new THREE.Mesh(
+        new THREE.BoxGeometry(BUTTON_W * 0.3, BUTTON_H * 0.3, BUTTON_W * 0.3),
+        new THREE.MeshBasicMaterial({ 
+          color: 0x666666, 
+          depthTest: false, 
+          depthWrite: false, 
+          toneMapped: false 
+        })
+      );
+      fallbackIcon.renderOrder = 10003;
+      fallbackIcon.position.z = 0.012;
+      fallbackIcon.userData.__icon3D = true;
+      buttonGroup.add(fallbackIcon);
+    }
+    
+    // Flash overlay for click feedback
+    const flashGeom = bgGeom.clone();
+    const flashMat = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff, 
+      transparent: true, 
+      opacity: 0, 
+      depthTest: false, 
+      depthWrite: false, 
+      blending: THREE.AdditiveBlending 
+    });
+    const flash = new THREE.Mesh(flashGeom, flashMat);
+    flash.name = 'hud-flash';
+    flash.renderOrder = 10002;
+    flash.scale.set(1.05, 1.05, 1);
+    flash.position.z = 0.002;
+    buttonGroup.add(flash);
+    buttonGroup.userData.__flash = flash;
+    
+    // Store materials for hover effects
+    const baseBgMat = bgMat.clone();
+    const hoverBgMat = bgMat.clone();
+    hoverBgMat.color.setHex(0x555555); // Lighter on hover
+    
+    buttonGroup.userData.__hudButton.base = baseBgMat;
+    buttonGroup.userData.__hudButton.hover = hoverBgMat;
+    
+    // Function to update appearance
+    function setLabel(next) {
+      buttonGroup.userData.__hudButton.label = next;
+    }
+    
+    return { mesh: buttonGroup, onClick, setLabel };
+  }
+
   function createDraw3DButton(onClick) {
     // Create a group to hold the 3D draw icon and background
     const buttonGroup = new THREE.Group();
@@ -270,10 +351,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     textCtx.fillStyle = '#ffffff';
     textCtx.textAlign = 'center';
     textCtx.textBaseline = 'middle';
-    let px = Math.round(32 * 1.33);
+    let px = Math.round(32 * 1.77); // Increased from 1.33 to 1.77 for larger text
     const labelStr = 'Draw';
     const maxTextW = textCanvas.width * 0.9;
-    while (px > 12){
+    while (px > 16){ // Increased minimum from 12 to 16
       textCtx.font = `bold ${px}px Arial`;
       if (textCtx.measureText(labelStr).width <= maxTextW) break;
       px -= 2;
@@ -283,7 +364,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     textCtx.fillText(labelStr, textCanvas.width/2, textCanvas.height/2);
     
     const textTexture = new THREE.CanvasTexture(textCanvas);
-  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.3);
+  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.35); // Increased from 0.3 to 0.35 for larger text
     const textMat = new THREE.MeshBasicMaterial({ 
       map: textTexture, 
       transparent: true, 
@@ -292,7 +373,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       toneMapped: false
     });
     const textMesh = new THREE.Mesh(textGeom, textMat);
-  textMesh.position.y = -BUTTON_H * 0.28; // Keep at bottom; slightly taller area
+  textMesh.position.y = -BUTTON_H * 0.25; // Adjusted from 0.28 for larger text area
     textMesh.position.z = 0.002;
     textMesh.renderOrder = 10001;
     buttonGroup.add(textMesh);
@@ -401,10 +482,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     textCtx.fillStyle = '#ffffff';
     textCtx.textAlign = 'center';
     textCtx.textBaseline = 'middle';
-    let px = Math.round(32 * 1.33);
+    let px = Math.round(32 * 1.77); // Increased from 1.33 to 1.77 for larger text
     const maxTextW = textCanvas.width * 0.9;
     const labelStr = String(label||'');
-    while (px > 12){
+    while (px > 16){ // Increased minimum from 12 to 16
       textCtx.font = `bold ${px}px Arial`;
       if (textCtx.measureText(labelStr).width <= maxTextW) break;
       px -= 2;
@@ -415,7 +496,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     
     const textTexture = new THREE.CanvasTexture(textCanvas);
     if (THREE.SRGBColorSpace) textTexture.colorSpace = THREE.SRGBColorSpace;
-  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.3); // Slightly taller to accommodate increased size
+  const textGeom = new THREE.PlaneGeometry(BUTTON_W * 0.9, BUTTON_H * 0.35); // Increased from 0.3 to 0.35 for larger text
     const textMat = new THREE.MeshBasicMaterial({ 
       map: textTexture, 
       transparent: true, 
@@ -424,7 +505,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       toneMapped: false // Ensure crisp text brightness in XR
     });
     const textMesh = new THREE.Mesh(textGeom, textMat);
-    textMesh.position.y = -BUTTON_H * 0.28; // Position at bottom
+    textMesh.position.y = -BUTTON_H * 0.25; // Adjusted from 0.28 for larger text area
     textMesh.position.z = 0.002;
     textMesh.renderOrder = 10001;
     buttonGroup.add(textMesh);
@@ -614,6 +695,60 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         iconGroup.add(primCube, primSphere);
         break;
         
+      case 'equip':
+        // Equip icon: stack of 3D models/objects representing equipment
+        const objBase = new THREE.Mesh(
+          new THREE.BoxGeometry(iconScale * 0.3, iconScale * 0.15, iconScale * 0.3),
+          new THREE.MeshBasicMaterial({ color: 0x8B4513, depthTest: false, depthWrite: false, toneMapped: false }) // Brown (like a table)
+        );
+        const objMiddle = new THREE.Mesh(
+          new THREE.CylinderGeometry(iconScale * 0.08, iconScale * 0.08, iconScale * 0.25, 8),
+          new THREE.MeshBasicMaterial({ color: 0x228B22, depthTest: false, depthWrite: false, toneMapped: false }) // Forest green (like a plant)
+        );
+        const objTop = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.06, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0xFF6347, depthTest: false, depthWrite: false, toneMapped: false }) // Tomato red (like a vase)
+        );
+        objBase.position.y = -iconScale * 0.2;
+        objMiddle.position.y = iconScale * 0.05;
+        objTop.position.y = iconScale * 0.25;
+        iconGroup.add(objBase, objMiddle, objTop);
+        break;
+        
+      case 'room':
+        // Room icon: connected nodes representing collaboration
+        const node1 = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.08, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x00BFFF, depthTest: false, depthWrite: false, toneMapped: false }) // Deep sky blue
+        );
+        const node2 = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.08, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x00BFFF, depthTest: false, depthWrite: false, toneMapped: false })
+        );
+        const node3 = new THREE.Mesh(
+          new THREE.SphereGeometry(iconScale * 0.08, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x00BFFF, depthTest: false, depthWrite: false, toneMapped: false })
+        );
+        // Connection lines between nodes
+        const connectionGeom = new THREE.CylinderGeometry(iconScale * 0.02, iconScale * 0.02, iconScale * 0.3, 6);
+        const connectionMat = new THREE.MeshBasicMaterial({ color: 0x87CEEB, depthTest: false, depthWrite: false, toneMapped: false }); // Sky blue
+        const conn1 = new THREE.Mesh(connectionGeom, connectionMat);
+        const conn2 = new THREE.Mesh(connectionGeom, connectionMat);
+        
+        // Position nodes in triangle formation
+        node1.position.set(0, iconScale * 0.2, 0);
+        node2.position.set(-iconScale * 0.25, -iconScale * 0.1, 0);
+        node3.position.set(iconScale * 0.25, -iconScale * 0.1, 0);
+        
+        // Position connections
+        conn1.position.set(-iconScale * 0.125, iconScale * 0.05, 0);
+        conn1.rotation.z = Math.PI / 6; // Angle to connect node1 to node2
+        conn2.position.set(iconScale * 0.125, iconScale * 0.05, 0);
+        conn2.rotation.z = -Math.PI / 6; // Angle to connect node1 to node3
+        
+        iconGroup.add(node1, node2, node3, conn1, conn2);
+        break;
+        
       case 'back':
         // Back icon: left-pointing arrow
         const backArrow = new THREE.Mesh(
@@ -790,9 +925,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         textCtx.fillStyle = '#ffffff';
         textCtx.textAlign = 'center';
         textCtx.textBaseline = 'middle';
-        let px = Math.round(32 * 1.33);
+        let px = Math.round(32 * 1.77); // Increased from 1.33 to 1.77 for larger text
         const maxTextW = textCanvas.width * 0.9;
-        while (px > 12) {
+        while (px > 16) { // Increased minimum from 12 to 16
           textCtx.font = `bold ${px}px Arial`;
           if (textCtx.measureText(labelStr).width <= maxTextW) break;
           px -= 2;
@@ -850,7 +985,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         
         // Draw count text
         badgeCtx.fillStyle = '#ffffff';
-        badgeCtx.font = 'bold 24px Arial';
+        badgeCtx.font = 'bold 32px Arial'; // Increased from 24px to 32px
         badgeCtx.textAlign = 'center';
         badgeCtx.textBaseline = 'middle';
         badgeCtx.fillText(String(count), 32, 32);
@@ -1216,8 +1351,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const palmUp = !!hud.userData.__palmUp;
   const palmPresent = !!hud.userData.__palmPresent;
   // If palm not present, don’t gate on palmUp; allow menu to show when toggled
-  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || !palmPresent || palmUp);
-  const mustHide = (anyGrabOrSqueeze) || (palmReq && palmPresent && !palmUp);
+  const allowShow = (!!hud.userData.__menuShown) && (!anyGrabOrSqueeze) && (!palmReq || !palmPresent || palmUp) && (!(typeof window !== 'undefined' && window.__xrPrim));
+  const mustHide = (anyGrabOrSqueeze) || (palmReq && palmPresent && !palmUp) || (typeof window !== 'undefined' && window.__xrPrim);
   if (hud.visible && mustHide) { 
     hud.visible = false; 
     hud.userData.__autoHidden = true; 
@@ -1274,6 +1409,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     if (typeof window !== 'undefined' && window.__xrPrimsOpen && window.__primsMenuGroup){
       const primSet = new Set(); try { window.__primsMenuGroup.traverse(o=>{ if (o && o.isMesh) primSet.add(o); }); } catch{}
       hudTargets.sort((a,b)=>{ const ap=primSet.has(a)?1:0; const bp=primSet.has(b)?1:0; return bp-ap; });
+    }
+  } catch{}
+  // If objects submenu open, raise its buttons' priority by sorting
+  try {
+    if (typeof window !== 'undefined' && window.__xrObjsOpen && window.__objMenuGroup){
+      const objSet = new Set(); try { window.__objMenuGroup.traverse(o=>{ if (o && o.isMesh) objSet.add(o); }); } catch{}
+      hudTargets.sort((a,b)=>{ const ap=objSet.has(a)?1:0; const bp=objSet.has(b)?1:0; return bp-ap; });
     }
   } catch{}
         const hovered = new Set();
@@ -1530,6 +1672,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const leftHand = sources.find(s => s.hand && s.handedness === 'left');
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           let idxPos = null;
+          
+          // Skip finger interaction completely if primitive creation mode is active
+          if (typeof window !== 'undefined' && window.__xrPrim) {
+            fingerHover = null;
+            return; // Skip all finger interaction processing
+          }
           
           // Detect hand crossing to prevent state confusion
           const nowCrossing = performance.now();
@@ -1834,6 +1982,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     setHandVizStyle, 
     setGlobalClickCooldown, 
     createPrimitive3DButton, 
+    createOBJ3DButton,
     createDraw3DButton, 
     createTile3DButton, 
     showDrawSubmenu,

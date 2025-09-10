@@ -148,6 +148,13 @@
 		function update(frame, session, referenceSpace){
 			if (!enabled || !session || !frame) return;
 			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { endStroke(); return; }
+			
+			// Check if primitive creation mode is active - if so, completely disable VR draw
+			if (typeof window !== 'undefined' && window.__xrPrim) {
+				endStroke(); // End any current stroke if primitive mode starts
+				return; // Skip all VR draw processing
+			}
+			
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
 			const PINCH_DIST = 0.035; // 3.5cm threshold (slightly more forgiving)
 			// Remove markers for sources no longer present

@@ -21,20 +21,20 @@ export function createSnapVisuals({ THREE, scene }) {
 
   function ensureFaceSnapHighlights() {
     if (faceSnapHighlights.length === 0) {
-      // Create two orange wireframe box helpers for VR face snapping
+      // Create two subtle orange wireframe box helpers for VR face snapping
       for (let i = 0; i < 2; i++) {
         const box = new THREE.Box3();
-        const helper = new THREE.Box3Helper(box, 0xff6600); // Orange color
+        const helper = new THREE.Box3Helper(box, 0xff8800); // Slightly more subtle orange
         helper.name = `__VRFaceSnapHighlight_${i}`;
         helper.renderOrder = 10003; // Render on top
         helper.userData.__helper = true;
         helper.visible = false;
-        // Make the wireframe more prominent
+        // Make the wireframe more subtle and less distracting
         if (helper.material) {
-          helper.material.linewidth = 3;
+          helper.material.linewidth = 2; // Reduced from 3 to 2
           helper.material.transparent = true;
-          helper.material.opacity = 0.9;
-          helper.material.depthTest = false;
+          helper.material.opacity = 0.6; // Reduced from 0.9 to 0.6
+          helper.material.depthTest = true; // Changed from false to true for better depth perception
         }
         scene.add(helper);
         faceSnapHighlights.push(helper);
@@ -58,13 +58,39 @@ export function createSnapVisuals({ THREE, scene }) {
     const helpers = ensureFaceSnapHighlights();
     
     try {
+      // Only show highlights if both objects exist and are reasonably sized
+      if (!movingObj || !targetObj) {
+        hideFaceSnapHighlights();
+        return;
+      }
+      
+      // Validate that objects have meaningful size for face snapping
+      const movingBox = new THREE.Box3().setFromObject(movingObj);
+      const targetBox = new THREE.Box3().setFromObject(targetObj);
+      
+      if (movingBox.isEmpty() || targetBox.isEmpty()) {
+        hideFaceSnapHighlights();
+        return;
+      }
+      
+      const movingSize = movingBox.getSize(new THREE.Vector3());
+      const targetSize = targetBox.getSize(new THREE.Vector3());
+      
+      // Don't highlight if objects are too small or one is much larger than the other
+      const movingMinDim = Math.min(movingSize.x, movingSize.y, movingSize.z);
+      const targetMinDim = Math.min(targetSize.x, targetSize.y, targetSize.z);
+      if (movingMinDim < 0.02 || targetMinDim < 0.02) {
+        hideFaceSnapHighlights();
+        return;
+      }
+      
       // Update bounding boxes and show highlights
-      if (movingObj && helpers[0]) {
-        helpers[0].box.setFromObject(movingObj);
+      if (helpers[0]) {
+        helpers[0].box.copy(movingBox);
         helpers[0].visible = true;
       }
-      if (targetObj && helpers[1]) {
-        helpers[1].box.setFromObject(targetObj);
+      if (helpers[1]) {
+        helpers[1].box.copy(targetBox);
         helpers[1].visible = true;
       }
     } catch (e) {
