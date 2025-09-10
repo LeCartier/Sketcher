@@ -146,17 +146,38 @@
 			currentStrokeId = null;
 		}
 		function update(frame, session, referenceSpace){
-			if (!enabled || !session || !frame) return;
-			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { endStroke(); return; }
+			if (!session || !frame) {
+				if (enabled) console.log('VR Draw: Update called but missing session/frame');
+				return;
+			}
+			
+			if (!enabled) {
+				// Still process update for marker management but don't draw
+				return;
+			}
+			
+			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { 
+				console.log('VR Draw: Blocked by shouldDraw() function');
+				endStroke(); 
+				return; 
+			}
 			
 			// Check if primitive creation mode is active - if so, completely disable VR draw
 			if (typeof window !== 'undefined' && window.__xrPrim) {
+				console.log('VR Draw: Blocked by primitive creation mode');
 				endStroke(); // End any current stroke if primitive mode starts
 				return; // Skip all VR draw processing
 			}
 			
 			const sources = session.inputSources ? Array.from(session.inputSources) : [];
 			const PINCH_DIST = 0.035; // 3.5cm threshold (slightly more forgiving)
+			
+			// Debug hand tracking availability
+			const handSources = sources.filter(src => src && src.hand);
+			if (enabled && handSources.length === 0) {
+				console.log('VR Draw: No hands detected in input sources. Total sources:', sources.length);
+			}
+			
 			// Remove markers for sources no longer present
 			for (const k of Array.from(tipMarkers.keys())){ if (!sources.includes(k)){ const m = tipMarkers.get(k); try { if (m.parent) m.parent.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch{} tipMarkers.delete(k);} }
 			for (const src of sources){
@@ -178,9 +199,29 @@
 					} catch(e) {}
 				const idxJ = src.hand.get && src.hand.get('index-finger-tip');
 				const thJ = src.hand.get && src.hand.get('thumb-tip');
-				if (!idxJ || !thJ || !frame.getJointPose) continue;
-				const pi = frame.getJointPose(idxJ, ref); const pt = frame.getJointPose(thJ, ref);
-				if (!pi || !pt) continue;
+				if (!idxJ || !thJ || !frame.getJointPose) {
+					if (enabled) {
+						console.log(`VR Draw: Missing joints for ${src.handedness} hand:`, {
+							indexJoint: !!idxJ,
+							thumbJoint: !!thJ,
+							getJointPose: !!frame.getJointPose
+						});
+					}
+					continue;
+				}
+				
+				const pi = frame.getJointPose(idxJ, ref); 
+				const pt = frame.getJointPose(thJ, ref);
+				if (!pi || !pt) {
+					if (enabled) {
+						console.log(`VR Draw: Failed to get joint poses for ${src.handedness} hand:`, {
+							indexPose: !!pi,
+							thumbPose: !!pt,
+							referenceSpace: !!ref
+						});
+					}
+					continue;
+				}
 				const ip = pi.transform.position; const tp = pt.transform.position;
 				const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
 				const pinching = dist < PINCH_DIST;

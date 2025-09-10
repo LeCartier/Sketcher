@@ -266,6 +266,25 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       previewClone.renderOrder = 10003; // Higher render order than text and flash
       previewClone.position.z = 0.012; // Push further forward to avoid blending dimming
       
+      // Ensure the preview fits within the button bounds
+      const boundingBox = new THREE.Box3().setFromObject(previewClone);
+      const size = boundingBox.getSize(new THREE.Vector3());
+      const maxDimension = Math.max(size.x, size.y, size.z);
+      const targetSize = Math.min(BUTTON_W, BUTTON_H) * 0.6; // 60% of button size
+      
+      if (maxDimension > targetSize) {
+        const scale = targetSize / maxDimension;
+        previewClone.scale.setScalar(scale);
+        console.log(`📦 Scaled OBJ preview for ${filename}: ${scale.toFixed(3)}x (${maxDimension.toFixed(4)}m -> ${(maxDimension * scale).toFixed(4)}m)`);
+      }
+      
+      // Center the preview within the button
+      const scaledBoundingBox = new THREE.Box3().setFromObject(previewClone);
+      const center = scaledBoundingBox.getCenter(new THREE.Vector3());
+      previewClone.position.x -= center.x;
+      previewClone.position.y -= center.y;
+      // Keep z position for forward offset
+      
       // Mark as 3D icon for per-frame camera-facing alignment
       previewClone.userData.__icon3D = true;
       
@@ -322,9 +341,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createDraw3DButton(onClick) {
+    console.log('🎨 Creating Draw 3D button with onClick handler:', typeof onClick);
+    
     // Create a group to hold the 3D draw icon and background
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label: 'Draw', onClick, base: null, hover: null };
+    
+    console.log('🎨 Draw button created with userData:', buttonGroup.userData.__hudButton);
     
     // Tile background (same style as other tile buttons)
     const bgGeom = new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
@@ -1310,11 +1333,27 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         hud.traverse((obj)=>{
           try {
             if (!obj || !obj.userData || !obj.userData.__icon3D) return;
+            
+            // Debug: Track which objects are being aligned
+            const buttonData = obj.parent?.userData?.__hudButton;
+            const buttonLabel = buttonData?.label || 'unknown';
+            
             // Compute world-space position of the icon object
             const worldPos = new THREE.Vector3();
             obj.getWorldPosition(worldPos);
             // Direction from icon to camera
             const toCam = new THREE.Vector3().subVectors(camPos, worldPos).normalize();
+            
+            // Debug logging for problematic icons
+            if (buttonLabel.includes('OBJ') || buttonLabel.includes('.') || worldPos.length() > 10) {
+              console.log('📦 Aligning 3D icon:', {
+                label: buttonLabel,
+                worldPos: worldPos.toArray().map(n => n.toFixed(3)),
+                toCam: toCam.toArray().map(n => n.toFixed(3)),
+                distance: worldPos.length().toFixed(3)
+              });
+            }
+            
             // Build a facing quaternion: z -> toCam, y -> world up (best-effort)
             const z = toCam.clone();
             const y = worldY.clone();
@@ -1718,9 +1757,28 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               const depth = THREE.MathUtils.clamp(-pen, 0, PRESS_MAX_M);
               if (depth <= 0) continue;
               const dist = Math.hypot(lp.x, lp.y);
+              
+              // Debug logging for button targeting
+              const buttonLabel = m.userData?.__hudButton?.label || 'unknown';
+              console.log('🎯 Button candidate:', {
+                label: buttonLabel,
+                depth: depth,
+                dist: dist,
+                inBounds: { inX, inY },
+                localPos: { x: lp.x, y: lp.y },
+                penetration: pen
+              });
+              
               if (!best || depth > best.depth + 1e-6 || (Math.abs(depth - best.depth) < 1e-6 && dist < best.dist)){
                 best = { m, st, depth, dist };
+                console.log('🎯 New best button candidate:', buttonLabel, 'depth:', depth, 'dist:', dist);
               }
+            }
+            
+            if (best) {
+              console.log('🎯 Final best button:', best.m.userData?.__hudButton?.label);
+            } else {
+              console.log('🎯 No button candidates found');
             }
           }
           // Animate and handle press only on the best candidate; release others
@@ -1750,10 +1808,33 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               const globalNow = performance.now();
               const crossingCheck = globalNow >= handCrossingCooldownUntil;
               if (globalNow >= globalClickCooldownUntil && crossingCheck) {
-                const handler = m.userData?.__hudButton?.onClick; if (typeof handler === 'function') { try { handler(); } catch{} }
+                const buttonData = m.userData?.__hudButton;
+                const handler = buttonData?.onClick;
+                console.log('🎯 Button clicked:', {
+                  label: buttonData?.label,
+                  handlerType: typeof handler,
+                  timestamp: globalNow,
+                  globalCooldownPassed: globalNow >= globalClickCooldownUntil,
+                  crossingCheckPassed: crossingCheck
+                });
+                if (typeof handler === 'function') { 
+                  try { 
+                    handler(); 
+                  } catch(e) {
+                    console.error('🎯 Button click handler error:', e);
+                  } 
+                }
                 st._cooldownUntil = now + 180; // ms
                 // Trigger flash overlay
                 try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
+              } else {
+                console.log('🎯 Button click blocked by cooldown:', {
+                  label: m.userData?.__hudButton?.label,
+                  globalCooldownPassed: globalNow >= globalClickCooldownUntil,
+                  crossingCheckPassed: crossingCheck,
+                  globalCooldownRemaining: Math.max(0, globalClickCooldownUntil - globalNow),
+                  crossingCooldownRemaining: Math.max(0, handCrossingCooldownUntil - globalNow)
+                });
               }
             }
             st.pressed = pressedNow;
@@ -1822,7 +1903,16 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let drawStartStopButton = null; // reference to Start/Stop toggle tile
   
   function showDrawSubmenu(vrDrawService) {
-    if (drawSubmenuActive) return;
+    console.log('🎨 showDrawSubmenu called! Current state:');
+    console.log('🎨   - drawSubmenuActive:', drawSubmenuActive);
+    console.log('🎨   - vrDrawService available:', !!vrDrawService);
+    console.log('🎨   - call timestamp:', performance.now());
+    console.log('🎨   - call stack:', new Error().stack?.split('\n').slice(1, 5));
+    
+    if (drawSubmenuActive) {
+      console.log('🎨 Draw submenu already active, skipping...');
+      return;
+    }
     
     // Add stabilization delay to prevent rapid menu switching
     const now = performance.now();
@@ -1842,7 +1932,15 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         if (!vrDrawService) return;
         const active = vrDrawService.isActive && vrDrawService.isActive();
         const next = !active;
+        console.log('🎨 Draw Start/Stop clicked! Current active:', active, '-> setting to:', next);
         vrDrawService.setEnabled(!!next);
+        
+        // Verify the state change took effect
+        setTimeout(() => {
+          const newState = vrDrawService.isActive && vrDrawService.isActive();
+          console.log('🎨 Draw state verification - expected:', next, 'actual:', newState);
+        }, 50);
+        
         // Update label to reflect new state
         if (drawStartStopButton && typeof drawStartStopButton.setLabel === 'function') {
           drawStartStopButton.setLabel(next ? 'Stop' : 'Start');
@@ -1851,7 +1949,9 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', !!next);
         // Coordinate with AR edit if globally available
         try { if (window.arEdit && typeof window.arEdit.setEnabled === 'function') window.arEdit.setEnabled(!next); } catch {}
-      } catch {}
+      } catch(e) {
+        console.error('🎨 Draw Start/Stop error:', e);
+      }
     });
 
     // Color selection buttons

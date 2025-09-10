@@ -156,9 +156,15 @@ function finalizeSnip2D(apply){
   try { sessionStorage.removeItem('sketcher:snipIntent'); } catch{}
   // Navigate back to 3D
   try {
-    const url = new URL('../index.html', location.href);
-    window.location.href = url.toString();
-  } catch { window.location.href = './index.html'; }
+    // Both files are in the same directory, use relative path
+    const url = new URL('./index.html', window.location.href);
+    console.log('🔧 Returning to 3D view from 2D snip:', url.href);
+    window.location.href = url.href;
+  } catch(e) { 
+    console.error('🔧 Error navigating back to 3D:', e);
+    // Fallback navigation
+    window.location.href = './index.html'; 
+  }
 }
 // Erase state
 const erasing = { active:false, radiusFt: 0.5, points: [], cursor:{x:0,y:0,visible:false} }; // radius in feet
@@ -286,9 +292,14 @@ function finishTempSnipEdit(){
 function cancelTempSnipEdit(){ navigateBackTo3D(); }
 function navigateBackTo3D(){
   try {
-    const url = new URL('../index.html', location.href);
-    window.location.href = url.toString();
-  } catch { window.location.href = './index.html'; }
+    // Both files are in the same directory, use relative path
+    const url = new URL('./index.html', window.location.href);
+    console.log('🔧 Navigating back to 3D from temp snip edit:', url.href);
+    window.location.href = url.href;
+  } catch(e) { 
+    console.error('🔧 Error navigating back to 3D from temp snip edit:', e);
+    window.location.href = './index.html'; 
+  }
 }
 
 // On load, check if temp snip edit is requested
@@ -2082,8 +2093,10 @@ async function save2DToColumbarium(){
     const id = await mod.saveSketch2D({ name, json: data, thumb });
     try { sessionStorage.setItem('sketcher:newSceneId', id); } catch{}
     // Navigate to Columbarium
-    const url = new URL('../..//columbarium.html', import.meta.url).href;
-    document.body.classList.add('page-leave'); setTimeout(()=>{ window.location.href = url; }, 170);
+    const url = new URL('./columbarium.html', window.location.href);
+    console.log('🔧 Navigating to Columbarium from 2D save:', url.href);
+    document.body.classList.add('page-leave'); 
+    setTimeout(()=>{ window.location.href = url.href; }, 170);
   } catch(e){ console.error(e); alert('Save failed'); }
 }
 const save2DBtn = document.getElementById('save2D'); if (save2DBtn) save2DBtn.addEventListener('click', ()=>{ save2DToColumbarium(); });

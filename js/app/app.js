@@ -630,6 +630,23 @@ export async function init() {
 						if (btn?.mesh) roomMenu.add(btn.mesh);
 					}
 					
+					// Position room buttons in a grid layout (same as primitives menu)
+					try {
+						const bw = 0.01905; // BUTTON_SIZE from HUD system (0.75 inches in meters)
+						const bh = bw; const gap = bw * 0.32; // ~6mm when bw≈19mm
+						const cols = 3; const rows = Math.ceil(roomButtons.length / cols);
+						const totalW = cols * bw + (cols - 1) * gap;
+						const totalH = rows * bh + (rows - 1) * gap;
+						for (let i=0;i<roomButtons.length;i++){
+							const r = Math.floor(i/cols); const c = i%cols;
+							const x = -totalW/2 + c*(bw+gap) + bw/2;
+							const y = totalH/2 - r*(bh+gap) - bh/2;
+							// Increase forward bias so submenu cleanly occludes main HUD buttons for ray hits
+							roomButtons[i].mesh.position.set(x,y,0.01);
+							try { roomButtons[i].mesh.renderOrder = 50; } catch{}
+						}
+					} catch {}
+					
 					try { if (xrHud && xrHud.group) xrHud.group.add(roomMenu); } catch{}
 				}
 				
@@ -676,11 +693,12 @@ export async function init() {
 						{ label:'Sphere', tool:'sphere' },
 						{ label:'Cylinder', tool:'cylinder' },
 						{ label:'Cone', tool:'cone' },
+						{ label:'Cancel', tool:'__cancel' },
 						{ label:'Back', tool:'__back' }
 					];
 					for (const d of defs){
 						let btn;
-						// Use 3D primitive buttons for actual primitives, text button for Back
+						// Use 3D primitive buttons for actual primitives, text button for Back and Cancel
 						if (d.tool === '__back') {
 							btn = xrHud.createTile3DButton(d.label, ()=>{
 								try {
@@ -690,10 +708,28 @@ export async function init() {
 									return; 
 								} catch{}
 							});
+						} else if (d.tool === '__cancel') {
+							btn = xrHud.createTile3DButton(d.label, ()=>{
+								try {
+									// Cancel any active primitive creation
+									if (window.__xrPrim) {
+										console.log('User cancelled primitive creation');
+										__cancelVRPrimitiveDraft();
+									}
+									// Don't close menu - user might want to select a different primitive
+									return; 
+								} catch{}
+							});
 						} else {
 							// Use 3D primitive icon button
 							btn = xrHud.createPrimitive3DButton(d.label, ()=>{
 								try {
+									// Cancel any existing primitive creation before starting new one
+									if (window.__xrPrim) {
+										console.log('Cancelling previous primitive to start new one');
+										__cancelVRPrimitiveDraft();
+									}
+									
 									// Arm primitive creation state (pinch-to-scale workflow)
 									window.__xrPrim = { 
 										tool: d.tool, 
@@ -706,7 +742,9 @@ export async function init() {
 										leftHand: null,
 										rightHand: null,
 										leftPinching: false,
-										rightPinching: false
+										rightPinching: false,
+										createdAt: Date.now(), // For timeout tracking
+										__debugLogged: false // Reset debug flag
 									};
 									console.log(`Primitive creation mode activated: ${d.tool}`);
 									console.log('Instructions: Move to position with one hand, then pinch with BOTH hands to scale');
@@ -743,17 +781,13 @@ export async function init() {
 					primsMenu.visible = show; setMainMenuVisible(!show);
 					// Global flag for HUD service to filter ray targets
 					try { window.__xrPrimsOpen = show; } catch{}
-					if (!show) { __cancelVRPrimitiveDraft(); }
+					// Do NOT cancel primitive creation when menu closes - let user complete the workflow
 				}
 				// Expose toggle for debugging if needed
 				try { window.toggleVRPrimitivesMenu = toggleVRPrimitivesMenu; } catch{}
 				// Add new VR Prims button that opens a primitives submenu
 				const bPrims = xrHud.createTile3DButton('Prims', ()=>{ 
 					try { 
-						// Cancel any active primitive creation when opening menu
-						if (window.__xrPrim) {
-							__cancelVRPrimitiveDraft();
-						}
 						// Add brief cooldown to prevent accidental submenu clicks
 						if (xrHud && xrHud.setGlobalClickCooldown) xrHud.setGlobalClickCooldown(200);
 						toggleVRPrimitivesMenu(); 
@@ -806,9 +840,26 @@ export async function init() {
 					// Create buttons for each object
 					for (const objData of availableObjects) {
 						try {
+							console.log('📦 Creating equipment button for:', objData.filename);
+							
 							// Create preview mesh for the button
 							const preview = objLibrary.createPreviewMesh(objData);
 							const displayName = objData.filename.replace('.obj', '').replace(/[-_]/g, ' ');
+							
+							if (preview) {
+								// Debug the preview mesh properties
+								const boundingBox = new THREE.Box3().setFromObject(preview);
+								const size = boundingBox.getSize(new THREE.Vector3());
+								const center = boundingBox.getCenter(new THREE.Vector3());
+								console.log('📦 Preview mesh stats:', {
+									filename: objData.filename,
+									size: size.toArray().map(n => n.toFixed(4)),
+									center: center.toArray().map(n => n.toFixed(4)),
+									scale: preview.scale.toArray().map(n => n.toFixed(3))
+								});
+							} else {
+								console.warn('📦 No preview mesh created for:', objData.filename);
+							}
 							
 							const btn = xrHud.createOBJ3DButton(preview, displayName, ()=>{
 								try {
@@ -874,21 +925,24 @@ export async function init() {
 					objButtons.push(backBtn);
 					objMenu.add(backBtn.mesh);
 					
-					// Simple grid layout (3 columns)
+					// Simple grid layout (3 columns) - use proper HUD constants
 					try {
-						const bw = 0.01905; // BUTTON_SIZE from HUD system
-						const bh = bw;
-						const gap = bw * 0.32;
+						// Import HUD constants for consistent layout
+						const BUTTON_W = 0.01905; // BUTTON_SIZE from HUD system
+						const BUTTON_H = BUTTON_W;
+						const GRID_GAP_X = 0.006; // 6mm horizontal gap - matches XR HUD
+						const GRID_GAP_Y = 0.006; // 6mm vertical gap - matches XR HUD
+						
 						const cols = 3;
 						const rows = Math.ceil(objButtons.length / cols);
-						const totalW = cols * bw + (cols - 1) * gap;
-						const totalH = rows * bh + (rows - 1) * gap;
+						const totalW = cols * BUTTON_W + (cols - 1) * GRID_GAP_X;
+						const totalH = rows * BUTTON_H + (rows - 1) * GRID_GAP_Y;
 						
 						for (let i = 0; i < objButtons.length; i++) {
 							const r = Math.floor(i / cols);
 							const c = i % cols;
-							const x = -totalW / 2 + c * (bw + gap) + bw / 2;
-							const y = totalH / 2 - r * (bh + gap) - bh / 2;
+							const x = -totalW / 2 + c * (BUTTON_W + GRID_GAP_X) + BUTTON_W / 2;
+							const y = totalH / 2 - r * (BUTTON_H + GRID_GAP_Y) - BUTTON_H / 2;
 							
 							// Increase forward bias so submenu cleanly occludes main HUD buttons
 							objButtons[i].mesh.position.set(x, y, 0.01);
@@ -960,13 +1014,16 @@ export async function init() {
 				window.vrDraw = vrDraw;
 				const bDraw = xrHud.createDraw3DButton(()=>{ 
 					try { 
-						console.log('Draw button clicked, vrDraw:', !!vrDraw, 'isActive:', vrDraw?.isActive?.());
+						console.log('🎨 Draw button clicked! vrDraw:', !!vrDraw, 'isActive:', vrDraw?.isActive?.());
+						console.log('🎨 Draw button click timestamp:', performance.now());
+						console.log('🎨 Draw button click stack trace:', new Error().stack?.split('\n').slice(1, 5));
 						if (!vrDraw) {
 							console.warn('vrDraw not available when Draw button clicked');
 							return;
 						}
 						// Open the draw submenu without changing draw enablement state.
 						// Start/Stop is controlled from inside the submenu via its explicit toggle.
+						console.log('🎨 About to show draw submenu...');
 						xrHud.showDrawSubmenu(vrDraw);
 						// Keep Draw button highlight in sync with current active state
 						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
@@ -5467,14 +5524,23 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									try {
 										const raySpace = src.targetRaySpace || src.gripSpace;
 										if (raySpace) {
-											const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null);
+											const ref = xrLocalSpace || xrViewerSpace || (renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+											const pose = frame.getPose(raySpace, ref);
 											if (pose && pose.transform && pose.transform.position) {
 												const p = pose.transform.position;
 												handPos = new THREE.Vector3(p.x, p.y, p.z);
+												// For controllers, use trigger as pinch
 												isPinching = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
 											}
 										}
-									} catch(e) {}
+									} catch(e) {
+										console.warn(`Controller fallback failed for ${src.handedness}:`, e);
+									}
+								}
+								
+								// Debug: Log when we detect a hand/controller
+								if (handPos && !prim[`${src.handedness}Hand`]) {
+									console.log(`Primitive mode: Detected ${src.handedness} ${src.hand ? 'hand' : 'controller'} at`, handPos);
 								}
 								
 								// Store hand data with debug logging
@@ -5500,6 +5566,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							// Process primitive creation workflow after collecting hand data
 							if (window.__xrPrim) {
 								const prim = window.__xrPrim;
+								
+								// Debug: Log current state
+								if (!prim.__debugLogged) {
+									console.log('Primitive creation active:', prim.tool, 'stage:', prim.stage);
+									console.log('Available hands:', prim.leftHand ? 'left' : 'none', prim.rightHand ? 'right' : 'none');
+									prim.__debugLogged = true;
+								}
 								
 								// Need at least one hand for basic functionality
 								if (!prim.rightHand && !prim.leftHand) {
@@ -5869,13 +5942,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {
 					try { arEdit.update(frame, xrLocalSpace); } catch {}
-					// VR draw update (independent of AR edit target)
+					// VR draw update (runs every frame to detect pinch gestures)
 					try { 
 						if (vrDraw) { 
-							if (vrDraw.isActive()) { 
-								vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); 
-							} else { 
-								if (arEdit && arEdit.setEnabled) arEdit.setEnabled(true); 
+							// Always update VR draw to detect pinch gestures and manage drawing state
+							vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); 
+							
+							// Coordinate with AR edit based on draw active state
+							if (!vrDraw.isActive() && arEdit && arEdit.setEnabled) {
+								arEdit.setEnabled(true); 
 							} 
 						} 
 					} catch(e) {
@@ -6335,11 +6410,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				const payload = { id: snip.userData.snipId, data: src };
 				try { sessionStorage.setItem('sketcher:2d:snipEdit', JSON.stringify(payload)); } catch{}
 				// Navigate to 2D editor in temp snip edit mode
-				const url = new URL('../../sketch2d.html', import.meta.url);
+				// Use relative path instead of import.meta.url for better cross-platform compatibility
+				const url = new URL('./sketch2d.html', window.location.href);
 				url.searchParams.set('editSnip', '1');
+				console.log('🔧 Navigating to 2D edit mode:', url.href);
 				try { document.body.classList.add('page-leave'); } catch{}
 				setTimeout(()=>{ window.location.href = url.href; }, 170);
-			} catch{}
+			} catch(e) {
+				console.error('🔧 Error opening snip for 2D edit:', e);
+			}
 		}
 		// Expose for external handlers
 		try { window.__openSnipFor2DEdit = __openSnipFor2DEdit; } catch{}
@@ -6900,9 +6979,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				try { sessionStorage.setItem('sketcher:snipIntent','1'); } catch{}
 				// Navigate to 2D page in snip mode
 				try {
-					const url = new URL('../../sketch2d.html', import.meta.url).href;
-					window.location.href = url + '?snip=1';
-				} catch{
+					// Use relative path for better cross-platform compatibility
+					const url = new URL('./sketch2d.html', window.location.href);
+					url.searchParams.set('snip', '1');
+					console.log('🔧 Navigating to 2D snip mode:', url.href);
+					window.location.href = url.href;
+				} catch(e) {
+					console.error('🔧 Error navigating to 2D snip mode:', e);
 					// Fallback relative
 					window.location.href = './sketch2d.html?snip=1';
 				}
