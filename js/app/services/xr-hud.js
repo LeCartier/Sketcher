@@ -1123,15 +1123,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   hud.userData.__menuShown = false; // armed by menu button
   prevVisible = false;
     ensureHandViz();
-  // Ensure draw submenu is hidden on initialization
-  hideDrawSubmenu();
-  // Explicitly ensure VR draw mode is disabled during HUD initialization  
-  try {
-    if (window.vrDraw && window.vrDraw.setEnabled) {
-      window.vrDraw.setEnabled(false);
-      console.log('XR HUD: Explicitly disabled VR draw mode during initialization');
-    }
-  } catch {}
+  // Note: hideDrawSubmenu() will be called after function definitions
   // Both controller trigger and right index finger can activate buttons
   return hud;
   }
@@ -1988,6 +1980,22 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       if (hud) hud.add(btn.mesh);
     }
   }
+
+  // Ensure draw submenu is properly initialized as hidden
+  try {
+    hideDrawSubmenu();
+    console.log('XR HUD: Draw submenu state reset during initialization');
+  } catch(e) {
+    console.warn('XR HUD: Failed to reset draw submenu state:', e);
+  }
+
+  // Explicitly ensure VR draw mode is disabled during HUD initialization  
+  try {
+    if (window.vrDraw && window.vrDraw.setEnabled) {
+      window.vrDraw.setEnabled(false);
+      console.log('XR HUD: Explicitly disabled VR draw mode during initialization');
+    }
+  } catch {}
 
   return { 
     ensure, 

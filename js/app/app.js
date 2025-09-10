@@ -5408,8 +5408,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				(function xrTeleportPoll(){
 					try {
 							const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
-							if (!window.__teleport) return;
-							const discs = (window.__teleport.getTeleportDiscs && window.__teleport.getTeleportDiscs()) || [];
+							// Make teleport optional; primitive creation must still function without it
+							const teleportAvailable = !!window.__teleport;
+							const discs = teleportAvailable ? ((window.__teleport.getTeleportDiscs && window.__teleport.getTeleportDiscs()) || []) : [];
+							if (!teleportAvailable && window.__xrPrim && !window.__xrPrim.__notedNoTeleport) {
+								try { console.log('XR Primitives: Teleport service not present; continuing primitive workflow without teleport.'); } catch{}
+								try { window.__xrPrim.__notedNoTeleport = true; } catch{}
+							}
 							// VR Primitive creation (multi-click) shares trigger; handle before teleport consumes it
 							if (window.__xrPrim){
 								if (!window.__xrPrim.__triggerPrev) window.__xrPrim.__triggerPrev = new WeakMap();
@@ -5430,7 +5435,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									try {
 										const idxJ = src.hand.get && src.hand.get('index-finger-tip');
 										const thJ = src.hand.get && src.hand.get('thumb-tip');
-										const ref = xrLocalSpace || xrViewerSpace || null;
+										// Robust reference space fallback sequence
+										let ref = xrLocalSpace || xrViewerSpace;
+										if (!ref) {
+											try { ref = renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace(); } catch{}
+										}
+										// Skip async requestReferenceSpace to avoid await in sync update; rely on earlier fallbacks
 										
 										if (idxJ && frame.getJointPose) {
 											const idxPose = frame.getJointPose(idxJ, ref);
