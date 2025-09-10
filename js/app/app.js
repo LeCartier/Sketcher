@@ -578,6 +578,9 @@ export async function init() {
 				try { bInteract.setLabel(xrInteractionRay ? 'Ray' : 'Grab'); if (bInteract.mesh && bInteract.mesh.material){ bInteract.mesh.material.color.setHex(xrInteractionRay ? 0xff8800 : 0xffffff); bInteract.mesh.material.needsUpdate = true; } } catch{}
 				// Also ensure AR edit initial enable state matches mode (Grab by default)
 				try { arEdit.setEnabled(!xrInteractionRay); } catch{}
+			
+			// Set up initial main menu buttons (before sub-menus)
+			xrHudButtons = [bOne, bFit, bReset, bInteract, bLock, bMode, bMatMode, bAlign, bHands];
 				// --- VR Room submenu for collaboration features ---
 				let roomMenu = null; // THREE.Group holding room buttons
 				let roomButtons = []; // HUD button records for room
@@ -967,8 +970,11 @@ export async function init() {
 						xrHud.showDrawSubmenu(vrDraw);
 						// Keep Draw button highlight in sync with current active state
 						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
-						// Ensure AR edit remains enabled unless drawing is already active
-						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!(vrDraw.isActive && vrDraw.isActive())); } catch {}
+						// Ensure AR edit coordination happens immediately when draw menu is opened
+						const drawActive = vrDraw.isActive && vrDraw.isActive();
+						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!drawActive); } catch {}
+						// Also make arEdit globally available for draw submenu coordination
+						try { window.arEdit = arEdit; } catch {}
 					} catch(e) { 
 						console.error('Draw button click error:', e);
 					} 

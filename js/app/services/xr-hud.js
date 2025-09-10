@@ -1912,6 +1912,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       hideDrawSubmenu();
       if (vrDrawService) vrDrawService.setEnabled(false);
       if (window.setHudButtonActiveByLabel) window.setHudButtonActiveByLabel('Draw', false);
+      // Re-enable AR edit when exiting draw mode
+      try { if (window.arEdit && typeof window.arEdit.setEnabled === 'function') window.arEdit.setEnabled(true); } catch {}
     });
     
     drawSubmenuButtons = [
@@ -1949,6 +1951,19 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     setTimeout(() => {
       for (const btn of buttons) {
         if (btn.mesh) btn.mesh.visible = true;
+      }
+      // Re-enable AR edit if drawing is not currently active
+      try {
+        if (window.arEdit && typeof window.arEdit.setEnabled === 'function') {
+          // Check if vrDraw is available and active
+          const drawActive = window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive();
+          if (!drawActive) {
+            window.arEdit.setEnabled(true);
+            console.log('AR edit re-enabled after closing draw submenu (drawing inactive)');
+          }
+        }
+      } catch(e) {
+        console.warn('Failed to coordinate AR edit after draw submenu close:', e);
       }
     }, 50);
   }
