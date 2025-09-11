@@ -1496,7 +1496,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           }
         }
       }
-  // Visualize right-controller pointer ray; extend to first hit among HUD, scene (horizontal only), or teleport discs
+  // Visualize right-controller pointer ray; extend to first hit among HUD or scene (horizontal only)
   // Show a right-hand/controller ray in Ray mode only (both controller and hand allowed)
   const wantRay = !!(typeof window !== 'undefined' && window.__xrInteractionRay === true);
   if (wantRay && src.handedness === 'right' && (src.gamepad || src.hand)){
@@ -1505,8 +1505,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const pose = raySpace ? frame.getPose(raySpace, ref) : null;
           if (pose){
     const p=pose.transform.position, o=pose.transform.orientation; const origin=new THREE.Vector3(p.x,p.y,p.z); const dir=new THREE.Vector3(0,0,-1).applyQuaternion(new THREE.Quaternion(o.x,o.y,o.z,o.w)).normalize();
-  // Raycast against HUD, scene, and teleport discs
-    const discs = (window.__teleport && window.__teleport.getTeleportDiscs) ? window.__teleport.getTeleportDiscs() : [];
+  // Raycast against HUD and scene (legacy teleport discs removed)
+    const discs = []; // kept for backwards API shape
     // Improve hit precision against thin rings/planes
     try { raycaster.params.Line = { threshold: 0.01 }; raycaster.params.Points = { threshold: 0.02 }; } catch{}
     const sceneTargets = [];
@@ -1515,7 +1515,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     const up = new THREE.Vector3(0,1,0);
     const COS_MAX_TILT = 0.85; // allow only near-horizontal surfaces for free-aim teleport
     // Intersections
-    let hudHit = null, discHit = null, bestScene = null; // bestScene: { point, normal, obj, dist }
+  let hudHit = null, bestScene = null; // bestScene: { point, normal, obj, dist }
     try {
       const hudHits = raycaster.intersectObjects(hudTargets, true);
       if (hudHits && hudHits.length) {
@@ -1534,21 +1534,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
         }
       }
     } catch{}
-    try {
-      // Build disc target list including children (plane + ring)
-      const discTargets = [];
-      if (discs && discs.length){ for (const d of discs){ if (!d) continue; d.traverse(o=>{ if (o && o.isMesh) discTargets.push(o); }); } }
-      const dHits = discTargets.length ? raycaster.intersectObjects(discTargets, true) : [];
-      if (dHits && dHits.length) discHit = dHits[0];
-    } catch{}
+    // (Teleport discs removed)
     try {
       const sHits = raycaster.intersectObjects(sceneTargets, true);
       if (sHits && sHits.length){
         for (const h of sHits){
           if (!h || !h.object) continue;
-          // Skip teleport discs masquerading as scene meshes
-          let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
-          if (isDisc) continue;
+          // (Teleport discs removed)
           // Require a face and upward-facing world normal
           if (!h.face) continue;
           let nWorld = null;
@@ -1573,9 +1565,6 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     if (hudHit?.point){
       tip.copy(hudHit.point);
       stable.point = null; // do not persist HUD tip
-    } else if (discHit?.point){
-      tip.copy(discHit.point);
-      stable.point = null; // discs can change distance; avoid caching
     } else if (bestScene?.point){
       tip.copy(bestScene.point);
       stable.point = bestScene.point.clone(); stable.normal = bestScene.normal?.clone();
@@ -1592,14 +1581,13 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       }
     }
     // Default hide highlight on all discs; re-apply on target
-    try { if (discs && discs.length) discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d,false); } catch{} }); } catch{}
+  // (No discs to highlight)
     // Show free-aim teleport reticle only on valid horizontal scene hits; else optionally y=0 fallback
     try {
       let showed = false;
       // If HUD is targeted, never show the reticle
       if (hudHit && hudHit.point){ /* suppress reticle while interacting with HUD */ }
-      else if (discHit && discHit.point){ /* suppress reticle; disc has its own highlight */ }
-      else if (bestScene && bestScene.point && bestScene.normal){
+  else if (bestScene && bestScene.point && bestScene.normal){
         if (window.__teleport && window.__teleport.showReticleAt){ window.__teleport.showReticleAt(bestScene.point, bestScene.normal); showed = true; }
       }
       if (!showed){
@@ -1620,8 +1608,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       }
       if (!showed){ if (window.__teleport && window.__teleport.hideReticle) window.__teleport.hideReticle(); }
     } catch{}
-    // Disc highlight when aiming at discs
-    if (discHit && discHit.object){ try { const d = (function find(o){ while(o && !(o.userData&&o.userData.__teleportDisc)) o=o.parent; return o; })(discHit.object); if (d) window.__teleport.highlightTeleportDisc(d, true); } catch{} }
+  // (No disc highlight logic)
     posAttr.setXYZ(1, tip.x, tip.y, tip.z); posAttr.needsUpdate = true; rightRay.visible = true;
     rightRayTip.position.copy(tip); rightRayTip.visible = true;
           }

@@ -32,6 +32,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   onGround: false,
   };
 
+  // Click / short-tap tracking for distinguishing look-drag vs. quick teleport click
+  const clickState = { downX:0, downY:0, downT:0, moveSum:0 };
+
   function setHFov(deg){
     if (!camera || !camera.isPerspectiveCamera) return;
     const aspect = Math.max(0.0001, renderer.domElement.clientWidth / Math.max(1, renderer.domElement.clientHeight));
@@ -148,13 +151,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
   function onPointerMove(e){
     if (!state.active) return;
-    // Hover highlight when not dragging
-    if (!state.dragging){
-      try {
-        tryHoverHighlightAtClient(e.clientX, e.clientY);
-        tryHoverReticleAtClient(e.clientX, e.clientY);
-      } catch{}
-    }
+    // Reticle hover feedback when not dragging
+    if (!state.dragging){ try { tryHoverReticleAtClient(e.clientX, e.clientY); } catch{} }
     // Look input when dragging
     if (!state.dragging) return;
     const dx = (typeof e.movementX === 'number' ? e.movementX : (e.clientX - lastPX));
@@ -162,9 +160,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     clickState.moveSum += Math.abs(dx) + Math.abs(dy);
     lastPX = e.clientX; lastPY = e.clientY;
     state.yaw -= dx * state.sens; state.pitch -= dy * state.sens;
-    // Constrain pitch: allow looking up fully but limit looking down to prevent seeing ground portion of HDR
+    // Allow full pitch range since we'll handle horizon-locking in the skybox
     const upLimit = Math.PI/2 - 0.01; // Can look straight up
-    const downLimit = -Math.PI/6; // Limit downward look to about 30 degrees to hide ground portion
+    const downLimit = -Math.PI/2 + 0.01; // Can look straight down
     state.pitch = Math.max(downLimit, Math.min(upLimit, state.pitch));
   }
   function onWheel(e){ if (!state.active) return; const delta = Math.sign(e.deltaY); state.speed = Math.max(1, Math.min(50, state.speed + (-delta))); }
@@ -213,8 +211,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     state.cleanup = [];
     // Remove UI
     const ui = document.getElementById('fp-ui'); if (ui && ui.parentNode) ui.parentNode.removeChild(ui);
-  // Remove sun panel if present
-  const sp = document.getElementById('fp-sun-panel'); if (sp && sp.parentNode) sp.parentNode.removeChild(sp);
+  // Remove enviro panel if present
+  const sp = document.getElementById('fp-enviro-panel'); if (sp && sp.parentNode) sp.parentNode.removeChild(sp);
   // Teardown environment
   try { disposeDesktopEnv(); } catch{}
     restoreQuality();
@@ -442,7 +440,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const toggle = mkBtn(state.constrainHeight ? 'Mode: Walk (6ft)' : 'Mode: Fly');
   const qualityBtn = mkBtn('Quality: High');
     const exit = mkBtn('Exit');
-  const sunBtn = mkBtn('Sun');
+  const sunBtn = mkBtn('Enviro');
   const matBtn = mkBtn('Materials: Original');
     toggle.addEventListener('click', ()=>{
       // Toggle Walk <-> Fly coherently
@@ -458,7 +456,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
       toggle.textContent = state.constrainHeight ? 'Mode: Walk (6ft)' : 'Mode: Fly';
     });
     exit.addEventListener('click', ()=> stop());
-  sunBtn.addEventListener('click', ()=>{ toggleSunPanel(); });
+  sunBtn.addEventListener('click', ()=>{ toggleEnviroPanel(); });
     matBtn.addEventListener('click', ()=>{
       const modes = ['original','white','white-outline','wire','xray'];
       const cur = (state.env && state.env.matMode) || 'original';
@@ -501,10 +499,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     }
   }
 
-  // ---- Teleport disc picking (hover + click) ----
+  // ---- Free-aim teleport (reticle + click) ----
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
-  const clickState = { downX:0, downY:0, downT:0, moveSum:0 };
   function setPointerFromClient(clientX, clientY){
     const r = domElement.getBoundingClientRect();
     const x = (clientX - r.left) / Math.max(1, r.width);
@@ -512,30 +509,12 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     ndc.x = x*2 - 1;
     ndc.y = - (y*2 - 1);
   }
-  function __discRoot(o){ try { while(o && !(o.userData && o.userData.__teleportDisc)) o = o.parent; return o || null; } catch { return null; } }
-  function tryHoverHighlightAtClient(clientX, clientY){
-    if (!window.__teleport) return;
-    const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return;
-    setPointerFromClient(clientX, clientY);
-    raycaster.setFromCamera(ndc, camera);
-    const ih = raycaster.intersectObjects(discs, true);
-    discs.forEach(d=>{ try { window.__teleport.highlightTeleportDisc(d, false); } catch{} });
-    if (ih && ih.length){ const d = __discRoot(ih[0].object); if (d) try { window.__teleport.highlightTeleportDisc(d, true); } catch{} }
-  }
   function tryTeleportAtClient(clientX, clientY){
     if (!window.__teleport) return false;
-    // Prefer free-aim teleport to surface under pointer if available
     const picked = pickTeleportPointAtClient(clientX, clientY);
     if (picked && picked.point){ try { window.__teleport.teleportToPoint(picked.point, picked.normal); } catch{} return true; }
-    // Fallback: pre-placed discs
-    const discs = window.__teleport.getTeleportDiscs(); if (!discs || !discs.length) return false;
-    setPointerFromClient(clientX, clientY);
-    raycaster.setFromCamera(ndc, camera);
-    const ih = raycaster.intersectObjects(discs, true);
-    if (ih && ih.length){ const d = __discRoot(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); window.__teleport.teleportToDisc(d); } catch{} return true; } }
-    return false;
+    return false; // no valid surface
   }
-
   function tryHoverReticleAtClient(clientX, clientY){
     if (!window.__teleport || !window.__teleport.showReticleAt) return;
     const picked = pickTeleportPointAtClient(clientX, clientY);
@@ -555,8 +534,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
       const hits = raycaster.intersectObjects(targets, true);
       for (const h of hits){
         if (!h || !h.object) continue;
-        // Skip teleport discs if present in scene layer
-        try { if (h.object.userData && h.object.userData.__teleportDisc) continue; } catch{}
+  // (Teleport discs removed)
         // Require a face and compute world normal
         if (!h.face) continue;
         const nLocal = h.face.normal.clone();
@@ -607,7 +585,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const params = { azimuth: 135, elevation: 45, intensity: 1.2, color: '#ffffff', shadows: true };
     applySun(params, sun);
     // Cache and expose
-  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'hdr', disabledLights: [] };
+  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, skybox: null, bgMode: 'hdr', disabledLights: [] };
   // Enable shadow casting on scene meshes (store previous)
   try { enableSceneShadows(); } catch{}
   // Subtle hemisphere light for better separation
@@ -640,6 +618,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   try { if (e.hemi && e.hemi.parent) e.hemi.parent.remove(e.hemi); } catch{}
     try { if (e.group && e.group.parent) e.group.parent.remove(e.group); } catch{}
     try { if (Array.isArray(e.hiddenGrids)) e.hiddenGrids.forEach(g=>{ try { g.visible = true; } catch{} }); } catch{}
+  // Dispose custom skybox
+  try { 
+    if (e.skybox) {
+      scene.remove(e.skybox);
+      if (e.skybox.geometry) e.skybox.geometry.dispose();
+      if (e.skybox.material) e.skybox.material.dispose();
+    } 
+  } catch{}
   // Dispose PMREM/HDR resources
   try { if (e.pmrem && e.pmrem.dispose) e.pmrem.dispose(); } catch{}
   try { if (e.hdrEquirect && e.hdrEquirect.dispose) e.hdrEquirect.dispose(); } catch{}
@@ -678,8 +664,8 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     if (sun.target){ sun.target.position.set(0,0,0); sun.target.updateMatrixWorld(); }
   }
 
-  function toggleSunPanel(){
-    const id = 'fp-sun-panel';
+  function toggleEnviroPanel(){
+    const id = 'fp-enviro-panel';
     let p = document.getElementById(id);
     if (p){ p.remove(); return; }
     if (!state.env) return;
@@ -720,6 +706,93 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
         loadHDRIFromFile(f);
       } catch{}
     });
+    
+    // HDRI rotate and flip buttons (compact, side by side)
+    const transformLabel = mkLabel('HDRI Transform');
+    const rotateBtn = document.createElement('button'); rotateBtn.textContent = 'Rotate 180°'; rotateBtn.style.padding='4px 8px'; rotateBtn.style.borderRadius='6px'; rotateBtn.style.border='1px solid #666'; rotateBtn.style.background='#222'; rotateBtn.style.color='#fff'; rotateBtn.style.fontSize='11px'; rotateBtn.style.marginRight='4px';
+    const flipBtn = document.createElement('button'); flipBtn.textContent = 'Flip Vertical'; flipBtn.style.padding='4px 8px'; flipBtn.style.borderRadius='6px'; flipBtn.style.border='1px solid #666'; flipBtn.style.background='#222'; flipBtn.style.color='#fff'; flipBtn.style.fontSize='11px';
+    
+    const transformContainer = document.createElement('div');
+    transformContainer.appendChild(rotateBtn);
+    transformContainer.appendChild(flipBtn);
+    
+    rotateBtn.addEventListener('click', ()=>{
+      try {
+        if (state.env && state.env.skybox && state.env.skybox.material && state.env.skybox.material.uniforms) {
+          const currentRotate = state.env.skybox.material.uniforms.rotateHorizontal.value;
+          state.env.skybox.material.uniforms.rotateHorizontal.value = !currentRotate;
+          console.info('[FP] HDRI rotated:', !currentRotate ? '180°' : 'normal');
+        }
+      } catch(err){ console.warn('[FP] Rotate error:', err); }
+    });
+    
+    flipBtn.addEventListener('click', ()=>{
+      try {
+        if (state.env && state.env.skybox && state.env.skybox.material && state.env.skybox.material.uniforms) {
+          const currentFlip = state.env.skybox.material.uniforms.flipVertical.value;
+          state.env.skybox.material.uniforms.flipVertical.value = !currentFlip;
+          console.info('[FP] HDRI flipped vertically:', !currentFlip ? 'flipped' : 'normal');
+        }
+      } catch(err){ console.warn('[FP] Flip error:', err); }
+    });
+    
+    // Ground plane customization
+    const groundLabel = mkLabel('Ground');
+    const groundColorPicker = mkColor('#cfcfcf'); // Default ground color
+    const groundTextureBtn = document.createElement('button'); groundTextureBtn.textContent = 'Texture…'; groundTextureBtn.style.padding='4px 8px'; groundTextureBtn.style.borderRadius='6px'; groundTextureBtn.style.border='1px solid #666'; groundTextureBtn.style.background='#222'; groundTextureBtn.style.color='#fff'; groundTextureBtn.style.fontSize='11px'; groundTextureBtn.style.marginLeft='4px';
+    const groundTextureInput = document.createElement('input'); groundTextureInput.type='file'; groundTextureInput.accept='image/*'; groundTextureInput.style.display='none';
+    
+    const groundContainer = document.createElement('div');
+    groundContainer.appendChild(groundColorPicker);
+    groundContainer.appendChild(groundTextureBtn);
+    
+    // Ground color picker event
+    groundColorPicker.addEventListener('input', ()=>{
+      try {
+        if (state.env && state.env.ground && state.env.ground.material) {
+          state.env.ground.material.color.set(groundColorPicker.value);
+          // Reset to color material if texture was applied
+          if (state.env.ground.material.map) {
+            state.env.ground.material.map = null;
+            state.env.ground.material.needsUpdate = true;
+          }
+          console.info('[FP] Ground color changed:', groundColorPicker.value);
+        }
+      } catch(err){ console.warn('[FP] Ground color error:', err); }
+    });
+    
+    // Ground texture picker event
+    groundTextureBtn.addEventListener('click', ()=> groundTextureInput.click());
+    groundTextureInput.addEventListener('change', ()=>{
+      const f = groundTextureInput.files && groundTextureInput.files[0]; if (!f) return;
+      try {
+        const url = URL.createObjectURL(f);
+        const loader = new THREE.TextureLoader();
+        loader.load(url, (texture) => {
+          try {
+            if (state.env && state.env.ground && state.env.ground.material) {
+              // Dispose old texture if any
+              if (state.env.ground.material.map) {
+                state.env.ground.material.map.dispose();
+              }
+              // Apply new texture
+              texture.wrapS = THREE.RepeatWrapping;
+              texture.wrapT = THREE.RepeatWrapping;
+              texture.repeat.set(40, 40); // Tile the texture
+              state.env.ground.material.map = texture;
+              state.env.ground.material.needsUpdate = true;
+              console.info('[FP] Ground texture applied:', f.name);
+            }
+          } catch(err){ console.warn('[FP] Texture application error:', err); }
+          // Clean up object URL
+          URL.revokeObjectURL(url);
+        }, undefined, (err) => {
+          console.warn('[FP] Texture load error:', err);
+          URL.revokeObjectURL(url);
+        });
+      } catch(err){ console.warn('[FP] Ground texture error:', err); }
+    });
+    
     const close = document.createElement('button'); close.textContent='Close'; close.style.gridColumn='1 / span 2'; close.style.marginTop='6px';
     close.style.padding='6px 10px'; close.style.borderRadius='8px'; close.style.border='1px solid #666'; close.style.background='#222'; close.style.color='#fff';
     // Wire events
@@ -735,11 +808,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
       mkLabel('Shadows'), sh,
       bgLabel, bgSel,
       fileLabel, fileBtn,
+      transformLabel, transformContainer,
+      groundLabel, groundContainer,
       close
     );
     document.body.appendChild(p);
-    // Attach hidden input after appending panel
+    // Attach hidden inputs after appending panel
     p.appendChild(fileInput);
+    p.appendChild(groundTextureInput);
   }
 
   // ---- HDRI environment ----
@@ -778,14 +854,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
             mapping: hdrTex.mapping
           });
           
-          // Use standard equirectangular mapping for 360-degree spherical HDR backgrounds
+          // Create horizon-locked skybox instead of full 360° sphere
           hdrTex.mapping = THREE.EquirectangularMapping;
           // RGBELoader provides linear data; configure for proper HDR display
           try { 
             hdrTex.magFilter = THREE.LinearFilter; 
             hdrTex.minFilter = THREE.LinearFilter; 
             hdrTex.generateMipmaps = false;
-            hdrTex.flipY = true; // Flip vertically to correct sky/ground orientation
+            hdrTex.flipY = false; // Don't flip - we'll handle orientation in skybox
             hdrTex.wrapS = THREE.RepeatWrapping;
             hdrTex.wrapT = THREE.ClampToEdgeWrapping;
             // For THREE.js 0.155+, ensure proper color space handling
@@ -795,7 +871,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
               hdrTex.encoding = THREE.LinearEncoding;
             }
             hdrTex.needsUpdate = true;
-            console.info('[FP] HDR texture configured for 360-degree background mapping');
+            console.info('[FP] HDR texture configured for horizon-locked skybox');
           } catch(err){ console.warn('[FP] HDR texture config error:', err); }
           
           // Create a copy for environment mapping with reflection mapping
@@ -821,10 +897,13 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
             state.env.hdrEquirect = hdrTex;
             state.env.envMap = envMap;
             
+            // Create horizon-locked skybox
+            createHorizonLockedSkybox(hdrTex);
+            
             // Force immediate application for testing
             console.info('[FP] Forcing immediate HDR background application');
-            scene.background = hdrTex;
-            scene.environment = envMap;
+            // Use the custom skybox instead of direct texture background
+            applyBackgroundMode();
             
             // Debug: Check if background was actually set
             setTimeout(() => {
@@ -853,6 +932,107 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     } catch(err){ console.error('[FP] HDR load setup error:', err, err.stack); }
   }
 
+  function createHorizonLockedSkybox(hdrTexture) {
+    console.info('[FP] Creating horizon-locked skybox');
+    try {
+      // Remove existing skybox if present
+      if (state.env.skybox) {
+        scene.remove(state.env.skybox);
+        if (state.env.skybox.geometry) state.env.skybox.geometry.dispose();
+        if (state.env.skybox.material) state.env.skybox.material.dispose();
+      }
+
+      // Create a large sphere geometry for the skybox
+      const geometry = new THREE.SphereGeometry(500, 60, 40);
+      
+      // Create custom shader material for horizon-locked HDR skybox
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          tEquirect: { value: hdrTexture },
+          horizonOffset: { value: 0.5 }, // Offset to position horizon at eye level
+          skyIntensity: { value: 1.0 },
+          rotateHorizontal: { value: false }, // Toggle for 180° horizontal rotation
+          flipVertical: { value: false } // Toggle for vertical flip (sphere inside-out)
+        },
+        vertexShader: `
+          varying vec3 vWorldDirection;
+          void main() {
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldDirection = normalize(worldPosition.xyz - cameraPosition);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D tEquirect;
+          uniform float horizonOffset;
+          uniform float skyIntensity;
+          uniform bool rotateHorizontal;
+          uniform bool flipVertical;
+          varying vec3 vWorldDirection;
+
+          vec2 equirectUv(vec3 dir) {
+            // Apply vertical flip by inverting the direction vector's Y component
+            if (flipVertical) {
+              dir.y = -dir.y;
+            }
+            
+            // Convert 3D direction to equirectangular UV coordinates
+            float phi = atan(dir.z, dir.x);
+            // Apply horizontal rotation if enabled (180° rotation)
+            if (rotateHorizontal) {
+              phi = phi + 3.14159265359;
+            }
+            float theta = asin(clamp(dir.y, -1.0, 1.0));
+            
+            vec2 uv = vec2(
+              (phi / (2.0 * 3.14159265359)) + 0.5,
+              1.0 - ((theta / 3.14159265359) + horizonOffset)
+            );
+            
+            // Clamp V coordinate to only show sky portion (now upper half after flip)
+            uv.y = clamp(uv.y, 0.0, 1.0 - horizonOffset);
+            
+            return uv;
+          }
+
+          void main() {
+            vec3 direction = normalize(vWorldDirection);
+            
+            // For downward looking directions, fade to a ground color instead of HDR ground
+            if (direction.y < -0.1) {
+              // Simple ground color fade
+              float groundFade = clamp((-direction.y - 0.1) / 0.3, 0.0, 1.0);
+              vec3 groundColor = vec3(0.3, 0.25, 0.2); // Brownish ground color
+              vec2 skyUv = equirectUv(vec3(direction.x, 0.0, direction.z)); // Use horizon for color
+              vec3 skyColor = texture2D(tEquirect, skyUv).rgb;
+              gl_FragColor = vec4(mix(skyColor, groundColor, groundFade) * skyIntensity, 1.0);
+            } else {
+              // Use HDR texture for sky
+              vec2 uv = equirectUv(direction);
+              vec4 texColor = texture2D(tEquirect, uv);
+              gl_FragColor = vec4(texColor.rgb * skyIntensity, 1.0);
+            }
+          }
+        `,
+        side: THREE.BackSide,
+        depthWrite: false,
+        depthTest: false
+      });
+
+      const skybox = new THREE.Mesh(geometry, material);
+      skybox.name = '__fp_skybox';
+      skybox.renderOrder = -1; // Render first
+      skybox.frustumCulled = false; // Always render
+      
+      scene.add(skybox);
+      state.env.skybox = skybox;
+      
+      console.info('[FP] Horizon-locked skybox created and added to scene');
+    } catch(err) {
+      console.error('[FP] Skybox creation error:', err);
+    }
+  }
+
   function loadHDRIFromFile(file){
     console.info('[FP] Loading HDRI from file:', file.name, file.size, 'bytes');
     try {
@@ -874,16 +1054,19 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
         try { loadHDRI('assets/Base.hdr'); } catch(err){ console.warn('[FP] Default HDR load failed:', err); } 
         return; // Wait for HDR to load before applying
       }
-      // Use the sharp equirectangular HDR texture for background (visible image)
-      // and the PMREM-processed environment map for realistic lighting/reflections
+      
+      // Use horizon-locked skybox for HDR mode
       try { 
-        if (e.hdrEquirect) {
-          scene.background = e.hdrEquirect;
-          console.info('[FP] Set HDR equirectangular as background');
-        } else {
-          scene.background = e.skyTex || null;
-          console.info('[FP] Fallback to sky texture for background');
+        // Set scene background to null - we'll use the custom skybox instead
+        scene.background = null;
+        
+        // Show skybox if it exists
+        if (e.skybox) {
+          e.skybox.visible = true;
+          console.info('[FP] HDR skybox enabled');
         }
+        
+        console.info('[FP] Set HDR skybox as background');
       } catch(err){ console.warn('[FP] Background assignment error:', err); }
       
       try { 
@@ -891,9 +1074,13 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
         console.info('[FP] Set environment map for lighting');
       } catch(err){ console.warn('[FP] Environment assignment error:', err); }
       
-      console.info('[FP] HDR mode applied - background type:', scene.background?.constructor?.name, 'environment:', !!scene.environment);
+      console.info('[FP] HDR mode applied with horizon-locked skybox - environment:', !!scene.environment);
     } else {
-      try { scene.background = e.skyTex || null; } catch{}
+      // Sky mode: hide HDR skybox and use simple sky texture
+      try { 
+        if (e.skybox) e.skybox.visible = false;
+        scene.background = e.skyTex || null; 
+      } catch{}
       try { scene.environment = null; } catch{}
       console.info('[FP] Sky mode applied - background:', !!scene.background);
     }

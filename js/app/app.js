@@ -1612,137 +1612,17 @@ export async function init() {
 	// Multi-select pivot
 	const multiSelectPivot = new THREE.Object3D(); multiSelectPivot.name='__MultiSelectPivot'; scene.add(multiSelectPivot);
 
-	// Teleport discs (jump points)
-	const teleportDiscs = [];
+	// Legacy teleport discs removed: retain backward-compatible stubs so other modules don't error
+	const teleportDiscs = []; // no longer used
+	function __getTeleportDiscRoot(){ return null; }
+	function __isTeleportDisc(){ return false; }
+	function __registerTeleportDisc(){ /* no-op */ }
+	function setTeleportDiscsActive(){ /* no-op */ }
+	function highlightTeleportDisc(){ /* no-op */ }
+	function getTeleportDiscs(){ return []; }
+	function teleportToDisc(){ /* no-op */ }
 	// Free-aim teleport reticle (moving circle on floor)
 	let teleportReticle = null;
-	function __isTeleportDisc(obj){ return !!(obj && obj.userData && obj.userData.__teleportDisc); }
-	function __getTeleportDiscRoot(obj){ let o=obj; while(o && !__isTeleportDisc(o)) o=o.parent; return __isTeleportDisc(o) ? o : null; }
-	// Rehydrate a disc that was loaded from JSON (no runtime registry/material refs yet)
-	function __registerTeleportDisc(group){
-		if (!group) return;
-		// Avoid duplicate registration
-		if (teleportDiscs.includes(group)) return;
-		// Ensure marker exists
-		const ud = (group.userData.__teleportDisc = group.userData.__teleportDisc || {});
-		// Normalize orientation: discs are always horizontal; cone always points straight up.
-		try {
-			group.quaternion.identity();
-			group.rotation.set(0, group.rotation.y || 0, 0);
-		} catch {}
-		// Normalize stored normal (plain object -> THREE.Vector3)
-		try {
-			ud.normal = new THREE.Vector3(0,1,0); // force up
-		} catch{}
-		if (!ud.normal){ ud.normal = new THREE.Vector3(0,1,0); }
-		// Find child meshes for plane and cone (lost by JSON in userData)
-		try {
-			let plane = null, cone = null;
-			group.traverse(o => {
-				if (plane && cone) return;
-				if (o && o.isMesh && o.geometry && o.geometry.type === 'CircleGeometry') plane = plane || o;
-				if (o && o.isMesh && o.geometry && o.geometry.type === 'ConeGeometry') cone = cone || o;
-			});
-			// Reapply canonical materials to ensure consistent look
-			if (plane) {
-				ud.plane = plane; ud.top = plane;
-				// Force plane horizontal
-				try { plane.rotation.set(-Math.PI/2, 0, 0); } catch {}
-				try {
-					const m = plane.material;
-					if (m && m.isMeshStandardMaterial){
-						m.color && m.color.set(0x2f8cff);
-						m.emissive && m.emissive.set(0x114477);
-						m.emissiveIntensity = 0.35;
-						m.roughness = 0.6; m.metalness = 0.0; m.side = THREE.DoubleSide;
-						m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -1; m.depthWrite = false;
-						m.needsUpdate = true;
-					}
-				} catch{}
-			}
-			if (cone) {
-				ud.cone = cone;
-				// Ensure cone points up (+Y)
-				try { cone.quaternion.identity(); cone.rotation.set(0, cone.rotation.y||0, 0); } catch {}
-				try {
-					const m = cone.material;
-					if (m && m.isMeshStandardMaterial){
-						m.color && m.color.set(0x2f8cff);
-						m.emissive && m.emissive.set(0x114477);
-						m.emissiveIntensity = 0.5;
-						m.needsUpdate = true;
-					}
-				} catch{}
-			}
-		} catch{}
-		// Ensure a consistent name marker
-		try { if (!group.name || group.name === '') group.name = '__TeleportDisc'; } catch{}
-		teleportDiscs.push(group);
-		// Default to active on load so interactions work immediately
-		try { ud.active = (ud.active !== false); } catch{}
-	}
-	// Toggle interactivity across mode transitions without affecting user visibility
-	function setTeleportDiscsActive(active=true){
-		try { teleportDiscs.forEach(d => { if (d && d.userData){ if(!d.userData.__teleportDisc) d.userData.__teleportDisc = {}; d.userData.__teleportDisc.active = !!active; } }); } catch{}
-	}
-	function createTeleportDisc(position, normal){
-		const n = new THREE.Vector3(0,1,0); // force up
-		const group = new THREE.Group(); group.name = '__TeleportDisc'; group.userData.__teleportDisc = { normal: n.clone() };
-		// Flat blue plane circle (2 ft Ø) — no thickness
-		const planeGeo = new THREE.CircleGeometry(1.0, 64);
-		const planeMat = new THREE.MeshStandardMaterial({ color: 0x2f8cff, emissive: 0x114477, emissiveIntensity: 0.35, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1, depthWrite: false });
-		const plane = new THREE.Mesh(planeGeo, planeMat);
-		// Orient so circle normal is +Y pre-alignment; then lift slightly to avoid z-fight
-		try { plane.rotation.x = -Math.PI/2; } catch{}
-		try { plane.position.y = 0.001; } catch{}
-		plane.castShadow = false; plane.receiveShadow = false; group.add(plane);
-		// Direction cone to indicate facing (points along disc normal)
-		const coneGeo = new THREE.ConeGeometry(0.18, 0.45, 24);
-		const coneMat = new THREE.MeshStandardMaterial({ color: 0x2f8cff, emissive: 0x114477, emissiveIntensity: 0.5 });
-		const cone = new THREE.Mesh(coneGeo, coneMat); cone.position.y = 0.25 + 0.225; group.add(cone);
-		// Always keep disc horizontal & cone upright
-		try { group.quaternion.identity(); group.rotation.set(0,0,0); } catch {}
-		// Place at position
-		if (position && position.isVector3) group.position.copy(position);
-		// Store references for highlight
-		group.userData.__teleportDisc.plane = plane; group.userData.__teleportDisc.top = plane; group.userData.__teleportDisc.cone = cone;
-		teleportDiscs.push(group); scene.add(group);
-		// Make selectable/movable like other objects (but we'll disable rotation on selection)
-		try { objects.push(group); } catch {}
-		try { updateVisibilityUI(); updateCameraClipping(); } catch {}
-		return group;
-	}
-	function highlightTeleportDisc(disc, on){
-		try {
-			// Boost plane emissive as subtle hover feedback
-			const ud = disc?.userData?.__teleportDisc || {};
-			const p = ud.plane; if (p && p.material) { p.material.emissiveIntensity = on ? 0.8 : 0.35; p.material.needsUpdate = true; }
-			// Create or toggle a thick orange/yellow highlight ring overlay on top cap
-				let hl = ud.ringHL;
-			if (on && !hl){
-					const top = ud.top || disc; // plane mesh or disc root
-				// Estimate radius from bounding sphere or default 1 (2 ft dia)
-				let rad = 1.0;
-				try { const bs = new THREE.Sphere(); new THREE.Box3().setFromObject(top).getBoundingSphere(bs); if (isFinite(bs.radius) && bs.radius>0) rad = Math.min(2.0, Math.max(0.3, bs.radius)); } catch{}
-				const inner = Math.max(0.01, rad * 0.80);
-				const outer = inner + Math.max(0.02, rad * 0.10); // thick band ~10% of radius
-				const g = new THREE.RingGeometry(inner, outer, 64);
-				const m = new THREE.MeshBasicMaterial({ color: 0xffc400, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending });
-				hl = new THREE.Mesh(g, m); hl.name = '__teleportDiscHL'; hl.renderOrder = 10000; hl.userData.__helper = true;
-				// Position slightly above the top surface to avoid z-fight
-					try { hl.rotation.x = -Math.PI/2; } catch{}
-					try {
-						// Anchor to top world position, then convert to disc local, offset a hair on +Y
-						disc.updateMatrixWorld(true);
-						const topWorld = new THREE.Vector3(); top.getWorldPosition(topWorld);
-						const topLocal = disc.worldToLocal(topWorld.clone());
-						const y = topLocal.y + 0.012; hl.position.set(topLocal.x, y, topLocal.z);
-					} catch{}
-				disc.add(hl); ud.ringHL = hl; disc.userData.__teleportDisc = ud;
-			}
-			if (hl) hl.visible = !!on;
-		} catch{}
-	}
 
 	// ---- Free-aim Teleport: Reticle + teleport-to-point ----
 	function ensureTeleportReticle(){
@@ -1846,167 +1726,9 @@ export async function init() {
 			controls.update();
 		} catch{}
 	}
-	function getTeleportDiscs(){
-		try {
-			// If in an XR session and an AR/VR clone exists, prefer discs under the clone,
-			// since originals may be hidden while presenting. This ensures rays hit visible targets.
-			const session = renderer && renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
-			if (session && arContent) {
-				const list = [];
-				try {
-					arContent.traverse(o => {
-						if (!o) return;
-						// Match by explicit marker or canonical name; normalize to the disc root
-						const isDisc = (__isTeleportDisc(o) || (o.name === '__TeleportDisc'));
-						if (!isDisc) return;
-						const root = __getTeleportDiscRoot(o) || o;
-						// Honor active flag when present
-						const active = (root?.userData?.__teleportDisc?.active !== false);
-						if (active) list.push(root);
-					});
-				} catch {}
-				// De-duplicate while preserving order
-				const uniq = [];
-				const seen = new Set();
-				for (const d of list){ if (d && !seen.has(d)) { uniq.push(d); seen.add(d); } }
-				return uniq;
-			}
-		} catch {}
-		// Non-XR (desktop) or no clone: use registered originals
-		return teleportDiscs.filter(d => (d?.userData?.__teleportDisc?.active !== false)).slice();
-	}
-	function teleportToDisc(disc){
-		if (!disc) return;
-		disc.updateMatrixWorld(true);
-		const center = new THREE.Vector3(); disc.getWorldPosition(center);
-		const up = new THREE.Vector3(0,1,0);
-		const n = (disc.userData?.__teleportDisc?.normal || up).clone().normalize();
-		let target = center.clone();
-		// Cache current desktop view direction and distance to keep heading after teleport
-		let prevDir = null; let prevDist = 10;
-		try {
-			const d = new THREE.Vector3().subVectors(controls.target, camera.position);
-			const len = d.length();
-			if (len > 1e-6) { prevDir = d.normalize(); prevDist = camera.position.distanceTo(controls.target) || 10; }
-		} catch {}
-		if (!prevDir){ try { prevDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize(); } catch { prevDir = new THREE.Vector3(0,0,-1); } }
-	// Place camera 6ft above the disc center height (consistent for walk or fly)
-	target.set(center.x, center.y + 6, center.z);
-		// If XR session active (AR/VR): avoid moving the scene root.
-		const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null;
-		if (session){
-			const mode = (session.environmentBlendMode || 'opaque');
-			if (mode !== 'opaque'){
-				// AR passthrough: move the placed model (arContent) to the disc, keeping ground alignment.
-				try {
-					if (arContent){
-						const xrCam = renderer.xr.getCamera(camera);
-						const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
-						// Keep model on local-floor (y=0) and face roughly same heading
-						arContent.position.set(target.x, 0, target.z);
-						try { alignModelToGround(arContent); } catch{}
-					} else {
-						// Not yet placed: remember target to apply on first placement
-						arPendingTeleport = new THREE.Vector3(target.x, 0, target.z);
-					}
-				} catch {}
-				return;
-			}
-						// In VR, avoid moving XR-managed nodes; instead, shift only the cloned AR/VR content group.
-			try {
-				const xrCam = renderer.xr.getCamera(camera);
-				const camPos = new THREE.Vector3(); xrCam.getWorldPosition(camPos);
-				const delta = camPos.clone().sub(target);
-							// Shift only the AR/VR content; never move the scene root or live editor objects during XR
-							if (arContent){ arContent.position.sub(delta); }
-			} catch {}
-			return;
-		}
-		// Desktop: move camera and keep heading (preserve previous view direction and distance)
-		try {
-			camera.position.copy(target);
-			const look = target.clone().add(prevDir.clone().multiplyScalar(prevDist));
-			controls.target.copy(look);
-			controls.update();
-		} catch{}
-	}
-	// Expose teleport helpers for other modules (first-person, XR)
+	// (Removed duplicate getTeleportDiscs implementation)
+	// Expose teleport helpers (disc APIs kept as no-ops for compatibility)
 	try { window.__teleport = { getTeleportDiscs, teleportToDisc, highlightTeleportDisc, setActive: setTeleportDiscsActive, showReticleAt: showTeleportReticleAt, hideReticle: hideTeleportReticle, teleportToPoint }; } catch{}
-	// Default: make discs active for interaction
-	try { setTeleportDiscsActive(true); } catch{}
-	// Add a UI button to place discs
-	(function(){
-		const toolbox = document.getElementById('toolbox');
-		if (!toolbox) return;
-		const btn = document.createElement('button'); btn.id='placeTeleportBtn'; btn.className='icon-btn'; btn.title='Place a jump disc'; btn.setAttribute('aria-label','Place Jump Disc');
-		// Linework icon: axon ellipse with arrow pointing to center
-		btn.innerHTML = '<span class="sr-only">Place Jump Disc</span>'+
-			'<svg viewBox="0 0 24 24" aria-hidden="true">'+
-			  '<g fill="none" stroke="#222" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+
-			    // Axon ellipse (represents a circle in 3D)
-			    '<ellipse cx="12" cy="9.5" rx="7" ry="3.5"/>'+
-			    // Down arrow to center
-			    '<path d="M12 5v7"/>'+
-			    '<polyline points="9,10.5 12,12.6 15,10.5"/>'+
-			  '</g>'+
-			'</svg>';
-		Object.assign(btn.style, { marginLeft:'6px' });
-		let placing=false; let preview=null; let previewNormal=new THREE.Vector3(0,1,0);
-		function ensurePreview(){ if (preview) return; preview = createTeleportDisc(new THREE.Vector3(0,0,0), new THREE.Vector3(0,1,0)); preview.materialBackup = []; preview.traverse(o=>{ if (o.material){ preview.materialBackup.push(o.material); const m=o.material.clone?o.material.clone():o.material; o.material = m; if (o.material.opacity!==undefined){ o.material.transparent=true; o.material.opacity=0.6; }}}); }
-		function removePreview(){
-			if (!preview) return;
-			try {
-				// Remove from scene
-				scene.remove(preview);
-				// Remove from registries
-				try { const i = teleportDiscs.indexOf(preview); if (i>=0) teleportDiscs.splice(i,1); } catch{}
-				try { const j = objects.indexOf(preview); if (j>=0) objects.splice(j,1); } catch{}
-				// Dispose resources
-				preview.traverse(o=>{ if (o.geometry && o.geometry.dispose) o.geometry.dispose(); if (o.material && o.material.dispose) o.material.dispose(); });
-			} catch{}
-			preview=null;
-		}
-		btn.addEventListener('click', ()=>{ placing = !placing; btn.setAttribute('data-active', placing?'1':'0'); if (placing){ ensurePreview(); } else { removePreview(); } });
-		toolbox.appendChild(btn);
-		// Hook into existing pointer handlers for placement preview and commit
-		renderer.domElement.addEventListener('pointermove', e => {
-			if (!placing || preview==null) return; if (firstPerson && firstPerson.isActive && firstPerson.isActive()) return;
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			// Find nearest horizontal surface under pointer (or ground)
-			const up = new THREE.Vector3(0,1,0);
-			const allHits = raycaster.intersectObjects(selectableTargets(), true) || [];
-			let best = null;
-			for (const h of allHits){
-				if (!h.face) continue;
-				// Exclude teleport discs and helpers
-				if (__getTeleportDiscRoot(h.object)) continue;
-				const wn = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-				const dot = wn.dot(up);
-				if (dot >= 0.85){ best = h; break; }
-			}
-			let pos = null; if (best){ pos = best.point.clone(); } else { pos = intersectGround() || new THREE.Vector3(0,0,0); pos.y = 0; }
-			preview.position.copy(pos);
-			// Keep disc horizontal for placement
-			const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), up);
-			preview.quaternion.copy(q); previewNormal.copy(up);
-		});
-		renderer.domElement.addEventListener('pointerup', e => {
-			if (!placing || preview==null) return; if (firstPerson && firstPerson.isActive && firstPerson.isActive()) return;
-			// Ensure final placement is on a horizontal surface
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const up = new THREE.Vector3(0,1,0);
-			const hits = raycaster.intersectObjects(selectableTargets(), true) || [];
-			let okPos = null;
-			for (const h of hits){
-				if (!h.face) continue; if (__getTeleportDiscRoot(h.object)) continue;
-				const wn = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-				if (wn.dot(up) >= 0.85){ okPos = h.point.clone(); break; }
-			}
-			if (!okPos){ okPos = intersectGround() || null; if (okPos) okPos.y = 0; }
-			if (okPos){ preview.position.copy(okPos); previewNormal.copy(up); createTeleportDisc(preview.position, previewNormal); }
-			placing = false; btn.setAttribute('data-active','0'); removePreview();
-		});
-	})();
 	let multiStartPivotMatrix = new THREE.Matrix4();
 	let multiStartMatrices = new Map();
 
@@ -2279,20 +2001,6 @@ export async function init() {
 	function attachTransformForSelection(){
 		if(mode !== 'edit') { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); return; }
 		if(selectedObjects.length === 1){
-			// Jump Disc: treat as movable object only (no rotation). Also restrict translation Y axis.
-			if (__getTeleportDiscRoot(selectedObjects[0])){
-				clearHandles();
-				const disc = __getTeleportDiscRoot(selectedObjects[0]);
-				// Remember baseline Y to lock vertical movement while translating
-				try { disc.userData.__teleportDisc.baseY = disc.position.y; } catch{}
-				transformControls.attach(disc);
-				if (typeof transformControls.setMode === 'function') transformControls.setMode('translate');
-				if ('showX' in transformControls) { transformControls.showX = true; }
-				if ('showY' in transformControls) { transformControls.showY = false; }
-				if ('showZ' in transformControls) { transformControls.showZ = true; }
-				transformControlsRotate.detach(); disableRotateGizmo(); enableTranslateGizmo();
-				return;
-			}
 			// Special-case: 2D Overlay group is movable on ground plane (X/Z only)
 			if (selectedObjects[0] && selectedObjects[0].name === '2D Overlay'){
 				clearHandles();
@@ -2374,20 +2082,6 @@ export async function init() {
 			obj.position.y = 0; // keep at ground plane
 			obj.updateMatrixWorld(true);
 			return;
-		}
-		// Constrain Jump Discs: no rotation and clamp Y (move only along surface plane approximately)
-		if (transformControls.object && __getTeleportDiscRoot(transformControls.object)){
-			const obj = __getTeleportDiscRoot(transformControls.object) || transformControls.object;
-			// Freeze rotation
-			obj.rotation.set(0, obj.rotation.y, 0);
-			// If attached to transformControls directly, hide Y movement and pin to original Y
-			if ('showY' in transformControls) { transformControls.showY = false; }
-			try {
-				const by = obj.userData?.__teleportDisc?.baseY;
-				// Lock to plane Y=baseY; if missing, set now
-				if (typeof by === 'number') obj.position.y = by; else { obj.userData.__teleportDisc.baseY = obj.position.y || 0; obj.position.y = obj.userData.__teleportDisc.baseY; }
-			} catch{}
-			obj.updateMatrixWorld(true);
 		}
 		// Broadcast transform for single-object moves/rotates when applicable
 		try {
@@ -4876,13 +4570,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (firstPerson && firstPerson.isActive && firstPerson.isActive()) { return; }
 		// Update live preview for two-click placement
 		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt, { shift: !!e.shiftKey }); }
-		// Hover highlight for teleport discs
-		try {
-			getPointer(e); raycaster.setFromCamera(pointer, camera);
-			const dh = raycaster.intersectObjects(getTeleportDiscs(), true);
-			getTeleportDiscs().forEach(d=>highlightTeleportDisc(d,false));
-			if (dh && dh.length){ const d = __getTeleportDiscRoot(dh[0].object); if (d) highlightTeleportDisc(d,true); }
-		} catch{}
+		// (Teleport discs removed: no hover highlight)
 		// Handle dragging
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
@@ -5515,6 +5203,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 								if (pressed && !prev){
 									// Skip teleport if HUD is being hovered by controller
 									if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrTriggerPrev.set(src, pressed); continue; }
+									// Skip teleport during primitive creation to prevent interfering with workflow
+									if (window.__xrPrim) { window.__xrTriggerPrev.set(src, pressed); continue; }
 									// Allow teleport only in Ray mode
 									if (!xrInteractionRay) { window.__xrTriggerPrev.set(src, pressed); continue; }
 									const pose = frame.getPose(raySpace, xrLocalSpace || xrViewerSpace || null) || frame.getPose(raySpace, renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
@@ -5533,8 +5223,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											for (const h of hits){
 												if (!h.face) continue;
 												// Skip teleport discs
-												let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
-												if (isDisc) continue;
+																						// (Legacy teleport disc skip removed)
 												const nLocal = h.face.normal.clone();
 												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
 												const nWorld = nLocal.applyMatrix3(nm).normalize();
@@ -5547,10 +5236,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												if (rc.ray.intersectPlane(plane, pt)){
 													if (window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(pt, up); }
 												} else {
-												// 2) Fallback to pre-placed discs
-												const ih = rc.intersectObjects(discs, true);
-												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
-												}
+																				}
 											}
 										} catch{}
 									}
@@ -5576,6 +5262,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									if (isPinch && !prevPinch){
 										// Skip if HUD is hovered
 										if (typeof window.__xrHudHover === 'boolean' && window.__xrHudHover) { window.__xrPinchPrev.set(src, isPinch); continue; }
+										// Skip teleport during primitive creation to prevent interfering with workflow
+										if (window.__xrPrim) { window.__xrPinchPrev.set(src, isPinch); continue; }
 										// Cast ray from fingertip orientation
 										const p = pti.transform.position; const o = pti.transform.orientation;
 										const origin = new THREE.Vector3(p.x,p.y,p.z);
@@ -5591,8 +5279,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											for (const h of hits){
 												if (!h.face) continue;
 												// Skip teleport discs
-												let cur=h.object; let isDisc=false; while(cur){ if (cur.userData && cur.userData.__teleportDisc){ isDisc=true; break; } cur=cur.parent; }
-												if (isDisc) continue;
+																						// (Legacy teleport disc skip removed)
 												const nLocal = h.face.normal.clone();
 												const nm = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
 												const nWorld = nLocal.applyMatrix3(nm).normalize();
@@ -5605,10 +5292,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												if (rc.ray.intersectPlane(plane, pt)){
 													if (window.__teleport && window.__teleport.teleportToPoint){ window.__teleport.teleportToPoint(pt, up); }
 												} else {
-												// 2) Fallback to pre-placed discs
-												const ih = rc.intersectObjects(discs, true);
-												if (ih && ih.length){ const d = (function find(o){ while(o && !o.userData?.__teleportDisc) o=o.parent; return o; })(ih[0].object); if (d){ try { window.__teleport.highlightTeleportDisc(d, true); } catch{} window.__teleport.teleportToDisc(d); } }
-												}
+																				}
 											}
 										} catch{}
 									}
@@ -5722,7 +5406,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				}
 				// After placement, update AR edit interaction via service
 				if (session && arPlaced && arContent && frame) {
-					try { arEdit.update(frame, xrLocalSpace); } catch {}
+					// Skip AR Edit during primitive creation to prevent interference with workflow
+					if (!window.__xrPrim) {
+						try { arEdit.update(frame, xrLocalSpace); } catch {}
+					}
 					// VR draw update (runs every frame to detect pinch gestures)
 					try { 
 						if (vrDraw) { 

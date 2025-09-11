@@ -1,21 +1,22 @@
-// VR Draw service: simple 3D stroke drawing with hand pinch (thumb-index) in XR
+// VR Draw service: 3D tube drawing with hand pinch (thumb-index) in XR
+// Creates thin 3D tubes instead of 2D lines for true thickness control
 // Options (opts):
 //   THREE, scene (required)
 //   shouldDraw(): boolean   -> additional global gating
 //   shouldBlockHandForMenu(handedness): boolean -> return true to suppress drawing for that hand this frame (e.g. menu interaction)
-// Lines are added directly to the scene and scale/rotate with scene transformations.
+// Tubes are added directly to the scene and scale/rotate with scene transformations.
 (function(){
 	function createVRDraw(opts){
 		const THREE = (opts && opts.THREE) || window.THREE;
 		const scene = (opts && opts.scene);
 		if (!THREE || !scene) return null;
 		
-		// Create a dedicated group for VR draw lines that's part of the scene structure
+		// Create a dedicated group for VR draw tubes that's part of the scene structure
 		let drawGroup = scene.getObjectByName('VRDrawLines');
 		if (!drawGroup) {
 			drawGroup = new THREE.Group();
 			drawGroup.name = 'VRDrawLines';
-			// Don't mark as helper - we want these lines to be part of the scene
+			// Don't mark as helper - we want these tubes to be part of the scene
 			scene.add(drawGroup);
 		}
 		
@@ -49,7 +50,7 @@
 					collaborationService.onVRDrawClear();
 				}
 				
-				// Clear all VR draw lines from the scene
+				// Clear all VR draw tubes from the scene
 				while(drawGroup.children.length){ 
 					const c = drawGroup.children.pop(); 
 					c.geometry?.dispose?.(); 
@@ -73,33 +74,35 @@
 			
 			// Use provided direction (finger forward) or fallback to world X
 			let direction = (dir && dir.length() > 0) ? dir.clone().normalize() : new THREE.Vector3(1,0,0);
-			// Create tiny forward stub (1.5mm) so a line is visible immediately but can be replaced by first real movement
+			// Create tiny forward stub (1.5mm) so a tube is visible immediately but can be replaced by first real movement
 			const startPt = pt.clone();
 			const nextPt = pt.clone().add(direction.multiplyScalar(0.0015));
 			points = [startPt, nextPt];
 			
-			currentGeom = new THREE.BufferGeometry();
-			const positions = [startPt.x, startPt.y, startPt.z, nextPt.x, nextPt.y, nextPt.z];
-			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+			// Create tube geometry instead of line geometry
+			// Convert lineWidth to tube radius (in meters) - make it quite thin for VR drawing
+			const tubeRadius = (lineWidth || 2) * 0.0005; // 0.5mm for lineWidth=1, 1mm for lineWidth=2, etc.
+			const curve = new THREE.CatmullRomCurve3(points);
+			currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
 			
-			// Note: linewidth property is not supported in WebGL, using standard LineBasicMaterial
-			const mat = new THREE.LineBasicMaterial({ 
+			// Use MeshBasicMaterial for better performance and consistent appearance
+			const mat = new THREE.MeshBasicMaterial({ 
 				color, 
 				transparent: true,
 				opacity: 0.9,
-				depthTest: false,
-				depthWrite: false
+				side: THREE.DoubleSide
 			});
-			currentStroke = new THREE.Line(currentGeom, mat);
+			currentStroke = new THREE.Mesh(currentGeom, mat);
 			currentStroke.frustumCulled = false;
-			currentStroke.renderOrder = 1000; // Ensure lines render on top
-			// Don't mark as helper - these lines are part of the scene
-			currentStroke.name = `VRDrawLine_${currentStrokeId}`;
+			currentStroke.renderOrder = 1000; // Ensure tubes render on top
+			// Don't mark as helper - these tubes are part of the scene
+			currentStroke.name = `VRDrawTube_${currentStrokeId}`;
 			drawGroup.add(currentStroke);
 			
-			console.log('🎨 VR Draw: Created line mesh:', currentStroke.name);
+			console.log('🎨 VR Draw: Created tube mesh:', currentStroke.name);
 			console.log('🎨 VR Draw: DrawGroup children after:', drawGroup.children.length);
-			console.log('🎨 VR Draw: Line added to scene successfully');
+			console.log('🎨 VR Draw: Tube added to scene successfully');
+			console.log('🎨 VR Draw: Tube radius:', (lineWidth || 2) * 0.0005, 'meters');
 			
 			// Send collaboration event for stroke start
 			if (collaborationService && collaborationService.onVRDrawStart) {
@@ -131,15 +134,19 @@
 				return; 
 			}
 			
-			const arr = [];
-			for (const p of points){ arr.push(p.x,p.y,p.z); }
-			currentGeom.setAttribute('position', new THREE.Float32BufferAttribute(arr,3));
-			currentGeom.attributes.position.needsUpdate = true;
-			currentGeom.computeBoundingSphere();
-			
-			// Force geometry update
-			if (currentStroke) {
+			// Rebuild tube geometry with updated points
+			if (points.length >= 2 && currentStroke) {
+				// Dispose old geometry to prevent memory leaks
+				if (currentGeom) currentGeom.dispose();
+				
+				// Create new tube geometry with all current points
+				const tubeRadius = (lineWidth || 2) * 0.0005; // Same radius calculation as in startStroke
+				const curve = new THREE.CatmullRomCurve3(points);
+				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
+				
+				// Update the mesh geometry
 				currentStroke.geometry = currentGeom;
+				currentStroke.geometry.computeBoundingSphere();
 			}
 			
 			// Send collaboration event for new point
