@@ -3956,7 +3956,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			} else {
 				// Desktop/laptop fallback: enter First-Person walk mode
 				try { if (controls) controls.enabled = false; __fpControlsDisabled = true; } catch{}
-				firstPerson.start({ hFov: 100, constrainHeight: true });
+				await firstPerson.start({ hFov: 100, constrainHeight: true });
 				__enterFirstPersonSideEffects();
 			}
 		} catch (e) { alert('Failed to start AR/VR: ' + (e?.message || e)); console.error(e); }

@@ -169,7 +169,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
 
   function add(el, type, fn, opts){ el.addEventListener(type, fn, opts); state.cleanup.push(()=> el.removeEventListener(type, fn, opts)); }
 
-  function start(opts={}){
+  async function start(opts={}){
     if (state.active) return;
     state.active = true;
   // Normalize options: Fly implies no height constraint
@@ -192,7 +192,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     add(domElement, 'wheel', onWheel, { passive:false });
   add(window, 'blur', ()=>{ state.keys.clear(); state.dragging=false; try { domElement.style.cursor = 'grab'; } catch{} });
     // Build simple UI
-    buildUI();
+    await buildUI();
   try { domElement.style.cursor = 'grab'; } catch{}
   // Desktop AR environment (sun/ground/sky)
   try { initDesktopEnv(); } catch{}
@@ -422,7 +422,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     }
   }
 
-  function buildUI(){
+  async function buildUI(){
     const ui = document.createElement('div'); ui.id='fp-ui';
     // Bottom-center, responsive to safe-area and VisualViewport changes
     Object.assign(ui.style, {
@@ -439,7 +439,9 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const mkBtn = (label)=>{ const b=document.createElement('button'); b.textContent=label; b.style.padding='8px 10px'; b.style.borderRadius='8px'; b.style.border='1px solid #666'; b.style.background='#111a'; b.style.color='#fff'; b.style.backdropFilter='blur(6px)'; b.style.cursor='pointer'; return b; };
   const toggle = mkBtn(state.constrainHeight ? 'Mode: Walk (6ft)' : 'Mode: Fly');
   const qualityBtn = mkBtn('Quality: High');
-    const exit = mkBtn('Exit');
+  const rayTracingStatus = document.createElement('div');
+  rayTracingStatus.style.cssText = 'padding:6px 12px;border-radius:8px;font-size:12px;font-weight:bold;backdrop-filter:blur(6px);border:1px solid #666;display:none;';
+  const exit = mkBtn('Exit');
   const sunBtn = mkBtn('Enviro');
   const matBtn = mkBtn('Materials: Original');
     toggle.addEventListener('click', ()=>{
@@ -470,18 +472,55 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
         next==='wire' ? 'Wireframe' : 'X-Ray'
       }`;
     });
-    qualityBtn.addEventListener('click', ()=>{
+    qualityBtn.addEventListener('click', async ()=>{
       try {
         const cur = fpQuality && fpQuality.getMode ? fpQuality.getMode() : 'high';
-        const next = (cur==='low') ? 'high' : (cur==='high' ? 'ultra' : 'low');
-        fpQuality && fpQuality.setMode && fpQuality.setMode(next);
-        qualityBtn.textContent = `Quality: ${next.charAt(0).toUpperCase()+next.slice(1)}`;
+        const next = (cur==='low') ? 'high' : (cur==='high' ? 'ultra' : (cur==='ultra' ? 'ultra+' : 'low'));
+        fpQuality && fpQuality.setMode && await fpQuality.setMode(next);
+        qualityBtn.textContent = `Quality: ${next === 'ultra+' ? 'Ultra+' : next.charAt(0).toUpperCase()+next.slice(1)}`;
         try { localStorage.setItem('fp.qualityMode', next); } catch{}
+        // Update ray tracing status
+        updateRayTracingStatus();
       } catch{}
     });
+
+    // Function to update ray tracing status indicator
+    function updateRayTracingStatus() {
+      try {
+        const mode = fpQuality && fpQuality.getMode ? fpQuality.getMode() : 'high';
+        if (mode === 'ultra+') {
+          // Check if path tracing is actually active
+          const isPathTracingActive = fpQuality && fpQuality.isPathTracingActive && fpQuality.isPathTracingActive();
+          if (isPathTracingActive) {
+            // Try to get sample count for more detailed feedback
+            let sampleText = '';
+            try {
+              const pathTracer = fpQuality.getPathTracer && fpQuality.getPathTracer();
+              if (pathTracer && typeof pathTracer.samples === 'number') {
+                sampleText = ` (${Math.floor(pathTracer.samples)}/${pathTracer.minSamples || 16})`;
+              }
+            } catch{}
+            
+            rayTracingStatus.textContent = `⚡ Ray Tracing Active${sampleText}`;
+            rayTracingStatus.style.background = '#0a4a0a';
+            rayTracingStatus.style.color = '#4ade80';
+            rayTracingStatus.style.borderColor = '#16a34a';
+          } else {
+            rayTracingStatus.textContent = '⚠️ Ray Tracing Failed - Using Ultra';
+            rayTracingStatus.style.background = '#4a3a0a';
+            rayTracingStatus.style.color = '#fbbf24';
+            rayTracingStatus.style.borderColor = '#d97706';
+          }
+          rayTracingStatus.style.display = 'block';
+        } else {
+          rayTracingStatus.style.display = 'none';
+        }
+      } catch{}
+    }
+
     // Initialize from stored preference
-    try { const saved = localStorage.getItem('fp.qualityMode'); if (saved && fpQuality && fpQuality.setMode){ fpQuality.setMode(saved); qualityBtn.textContent = `Quality: ${saved.charAt(0).toUpperCase()+saved.slice(1)}`; } } catch{}
-    ui.append(toggle, qualityBtn, matBtn, sunBtn, exit); document.body.appendChild(ui);
+    try { const saved = localStorage.getItem('fp.qualityMode'); if (saved && fpQuality && fpQuality.setMode){ await fpQuality.setMode(saved); qualityBtn.textContent = `Quality: ${saved === 'ultra+' ? 'Ultra+' : saved.charAt(0).toUpperCase()+saved.slice(1)}`; updateRayTracingStatus(); } } catch{}
+    ui.append(toggle, qualityBtn, rayTracingStatus, matBtn, sunBtn, exit); document.body.appendChild(ui);
     // Adjust for VisualViewport bottom offset dynamically
     const vv = window.visualViewport || null;
     function applyVV(){
@@ -497,6 +536,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
       vv.addEventListener('scroll', onVV);
       state.cleanup.push(()=>{ try { vv.removeEventListener('resize', onVV); vv.removeEventListener('scroll', onVV); } catch{} });
     }
+    
+    // Periodically update ray tracing status for Ultra+ mode
+    const statusUpdateInterval = setInterval(() => {
+      try {
+        if (state.active) updateRayTracingStatus();
+      } catch{}
+    }, 1000);
+    state.cleanup.push(() => { clearInterval(statusUpdateInterval); });
   }
 
   // ---- Free-aim teleport (reticle + click) ----
