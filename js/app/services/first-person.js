@@ -42,6 +42,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyHighQualityMaterials(){
+    console.info('[FP] Applying high-quality material settings');
     try {
       scene.traverse(obj => {
         const mats = obj && obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : null;
@@ -51,24 +52,36 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
           const setAniso = (tex)=>{ try { if (tex && 'anisotropy' in tex) tex.anisotropy = state.maxAniso; } catch{} };
           setAniso(m.map); setAniso(m.normalMap); setAniso(m.roughnessMap); setAniso(m.metalnessMap); setAniso(m.aoMap); setAniso(m.emissiveMap);
           if ('toneMapped' in m) m.toneMapped = true;
+          // Enhanced material properties for better quality
+          if ('needsUpdate' in m) m.needsUpdate = true;
         }
       });
     } catch{}
-    // Modest supersampling on desktop
+    // Optimal supersampling on desktop
     try { state.prevPixelRatio = renderer.getPixelRatio ? renderer.getPixelRatio() : null; } catch{}
-    try { renderer.setPixelRatio && renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); } catch{}
-    // Tone mapping suitable for HDR backgrounds
+    try { renderer.setPixelRatio && renderer.setPixelRatio(Math.min(2.5, window.devicePixelRatio * 1.5 || 1.5)); } catch{}
+    // Enhanced shadow map settings for better quality
+    try {
+      if (renderer.shadowMap) {
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Higher quality shadows
+        renderer.shadowMap.autoUpdate = true;
+      }
+    } catch{}
+    // Tone mapping optimized for HDR backgrounds and realistic lighting
     try {
       state.prevToneMapping = renderer.toneMapping;
       state.prevToneExposure = renderer.toneMappingExposure;
       state.prevOutputCS = renderer.outputColorSpace || renderer.outputEncoding;
       renderer.outputColorSpace = (THREE.SRGBColorSpace || renderer.outputColorSpace);
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.85;
+      renderer.toneMappingExposure = 1.0; // Slightly higher for HDR backgrounds
+      console.info('[FP] Quality settings applied - Anisotropy:', state.maxAniso, 'PixelRatio:', renderer.getPixelRatio());
     } catch{}
   }
 
   function restoreQuality(){
+    console.info('[FP] Restoring previous quality settings');
     try { if (state.prevPixelRatio != null) renderer.setPixelRatio(state.prevPixelRatio); } catch{}
     try { if (state.prevToneMapping != null) renderer.toneMapping = state.prevToneMapping; } catch{}
     try { if (state.prevToneExposure != null) renderer.toneMappingExposure = state.prevToneExposure; } catch{}
@@ -77,6 +90,18 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
         if ('outputColorSpace' in renderer) renderer.outputColorSpace = state.prevOutputCS;
         else if ('outputEncoding' in renderer) renderer.outputEncoding = state.prevOutputCS;
       }
+    } catch{}
+    // Reset material anisotropy to default
+    try {
+      scene.traverse(obj => {
+        const mats = obj && obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : null;
+        if (!mats) return;
+        for (const m of mats){
+          if (!m || typeof m !== 'object') continue;
+          const resetAniso = (tex)=>{ try { if (tex && 'anisotropy' in tex) tex.anisotropy = 1; } catch{} };
+          resetAniso(m.map); resetAniso(m.normalMap); resetAniso(m.roughnessMap); resetAniso(m.metalnessMap); resetAniso(m.aoMap); resetAniso(m.emissiveMap);
+        }
+      });
     } catch{}
   }
 
@@ -137,7 +162,10 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     clickState.moveSum += Math.abs(dx) + Math.abs(dy);
     lastPX = e.clientX; lastPY = e.clientY;
     state.yaw -= dx * state.sens; state.pitch -= dy * state.sens;
-    const lim = Math.PI/2 - 0.01; state.pitch = Math.max(-lim, Math.min(lim, state.pitch));
+    // Constrain pitch: allow looking up fully but limit looking down to prevent seeing ground portion of HDR
+    const upLimit = Math.PI/2 - 0.01; // Can look straight up
+    const downLimit = -Math.PI/6; // Limit downward look to about 30 degrees to hide ground portion
+    state.pitch = Math.max(downLimit, Math.min(upLimit, state.pitch));
   }
   function onWheel(e){ if (!state.active) return; const delta = Math.sign(e.deltaY); state.speed = Math.max(1, Math.min(50, state.speed + (-delta))); }
 
@@ -579,12 +607,13 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const params = { azimuth: 135, elevation: 45, intensity: 1.2, color: '#ffffff', shadows: true };
     applySun(params, sun);
     // Cache and expose
-  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'sky', disabledLights: [] };
+  state.env = { group, ground, sun, sunTarget, skyTex, sky, prevBg, hiddenGrids, params, matMode: 'original', matsBackup: new Map(), castBackup: new Map(), tempMaterials: new Set(), outlines: new Set(), hemi: null, pmrem: null, hdrEquirect: null, envMap: null, bgMode: 'hdr', disabledLights: [] };
   // Enable shadow casting on scene meshes (store previous)
   try { enableSceneShadows(); } catch{}
   // Subtle hemisphere light for better separation
   try { const hemi = new THREE.HemisphereLight(0xdfe8ff, 0xf0efe9, 0.35); state.env.hemi = hemi; scene.add(hemi); } catch{}
-  // HDRI is optional; user can enable it from the Sun panel. We lazy-load when toggled.
+  // Load default HDRI to showcase Three.js HDR capabilities
+  try { applyBackgroundMode(); } catch{}
   // Disable pre-existing scene lights to prevent double lighting/shadows; FP sun controls lighting here
   try {
     scene.traverse(o=>{
@@ -715,20 +744,71 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
 
   // ---- HDRI environment ----
   async function loadHDRI(url){
+    console.info('[FP] Starting HDR load:', url);
     try {
       const [{ RGBELoader }] = await Promise.all([
         import('../../vendor/RGBELoader.js')
       ]);
+      console.info('[FP] RGBELoader imported successfully');
+      
       const pmrem = new THREE.PMREMGenerator(renderer);
       pmrem.compileEquirectangularShader();
+      console.info('[FP] PMREM generator created');
+      
       const loader = new RGBELoader();
-      loader.setDataType(THREE.UnsignedByteType);
+      // Try different data types if needed - some browsers prefer HalfFloatType
+      try {
+        loader.setDataType(THREE.HalfFloatType);
+      } catch {
+        try {
+          loader.setDataType(THREE.UnsignedByteType);
+        } catch {
+          console.warn('[FP] Could not set RGBELoader data type, using default');
+        }
+      }
+      
+      console.info('[FP] Starting texture load from:', url);
     loader.load(url, (hdrTex)=>{
         try {
-      hdrTex.mapping = THREE.EquirectangularReflectionMapping;
-          // RGBELoader provides linear data; leave colorSpace at default for accurate HDR background
-      try { hdrTex.magFilter = THREE.LinearFilter; hdrTex.minFilter = THREE.LinearFilter; hdrTex.generateMipmaps = false; } catch{}
-          const envMap = pmrem.fromEquirectangular(hdrTex).texture;
+          console.info('[FP] HDR texture loaded successfully!', {
+            width: hdrTex.image?.width,
+            height: hdrTex.image?.height,
+            format: hdrTex.format,
+            type: hdrTex.type,
+            mapping: hdrTex.mapping
+          });
+          
+          // Use standard equirectangular mapping for 360-degree spherical HDR backgrounds
+          hdrTex.mapping = THREE.EquirectangularMapping;
+          // RGBELoader provides linear data; configure for proper HDR display
+          try { 
+            hdrTex.magFilter = THREE.LinearFilter; 
+            hdrTex.minFilter = THREE.LinearFilter; 
+            hdrTex.generateMipmaps = false;
+            hdrTex.flipY = true; // Flip vertically to correct sky/ground orientation
+            hdrTex.wrapS = THREE.RepeatWrapping;
+            hdrTex.wrapT = THREE.ClampToEdgeWrapping;
+            // For THREE.js 0.155+, ensure proper color space handling
+            if ('colorSpace' in hdrTex) {
+              hdrTex.colorSpace = THREE.LinearSRGBColorSpace;
+            } else if ('encoding' in hdrTex) {
+              hdrTex.encoding = THREE.LinearEncoding;
+            }
+            hdrTex.needsUpdate = true;
+            console.info('[FP] HDR texture configured for 360-degree background mapping');
+          } catch(err){ console.warn('[FP] HDR texture config error:', err); }
+          
+          // Create a copy for environment mapping with reflection mapping
+          const envTex = hdrTex.clone();
+          envTex.mapping = THREE.EquirectangularReflectionMapping;
+          envTex.needsUpdate = true;
+          
+          const envMap = pmrem.fromEquirectangular(envTex).texture;
+          console.info('[FP] PMREM environment map generated successfully');
+          
+          // Dispose the temporary environment texture
+          envTex.dispose();
+          
           // Cache resources for cleanup
           if (state.env){
             // Dispose previous HDR resources if replacing
@@ -736,38 +816,86 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
             try { if (state.env.envMap && state.env.envMap !== envMap) state.env.envMap.dispose(); } catch{}
             try { if (state.env.hdrEquirect && state.env.hdrEquirect !== hdrTex) state.env.hdrEquirect.dispose(); } catch{}
             try { if (state.env.hdrObjectUrl) { URL.revokeObjectURL(state.env.hdrObjectUrl); state.env.hdrObjectUrl = null; } } catch{}
+            
             state.env.pmrem = pmrem;
             state.env.hdrEquirect = hdrTex;
             state.env.envMap = envMap;
+            
+            // Force immediate application for testing
+            console.info('[FP] Forcing immediate HDR background application');
+            scene.background = hdrTex;
             scene.environment = envMap;
+            
+            // Debug: Check if background was actually set
+            setTimeout(() => {
+              console.info('[FP] Background check:', {
+                sceneBackground: !!scene.background,
+                backgroundType: scene.background?.constructor?.name,
+                isTexture: scene.background?.isTexture,
+                textureImage: scene.background?.image ? 'has image' : 'no image',
+                imageSize: scene.background?.image ? `${scene.background.image.width}x${scene.background.image.height}` : 'N/A'
+              });
+            }, 100);
+            
+            // Also trigger the normal background mode application
             applyBackgroundMode();
-    try { console.info('[FP] HDRI loaded:', url); } catch{}
+            console.info('[FP] HDRI completely loaded and applied:', url);
           }
-        } catch{}
-  }, undefined, (err)=>{ try { pmrem.dispose(); } catch{} try { console.warn('[FP] HDRI load failed:', url, err); } catch{} });
-    } catch{}
+        } catch(err){ console.error('[FP] HDR processing error:', err, err.stack); }
+  }, 
+  (progress) => {
+    console.info('[FP] HDR loading progress:', Math.round((progress.loaded / progress.total) * 100) + '%');
+  }, 
+  (err)=> { 
+    try { pmrem.dispose(); } catch{} 
+    console.error('[FP] HDRI load failed:', url, err, err.stack); 
+  });
+    } catch(err){ console.error('[FP] HDR load setup error:', err, err.stack); }
   }
 
   function loadHDRIFromFile(file){
+    console.info('[FP] Loading HDRI from file:', file.name, file.size, 'bytes');
     try {
       const url = URL.createObjectURL(file);
+      console.info('[FP] Created object URL:', url);
       // Stash so we can revoke later on replacement or dispose
       if (state.env) state.env.hdrObjectUrl = url;
       loadHDRI(url);
-    } catch{}
+    } catch(err){ console.error('[FP] File load error:', err); }
   }
 
   function applyBackgroundMode(){
     const e = state.env; if (!e) return;
-  const mode = e.bgMode || 'sky';
+    const mode = e.bgMode || 'sky';
+    console.info('[FP] Applying background mode:', mode);
     if (mode === 'hdr'){
-      if (!e.envMap && !e.hdrEquirect){ try { loadHDRI('assets/Base.hdr'); } catch{} }
-      // Prefer the sharp equirectangular HDR for background, PMREM env for lighting
-      try { scene.background = e.hdrEquirect || e.envMap || e.skyTex || null; } catch{}
-      try { scene.environment = e.envMap || null; } catch{}
+      if (!e.envMap && !e.hdrEquirect){ 
+        console.info('[FP] Loading default HDR file');
+        try { loadHDRI('assets/Base.hdr'); } catch(err){ console.warn('[FP] Default HDR load failed:', err); } 
+        return; // Wait for HDR to load before applying
+      }
+      // Use the sharp equirectangular HDR texture for background (visible image)
+      // and the PMREM-processed environment map for realistic lighting/reflections
+      try { 
+        if (e.hdrEquirect) {
+          scene.background = e.hdrEquirect;
+          console.info('[FP] Set HDR equirectangular as background');
+        } else {
+          scene.background = e.skyTex || null;
+          console.info('[FP] Fallback to sky texture for background');
+        }
+      } catch(err){ console.warn('[FP] Background assignment error:', err); }
+      
+      try { 
+        scene.environment = e.envMap || null; 
+        console.info('[FP] Set environment map for lighting');
+      } catch(err){ console.warn('[FP] Environment assignment error:', err); }
+      
+      console.info('[FP] HDR mode applied - background type:', scene.background?.constructor?.name, 'environment:', !!scene.environment);
     } else {
       try { scene.background = e.skyTex || null; } catch{}
       try { scene.environment = null; } catch{}
+      console.info('[FP] Sky mode applied - background:', !!scene.background);
     }
   }
 
