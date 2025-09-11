@@ -64,6 +64,10 @@
 		function setOnLineCreated(fn){ onLineCreated = fn; }
 		function setCollaborationService(service){ collaborationService = service; }
 		function startStroke(pt, dir){
+			console.log('🎨 VR Draw: Starting stroke at position:', pt);
+			console.log('🎨 VR Draw: Scene children before:', scene.children.length);
+			console.log('🎨 VR Draw: DrawGroup children before:', drawGroup.children.length);
+			
 			// Generate unique stroke ID for collaboration
 			currentStrokeId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 			
@@ -93,7 +97,9 @@
 			currentStroke.name = `VRDrawLine_${currentStrokeId}`;
 			drawGroup.add(currentStroke);
 			
-			console.log('VR Draw: Started stroke with point', pt, 'color:', color.toString(16), 'drawGroup children:', drawGroup.children.length);
+			console.log('🎨 VR Draw: Created line mesh:', currentStroke.name);
+			console.log('🎨 VR Draw: DrawGroup children after:', drawGroup.children.length);
+			console.log('🎨 VR Draw: Line added to scene successfully');
 			
 			// Send collaboration event for stroke start
 			if (collaborationService && collaborationService.onVRDrawStart) {
@@ -101,10 +107,13 @@
 			}
 			
 			// Notify callback of new line creation
-			if (onLineCreated) try { onLineCreated(currentStroke); } catch{}
+			if (onLineCreated) try { onLineCreated(currentStroke); } catch(e) { console.warn('onLineCreated callback error:', e); }
 		}
 		function addPoint(pt){
-			if (!currentGeom || !points.length) return;
+			if (!currentGeom || !points.length) {
+				console.warn('🎨 VR Draw: Cannot add point - no current geometry or points');
+				return;
+			}
 			const last = points[points.length-1];
 			if (last.distanceToSquared(pt) < minSegmentDist*minSegmentDist) return;
 			
@@ -115,8 +124,12 @@
 				points.push(pt.clone());
 			}
 			
-			console.log(`VR Draw: Added point ${points.length}:`, pt);
-			if (points.length > maxPointsPerStroke) { endStroke(); return; }
+			console.log(`🎨 VR Draw: Added point ${points.length}:`, pt);
+			if (points.length > maxPointsPerStroke) { 
+				console.log('🎨 VR Draw: Max points reached, ending stroke');
+				endStroke(); 
+				return; 
+			}
 			
 			const arr = [];
 			for (const p of points){ arr.push(p.x,p.y,p.z); }
@@ -175,7 +188,13 @@
 			// Debug hand tracking availability
 			const handSources = sources.filter(src => src && src.hand);
 			if (enabled && handSources.length === 0) {
-				console.log('VR Draw: No hands detected in input sources. Total sources:', sources.length);
+				if (!update.__noHandsWarned || (performance.now() - update.__noHandsWarned > 5000)) {
+					console.log('🎨 VR Draw: No hands detected in input sources. Total sources:', sources.length);
+					console.log('🎨 VR Draw: Available source types:', sources.map(s => ({ hand: !!s.hand, gamepad: !!s.gamepad, handedness: s.handedness })));
+					update.__noHandsWarned = performance.now();
+				}
+			} else if (enabled && handSources.length > 0) {
+				console.log('🎨 VR Draw: Found', handSources.length, 'hand sources');
 			}
 			
 			// Remove markers for sources no longer present
@@ -229,7 +248,13 @@
 				
 				// Debug logging for pinch detection
 				if (enabled && (pinching !== prev)) {
-					console.log(`VR Draw: Hand ${src.handedness} pinch ${pinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm)`);
+					console.log(`🎨 VR Draw: Hand ${src.handedness} pinch ${pinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, threshold: ${(PINCH_DIST*100).toFixed(1)}cm)`);
+					console.log(`🎨 VR Draw: Index pos:`, ip, 'Thumb pos:', tp);
+				}
+				
+				// Additional debug for when enabled but no drawing occurs
+				if (enabled && pinching && !currentStroke && !prev) {
+					console.log('🎨 VR Draw: About to start stroke...');
 				}
 				// Drawing point originates slightly forward from index tip along local finger direction if orientation available
 				let drawPos = new THREE.Vector3(ip.x, ip.y, ip.z);

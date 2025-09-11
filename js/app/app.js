@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { downscaleLargeTextures, createMaterialSystem }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -28,6 +28,7 @@ export async function init() {
 			import('./services/ar-edit.js'),
 			import('./services/xr-hud.js'),
 			import('./services/vr-draw.js'),
+			import('./services/texture-utils.js'),
 			import('./services/ar-materials.js'),
 			import('./services/collab.js'),
 			import('./features/alignment-tile.js'),
@@ -1037,16 +1038,23 @@ export async function init() {
 				if (vrDraw && vrDraw.setCollaborationService && collab) vrDraw.setCollaborationService(collab);
 				// Make vrDraw globally accessible for XR HUD fingertip color management
 				window.vrDraw = vrDraw;
-				// Debounce window for automatic presses (e.g., initial hand pose overlapping button) to avoid auto-opening draw menu
+				// Extended debounce window for automatic presses (e.g., initial hand pose overlapping button) to avoid auto-opening draw menu
 				const __drawBtnCreatedAt = performance.now();
+				let __lastDrawBtnActivation = 0; // Prevent rapid re-triggering
 				const bDraw = xrHud.createDraw3DButton(()=>{ 
 					try { 
 						const nowTs = performance.now();
 						// Ignore activations occurring too soon after creation (likely unintended hover/pinch during session start)
-						if (nowTs - __drawBtnCreatedAt < 600) { 
+						if (nowTs - __drawBtnCreatedAt < 1200) { // Increased from 600ms to 1200ms
 							console.log('🎨 Ignoring early Draw button activation (startup debounce)'); 
 							return; 
 						}
+						// Prevent rapid re-triggering within 800ms
+						if (nowTs - __lastDrawBtnActivation < 800) {
+							console.log('🎨 Ignoring rapid Draw button re-activation (cooldown)');
+							return;
+						}
+						__lastDrawBtnActivation = nowTs;
 						console.log('🎨 Draw button clicked! vrDraw:', !!vrDraw, 'isActive:', vrDraw?.isActive?.());
 						console.log('🎨 Draw button click timestamp:', nowTs);
 						console.log('🎨 Draw button click stack trace:', new Error().stack?.split('\n').slice(1, 5));
@@ -2510,6 +2518,40 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Plan View Lock parent button
 	const planLockBtn = document.getElementById('planLock');
 	// Scenes UI
+
+	// Initialize Material System
+	const __originalMaterials = new WeakMap();
+	function forEachMeshInScene(cb){
+		const stack = [...objects];
+		while (stack.length) {
+			const o = stack.pop();
+			if (!o) continue;
+			// Skip map import objects from global overrides
+			const isMapImport = (o.userData && (o.userData.__mapImport === true || o.userData.mapImport === true))
+				|| (o.name === 'Imported Topography' || o.name === 'Imported Flat Area');
+			if (isMapImport) { continue; }
+			if (!o.visible) { if (o.children && o.children.length) stack.push(...o.children); continue; }
+			if (o.isMesh) cb(o);
+			if (o.children && o.children.length) stack.push(...o.children);
+		}
+	}
+
+	const materialSystem = createMaterialSystem({
+		THREE, 
+		renderer, 
+		scene, 
+		forEachMeshInScene, 
+		originalMaterials: __originalMaterials, 
+		setGridColor, 
+		defaultMaterial: material,
+		uiElements: {
+			bgColorPicker,
+			gridColorPicker,
+			matOriginalBtn,
+			matCardboardBtn,
+			matMdfBtn
+		}
+	});
 	const saveSceneBtn = document.getElementById('saveScene');
 	const openScenesBtn = document.getElementById('openScenes');
 	const scenesDrawer = document.getElementById('scenesDrawer');
@@ -2920,324 +2962,23 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	}
 
 	// --- Global Material Style (Original/Cardboard/MDF) ---
-	// Preserve original materials for each mesh so we can restore them later
-	const __originalMaterials = new WeakMap();
-	function forEachMeshInScene(cb){
-		const stack = [...scene.children];
-		while (stack.length){
-			const o = stack.pop();
-			if (!o) continue;
-			// Skip helpers (grid, lights, cameras, gizmos, scan previews, etc.)
-			if (__isHelperObject(o)) { continue; }
-			// Never apply style overrides to map-imported geometry; skip entire subtree
-			const isMapImport = (o.userData && (o.userData.__mapImport === true || o.userData.mapImport === true))
-				|| (o.name === 'Imported Topography' || o.name === 'Imported Flat Area');
-			if (isMapImport) { continue; }
-			if (!o.visible) { if (o.children && o.children.length) stack.push(...o.children); continue; }
-			if (o.isMesh) cb(o);
-			if (o.children && o.children.length) stack.push(...o.children);
-		}
-	}
-	function ensureOriginalMaterial(mesh){ if (!__originalMaterials.has(mesh)) __originalMaterials.set(mesh, mesh.material); }
+	// Initialize material system after UI elements are defined
+	materialSystem.initializeMaterialSystem();
 
-	// Texture/material caches (shared instances)
-	let __cardboardMat = null; // final shared material (photo if available, else procedural)
-	let __mdfMat = null;       // final shared material (photo if available, else procedural)
-	let __sketchMat = null;    // shared sketch material (procedural only)
-	let __toonMat = null;      // shared toon material (procedural only)
 
-	// Sketch style environment overrides and temps
-	let __sketchPrevBg = null;           // string like '#rrggbb'
-	let __sketchPrevGrid = null;         // string like '#rrggbb'
-	let __sketchOverrideActive = false;  // whether overrides are active
-	// Track attached sketch outline nodes so we can remove/dispose on exit
-	const __sketchOutlineNodes = new Set();
-	// Feature flag: outlines enabled for a clean, crisp sketch look
-	const SKETCH_OUTLINES_ENABLED = true;
 
-	// Procedural fallback textures (lightweight, immediate)
-	function makeNoiseCanvas(w=256,h=256,opts={}){
-		const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
-		ctx.fillStyle=opts.base||'#c9a46a'; ctx.fillRect(0,0,w,h);
-		const grains=opts.grains||800; const alpha=opts.alpha||0.06; const size=opts.size||1.2; const hueJitter=opts.hueJitter||0;
-		for(let i=0;i<grains;i++){
-			const x=Math.random()*w, y=Math.random()*h; const s=(Math.random()*size)+0.4; const a=alpha*Math.random();
-			ctx.fillStyle=`rgba(0,0,0,${a.toFixed(3)})`; ctx.fillRect(x,y,s,s);
-			if (hueJitter>0){ ctx.fillStyle=`rgba(255,255,255,${(a*0.5).toFixed(3)})`; ctx.fillRect(x+0.5,y+0.5,s*0.7,s*0.7); }
-		}
-		// Subtle vertical stripes for corrugation hint
-		if (opts.stripes){
-			ctx.globalAlpha = 0.05; ctx.fillStyle = '#000';
-			const period = opts.period || 18;
-			for(let x=0;x<w;x+=period){ ctx.fillRect(x,0,1,h); }
-			ctx.globalAlpha = 1;
-		}
-		return c;
-	}
-	function makeCardboardMaterialProcedural(){
-		const texCanvas = makeNoiseCanvas(512,512,{ base:'#c9a46a', grains:1400, alpha:0.08, size:1.4, hueJitter:0.2, stripes:true, period:22 });
-		const tex = new THREE.CanvasTexture(texCanvas);
-		if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-		tex.anisotropy = 8; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1.5,1.5);
-		return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
-	}
-	function makeMDFMaterialProcedural(){
-		const texCanvas = makeNoiseCanvas(512,512,{ base:'#b8aa8f', grains:1200, alpha:0.06, size:1.2, hueJitter:0.15, stripes:false });
-		const tex = new THREE.CanvasTexture(texCanvas);
-		if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-		tex.anisotropy = 8; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1.8,1.8);
-		return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide });
-	}
-	function makeSketchMaterialProcedural(){
-		// White toon material, front faces only
-		const mat = new THREE.MeshToonMaterial({ color: 0xffffff, side: THREE.FrontSide });
-		try { mat.userData = { ...(mat.userData||{}), procedural: true, base: 'sketch' }; } catch {}
-		return mat;
-	}
-	function makeToonMaterialProcedural(){
-		// Neutral mid-gray toon with subtle warm gradient ramp (via simple color + high light contrast managed by lighting)
-		const mat = new THREE.MeshToonMaterial({ color: 0xb0b0b0, side: THREE.FrontSide });
-		try { mat.userData = { ...(mat.userData||{}), procedural: true, base: 'toon' }; } catch {}
-		return mat;
-	}
-	function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
-	function __isMaterialOverrideChain(node){
-		// Skip global overrides when any ancestor explicitly preserves materials
-		let n = node;
-		while (n) {
-			if (n.userData) {
-				if (n.userData.__materialOverride === true) return true;
-				if (n.userData.__preserveMaterials === true) return true;
-			}
-			n = n.parent;
-		}
-		return false;
-	}
-	function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; ensureOriginalMaterial(m); m.material = sharedMat; }); }
-	function restoreOriginalMaterialsRespectingOverrides(){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; const orig = __originalMaterials.get(m); if (orig) m.material = orig; }); }
-	function applyStyleToSubtree(root, style){
-		const stack = [root];
-		const use = (s)=> getActiveSharedMaterial(s) || getProceduralSharedMaterial(s) || material;
-		while (stack.length){
-			const o = stack.pop();
-			if (!o) continue;
-			if (o.isMesh){
-				ensureOriginalMaterial(o);
-				if (style === 'original') o.material = material; else o.material = use(style);
-			}
-			if (o.children && o.children.length) stack.push(...o.children);
-		}
-	}
 
-	// Loader helpers for photoreal textures (optional assets)
-	const __textureLoader = new THREE.TextureLoader();
-	function setTexCommon(tex, { sRGB=false, repeat=1.5 }={}){
-		try { if (sRGB && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace; } catch {}
-		tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(repeat, repeat);
-		tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 8);
-		tex.needsUpdate = true; return tex;
-	}
-	async function loadTextureAny(urls, opts){
-		for (const u of urls){
-			try { const tex = await __textureLoader.loadAsync(u); return setTexCommon(tex, opts); } catch (e) { /* try next */ }
-		}
-		return null;
-	}
-	async function buildPhotoMaterial(kind){
-		const base = `./assets/textures/`;
-		if (kind === 'cardboard'){
-			const map = await loadTextureAny([base+'cardboard_basecolor.jpg', base+'cardboard_basecolor.png'], { sRGB:true, repeat:1.6 });
-			if (!map) return makeCardboardMaterialProcedural();
-			const normalMap = await loadTextureAny([base+'cardboard_normal.jpg', base+'cardboard_normal.png']);
-			const roughnessMap = await loadTextureAny([base+'cardboard_roughness.jpg', base+'cardboard_roughness.png']);
-			const mat = new THREE.MeshStandardMaterial({ map, normalMap: normalMap||undefined, roughnessMap: roughnessMap||undefined, roughness: roughnessMap?1.0:0.9, metalness: 0.0, side: THREE.DoubleSide });
-			if (normalMap) mat.normalScale = new THREE.Vector2(0.6, 0.6);
-			return mat;
-		}
-		if (kind === 'mdf'){
-			const map = await loadTextureAny([base+'mdf_basecolor.jpg', base+'mdf_basecolor.png'], { sRGB:true, repeat:1.8 });
-			if (!map) return makeMDFMaterialProcedural();
-			const normalMap = await loadTextureAny([base+'mdf_normal.jpg', base+'mdf_normal.png']);
-			const roughnessMap = await loadTextureAny([base+'mdf_roughness.jpg', base+'mdf_roughness.png']);
-			const mat = new THREE.MeshStandardMaterial({ map, normalMap: normalMap||undefined, roughnessMap: roughnessMap||undefined, roughness: roughnessMap?1.0:0.85, metalness: 0.0, side: THREE.DoubleSide });
-			if (normalMap) mat.normalScale = new THREE.Vector2(0.35, 0.35);
-			return mat;
-		}
-		return null;
-	}
 
-	// Material style orchestration
-	let currentMaterialStyle = 'original';
-	let __materialLoadPromise = null;
-	let __sketchOutlines = null; // THREE.Group of outlines
 
-	function getRendererClearColorHex(){
-		const c = new THREE.Color();
-		try { renderer.getClearColor(c); } catch {}
-		return `#${c.getHexString()}`;
-	}
-	function applySketchOverrides(){
-		if (__sketchOverrideActive) return;
-		__sketchPrevBg = getRendererClearColorHex();
-		try {
-			__sketchPrevGrid = (gridColorPicker && gridColorPicker.value) || localStorage.getItem('sketcher.gridColor') || '#ffffff';
-		} catch { __sketchPrevGrid = '#ffffff'; }
-		// Override display without touching persisted prefs
-		try { if (bgColorPicker) bgColorPicker.disabled = true; } catch {}
-		try { if (gridColorPicker) gridColorPicker.disabled = true; } catch {}
-		renderer.setClearColor('#ffffff');
-		// Lighter grid for less visual noise in sketch mode
-		setGridColor('#d0d0d0');
-		__sketchOverrideActive = true;
-	}
-	function restoreSketchOverridesIfAny(){
-		if (!__sketchOverrideActive) return;
-		if (__sketchPrevBg) renderer.setClearColor(__sketchPrevBg);
-		if (__sketchPrevGrid) setGridColor(__sketchPrevGrid);
-		try { if (bgColorPicker) bgColorPicker.disabled = false; } catch {}
-		try { if (gridColorPicker) gridColorPicker.disabled = false; } catch {}
-		__sketchPrevBg = null; __sketchPrevGrid = null; __sketchOverrideActive = false;
-	}
-	function disposeSketchOutlines(){
-		if(__sketchOutlines){
-			try { scene.remove(__sketchOutlines); } catch {}
-			__sketchOutlines.traverse(o=>{ try { o.geometry && o.geometry.dispose && o.geometry.dispose(); } catch {} try { o.material && o.material.dispose && o.material.dispose(); } catch {} });
-			__sketchOutlines = null;
-		}
-		// Also remove attached nodes from meshes
-		__sketchOutlineNodes.forEach(node => {
-			try {
-				if (node.parent) node.parent.remove(node);
-				node.traverse(o=>{ try { o.geometry && o.geometry.dispose && o.geometry.dispose(); } catch {} try { o.material && o.material.dispose && o.material.dispose(); } catch {} });
-			} catch {}
-		});
-		__sketchOutlineNodes.clear();
-	}
-	function makeSketchLinesForMesh(m){
-		const srcGeo = m.geometry; if (!srcGeo) return null;
-		// Build crisp feature/silhouette edges with a moderate threshold to reduce clutter
-		const threshold = 30; // degrees
-		const egeo = new THREE.EdgesGeometry(srcGeo, threshold);
-		if (!egeo || !egeo.attributes || !egeo.attributes.position || egeo.attributes.position.count === 0) return null;
-		const grp = new THREE.Group();
-		const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: false, opacity: 1.0, depthTest: true, depthWrite: false });
-		const lines = new THREE.LineSegments(egeo, mat);
-		// Slightly bias ordering so lines appear atop their surfaces when depths are equal
-		lines.renderOrder = 2;
-		grp.add(lines);
-		// Mark as helper/non-selectable and disable raycasting so it can't be picked or moved
-		grp.name = '__sketchOutline'; grp.userData.__helper = true; lines.userData.__helper = true;
-		grp.raycast = function(){}; lines.raycast = function(){};
-		// Attach in mesh-local space so it follows transforms automatically
-		grp.position.set(0,0,0); grp.rotation.set(0,0,0); grp.scale.set(1,1,1);
-		return grp;
-	}
-	function getActiveSharedMaterial(style){
-		if (style === 'cardboard') return __cardboardMat || null;
-		if (style === 'mdf') return __mdfMat || null;
-		if (style === 'sketch') return __sketchMat || null;
-		if (style === 'toon') return __toonMat || null;
-		return null;
-	}
-	function getProceduralSharedMaterial(style){
-		if (style === 'cardboard') {
-			if (!__cardboardMat) { __cardboardMat = makeCardboardMaterialProcedural(); try { __cardboardMat.userData = { ...( __cardboardMat.userData||{} ), procedural: true }; } catch {} }
-			return __cardboardMat;
-		}
-		if (style === 'mdf') {
-			if (!__mdfMat) { __mdfMat = makeMDFMaterialProcedural(); try { __mdfMat.userData = { ...( __mdfMat.userData||{} ), procedural: true }; } catch {} }
-			return __mdfMat;
-		}
-		if (style === 'sketch') {
-			if (!__sketchMat) { __sketchMat = makeSketchMaterialProcedural(); try { __sketchMat.userData = { ...( __sketchMat.userData||{} ), procedural: true }; } catch {} }
-			return __sketchMat;
-		}
-		if (style === 'toon') {
-			if (!__toonMat) { __toonMat = makeToonMaterialProcedural(); try { __toonMat.userData = { ...( __toonMat.userData||{} ), procedural: true }; } catch {} }
-			return __toonMat;
-		}
-		return null;
-	}
-	function setMaterialButtons(style){
-		if (matOriginalBtn) matOriginalBtn.setAttribute('aria-pressed', style==='original'?'true':'false');
-		if (matCardboardBtn) matCardboardBtn.setAttribute('aria-pressed', style==='cardboard'?'true':'false');
-		if (matMdfBtn) matMdfBtn.setAttribute('aria-pressed', style==='mdf'?'true':'false');
-		const matSketchBtn = document.getElementById('matSketch'); if (matSketchBtn) matSketchBtn.setAttribute('aria-pressed', style==='sketch'?'true':'false');
-		const matToonBtn = document.getElementById('matToon'); if (matToonBtn) matToonBtn.setAttribute('aria-pressed', style==='toon'?'true':'false');
-	}
-	function applyMaterialStyle(style){
-		style = style || 'original';
-		currentMaterialStyle = style;
-		// Persist selection
-		try { localStorage.setItem('sketcher.materialStyle', style); } catch {}
-		// Handle environment overrides toggling
-		if (style !== 'sketch') restoreSketchOverridesIfAny();
-		// Immediate path
-		if (style === 'original') {
-			// Apply a shared MeshNormalMaterial to the whole scene
-			applyUniformMaterial(material);
-			disposeSketchOutlines();
-			setMaterialButtons(style);
-			return;
-		}
-		// Apply procedural immediately, then upgrade to photo when ready
-		const proc = getProceduralSharedMaterial(style);
-		applyUniformMaterial(proc);
-		setMaterialButtons(style);
-		// Sketch style specifics: overrides; outlines intentionally disabled for clean look
-		if (style === 'sketch'){
-			applySketchOverrides();
-			disposeSketchOutlines();
-			// If outlines are re-enabled in the future, guard with flag
-			if (SKETCH_OUTLINES_ENABLED) {
-				forEachMeshInScene(m => {
-					// Do not add outlines to preserved/override subtrees (e.g., overlay snips)
-					if (__isMaterialOverrideChain(m)) return;
-					const lines = makeSketchLinesForMesh(m);
-					if (lines) { try { m.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
-				});
-			}
-		} else if (style === 'toon') {
-			// Toon: ensure sketch overrides are removed (white bg might be optional)
-			restoreSketchOverridesIfAny();
-			disposeSketchOutlines();
-		} else {
-			disposeSketchOutlines();
-		}
-		// On narrow/mobile, skip photoreal upgrade to keep it light
-		const isMobileNarrow = Math.min(window.innerWidth, window.innerHeight) <= 640;
-		if (isMobileNarrow) return;
-		// Kick off async load (debounced to one in-flight per style)
-		const need = (style === 'cardboard' && (!__cardboardMat || __cardboardMat.userData?.procedural))
-				 || (style === 'mdf' && (!__mdfMat || __mdfMat.userData?.procedural)); // no photo upgrade for sketch or toon
-		if (!need) return;
-		__materialLoadPromise = (async () => {
-			const mat = await buildPhotoMaterial(style);
-			if (mat && !mat.map) { try { mat.userData = { ...(mat.userData||{}), procedural: true }; } catch {} }
-			if (style === 'cardboard') __cardboardMat = mat;
-			if (style === 'mdf') __mdfMat = mat;
-			if (currentMaterialStyle === style && mat) applyUniformMaterial(mat);
-		})();
-	}
-	// Initialize selected material style from storage and expose public API
-	(function(){
-		let saved = 'original';
-		try { const s = localStorage.getItem('sketcher.materialStyle'); if (s) saved = s; } catch {}
-		applyMaterialStyle(saved);
-		setMaterialButtons(saved);
-		// Public, stable API for other modules (UI wiring, etc.)
-		try {
-			window.sketcherMaterialsAPI = {
-				applyMaterialStyle,
-				getActiveSharedMaterial,
-				getProceduralSharedMaterial,
-				getCurrentStyle: () => currentMaterialStyle,
-				setMaterialButtons,
-			};
-			// Signal readiness for late-loading UI modules
-			document.dispatchEvent(new CustomEvent('sketcher:materials-ready'));
-		} catch {}
-	})();
+
+
+
+
+
+
+
+
+
 
 	// --- Apply material to a face or coplanar face patch (safe overlay approach) ---
 	let __lastPickedFace = null; // { mesh, faceIndex }
@@ -3286,7 +3027,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			if (uvArr) g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
 			// Pick material, clone to enable polygon offset without touching shared mats
 			let mat = material;
-			if (!mat) mat = getActiveSharedMaterial(currentMaterialStyle) || material;
+			if (!mat) mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 			mat = mat && mat.clone ? mat.clone() : new THREE.MeshStandardMaterial({ color: 0xffffff });
 			mat.side = THREE.DoubleSide; mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;
 			const child = new THREE.Mesh(g, mat);
@@ -3351,7 +3092,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(positions),3));
 			g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(normals),3));
 			if (hasUV) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(uvs),2));
-			let mat = material; if (!mat) mat = getActiveSharedMaterial(currentMaterialStyle) || material;
+			let mat = material; if (!mat) mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 			mat = mat && mat.clone ? mat.clone() : new THREE.MeshStandardMaterial({ color: 0xffffff });
 			mat.side = THREE.DoubleSide; mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;
 			const child = new THREE.Mesh(g, mat); child.userData.__materialOverride = true; return child;
@@ -3639,7 +3380,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			selectedObjects.forEach(obj => {
 				// Remove override and reapply current global style just for this subtree
 				try { delete obj.userData.__materialOverride; } catch {}
-				applyStyleToSubtree(obj, currentMaterialStyle);
+				window.sketcherMaterialsAPI?.applyStyleToSubtree?.(obj, window.sketcherMaterialsAPI?.getCurrentStyle?.());
 			});
 			saveSessionDraftNow();
 		});
@@ -4826,35 +4567,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const __isTeleportObj = !!__isTeleportDisc(obj);
 			if (!__isMapImportObj && !__isTeleportObj){
 		// Apply current material style to this object (shared instance)
-		if (currentMaterialStyle === 'original'){
-			const stack = [obj];
-			while (stack.length){
-				const o = stack.pop();
-				if (o.isMesh){ ensureOriginalMaterial(o); o.material = material; }
-				if (o.children && o.children.length) stack.push(...o.children);
-			}
-		} else if (currentMaterialStyle === 'cardboard' || currentMaterialStyle === 'mdf'){
-			const shared = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle);
-			const stack = [obj];
-			while (stack.length){
-				const o = stack.pop();
-				if (o.isMesh){ ensureOriginalMaterial(o); o.material = shared; }
-				if (o.children && o.children.length) stack.push(...o.children);
-			}
-		} else if (currentMaterialStyle === 'sketch'){
-			const shared = getActiveSharedMaterial('sketch') || getProceduralSharedMaterial('sketch');
-			const stack = [obj];
-			while (stack.length){
-				const o = stack.pop();
-				if (o.isMesh){
-					ensureOriginalMaterial(o);
-					o.material = shared;
-					// Attach a single outline child that follows this mesh
-					const lines = makeSketchLinesForMesh(o);
-					if (lines) { try { o.add(lines); __sketchOutlineNodes.add(lines); } catch {} }
-				}
-				if (o.children && o.children.length) stack.push(...o.children);
-			}
+		if (window.sketcherMaterialsAPI?.getCurrentStyle?.() === 'original'){
+			window.sketcherMaterialsAPI?.applyStyleToSubtree?.(obj, 'original');
+		} else if (window.sketcherMaterialsAPI?.getCurrentStyle?.() === 'cardboard' || window.sketcherMaterialsAPI?.getCurrentStyle?.() === 'mdf'){
+			window.sketcherMaterialsAPI?.applyStyleToSubtree?.(obj, window.sketcherMaterialsAPI?.getCurrentStyle?.());
+		} else if (window.sketcherMaterialsAPI?.getCurrentStyle?.() === 'sketch'){
+			window.sketcherMaterialsAPI?.applyStyleToSubtree?.(obj, 'sketch');
 		}
 		}
 		updateVisibilityUI(); updateCameraClipping();
@@ -4930,7 +4648,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const w = Math.max(0.1, maxX - minX); const d = Math.max(0.1, maxZ - minZ);
 			const cx = (minX + maxX) / 2; const cz = (minZ + maxZ) / 2;
 			const geo = new THREE.BoxGeometry(w, FLOOR_THICKNESS_FT, d);
-			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+			const activeMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 			const mesh = new THREE.Mesh(geo, activeMat);
 			// Place so top face sits at ground plane (Y=0)
 			mesh.position.set(cx, -FLOOR_THICKNESS_FT/2, cz);
@@ -4960,7 +4678,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const s = (dx0 * ux + dz0 * uz); // signed distance along snapped axis
 			const len = Math.max(0.1, Math.abs(s));
 			const geo = new THREE.BoxGeometry(len, WALL_HEIGHT_FT, WALL_THICKNESS_FT);
-			const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+			const activeMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 			const mesh = new THREE.Mesh(geo, activeMat);
 			// Position the wall mesh at its midpoint so the gizmo/pivot is centered
 			const endX = placingStart.x + (shift ? s * ux : dx0);
@@ -5255,7 +4973,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		const cySphere = startPt.y + r; // sphere rests on base
 		if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; }
 		if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; }
-		const activeMat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material;
+		const activeMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
 		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), activeMat); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
 		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
@@ -5290,10 +5008,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const addStairsBtn = document.getElementById('addStairs');
 	const addScaleFigureBtn = document.getElementById('addScaleFigure');
 	const faceAlignToolBtn = document.getElementById('faceAlignTool');
-	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createColumn({ THREE, material: mat, radius: 0.5, height: 8 }); mesh.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(mesh,{ select:true }); });
-	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createBeam({ THREE, material: mat, len: 12, depth: 1, width: 1 }); mesh.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(mesh,{ select:true }); });
-	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const mesh = primitives.createRamp({ THREE, material: mat, len: 10, thick: 0.5, width: 4 }); mesh.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(mesh,{ select:true }); });
-	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const mat = getActiveSharedMaterial(currentMaterialStyle) || getProceduralSharedMaterial(currentMaterialStyle) || material; const grp = primitives.createStairs({ THREE, material: mat, steps: 10, rise: 0.7, tread: 1, width: 4 }); grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
+	if(addColumnBtn) addColumnBtn.addEventListener('click', ()=>{ const mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material); const mesh = primitives.createColumn({ THREE, material: mat, radius: 0.5, height: 8 }); mesh.name=`Column ${objects.filter(o=>o.name.startsWith('Column')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addBeamBtn) addBeamBtn.addEventListener('click', ()=>{ const mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material); const mesh = primitives.createBeam({ THREE, material: mat, len: 12, depth: 1, width: 1 }); mesh.name=`Beam ${objects.filter(o=>o.name.startsWith('Beam')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addRampBtn) addRampBtn.addEventListener('click', ()=>{ const mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material); const mesh = primitives.createRamp({ THREE, material: mat, len: 10, thick: 0.5, width: 4 }); mesh.name=`Ramp ${objects.filter(o=>o.name.startsWith('Ramp')).length+1}`; addObjectToScene(mesh,{ select:true }); });
+	if(addStairsBtn) addStairsBtn.addEventListener('click', ()=>{ const mat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material); const grp = primitives.createStairs({ THREE, material: mat, steps: 10, rise: 0.7, tread: 1, width: 4 }); grp.name=`Stairs ${objects.filter(o=>o.name.startsWith('Stairs')).length+1}`; addObjectToScene(grp,{ select:true }); });
 	if(addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 16); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 16, 12), mat.clone()); head.position.set(0, legH + torsoH + headR*1.1, 0); grp.add(head); grp.traverse(o=>{ o.castShadow=true; }); grp.scale.setScalar(6/ (legH+torsoH+headR*2)); grp.name=`Scale Figure ${objects.filter(o=>o.name.startsWith('Scale Figure')).length+1}`; addObjectToScene(grp,{ select:true }); });
 	if(faceAlignToolBtn) faceAlignToolBtn.addEventListener('click', ()=>{ startFaceAlignMode(); });
 
@@ -5623,11 +5341,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							if (window.__xrPrim) {
 								const prim = window.__xrPrim;
 								
+								// Block all other VR interactions during primitive creation
+								if (typeof window.__xrHudHover !== 'undefined') window.__xrHudHover = false;
+								
 								// Debug: Log current state
-								if (!prim.__debugLogged) {
-									console.log('Primitive creation active:', prim.tool, 'stage:', prim.stage);
-									console.log('Available hands:', prim.leftHand ? 'left' : 'none', prim.rightHand ? 'right' : 'none');
+								if (!prim.__debugLogged || (performance.now() - prim.__lastLog > 2000)) {
+									console.log('🔷 Primitive creation active:', prim.tool, 'stage:', prim.stage);
+									console.log('🔷 Available hands:', prim.leftHand ? 'left' : 'none', prim.rightHand ? 'right' : 'none');
+									console.log('🔷 Preview exists:', !!prim.preview);
 									prim.__debugLogged = true;
+									prim.__lastLog = performance.now();
 								}
 								
 								// Need at least one hand for basic functionality
@@ -5635,7 +5358,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									continue;
 								}
 								
-								const activeMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+								const activeMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 								
 								if (prim.stage === 'attached') {
 									// Stage 1: Primitive attached to available hand (prefer right, fall back to left)
@@ -5731,9 +5454,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									const lockedDuration = performance.now() - prim.__lockedAt;
 
 									if (bothHandsPinching || singleHand || lockedDuration > 15000) {
-										if (lockedDuration > 15000) console.log('Primitive finalize timeout reached - auto-finalizing');
-										else if (singleHand) console.log('Single-hand pinch finalize');
-										else console.log('Both hands pinching again - finalizing primitive');
+										if (lockedDuration > 15000) console.log('⏰ Primitive finalize timeout reached - auto-finalizing');
+										else if (singleHand) console.log('👆 Single-hand pinch finalize detected');
+										else console.log('👏 Both hands pinching again - finalizing primitive');
 										// Finalize primitive
 										try {
 											if (prim.preview) {
@@ -5741,23 +5464,38 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												// Create final geometry with locked scale
 												let finalGeom = null;
 												const scale = prim.lockedScale.x; // Use uniform scale
+												console.log('🔧 Creating final geometry with scale:', scale);
 												if (prim.tool === 'box') finalGeom = new THREE.BoxGeometry(prim.baseScale * scale, prim.baseScale * scale, prim.baseScale * scale);
 												else if (prim.tool === 'sphere') finalGeom = new THREE.SphereGeometry(prim.baseScale * scale / 2, 20, 16);
 												else if (prim.tool === 'cylinder') finalGeom = new THREE.CylinderGeometry(prim.baseScale * scale / 2, prim.baseScale * scale / 2, prim.baseScale * scale, 20);
 												else if (prim.tool === 'cone') finalGeom = new THREE.ConeGeometry(prim.baseScale * scale / 2, prim.baseScale * scale, 20);
 												if (finalGeom) {
-													const finalMat = (getActiveSharedMaterial && getActiveSharedMaterial(currentMaterialStyle)) || (getProceduralSharedMaterial && getProceduralSharedMaterial(currentMaterialStyle)) || material;
+													const finalMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
 													const finalPrimitive = new THREE.Mesh(finalGeom, finalMat);
 													finalPrimitive.position.copy(prim.lockedPosition || prim.preview.position);
 													finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
+													console.log('📍 Final primitive position:', finalPrimitive.position);
+													console.log('🎯 About to add to scene...');
 													addObjectToScene(finalPrimitive, { select: false });
 													if (saveSessionDraftSoon) saveSessionDraftSoon();
-													console.log('Primitive created successfully:', finalPrimitive.name);
+													console.log('✅ Primitive created successfully:', finalPrimitive.name);
+													console.log('🔢 Total objects in scene:', objects.length);
+												} else {
+													console.error('❌ Failed to create final geometry for tool:', prim.tool);
 												}
+											} else {
+												console.error('❌ No preview mesh to finalize');
 											}
-										} catch(e) { console.warn('Failed to create primitive:', e); }
+										} catch(e) { console.error('❌ Failed to create primitive:', e); }
 										// Clean up and reset
-										try { if (prim.preview) { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); prim.preview.geometry?.dispose?.(); prim.preview.material?.dispose?.(); } } catch {}
+										try { 
+											if (prim.preview) { 
+												if (prim.preview.parent) prim.preview.parent.remove(prim.preview); 
+												prim.preview.geometry?.dispose?.(); 
+												prim.preview.material?.dispose?.(); 
+											} 
+										} catch(e) { console.warn('Cleanup error:', e); }
+										console.log('🧹 Primitive mode ended, cleaning up');
 										window.__xrPrim = null;
 									} else {
 										// Keep primitive at locked position/scale, just follow one hand for repositioning
@@ -5988,6 +5726,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 					// VR draw update (runs every frame to detect pinch gestures)
 					try { 
 						if (vrDraw) { 
+							// Debug: periodic logging of VR Draw state
+							if (!window.__vrDrawLastLog || (performance.now() - window.__vrDrawLastLog > 5000)) {
+								console.log('🎨 VR Draw State Check:');
+								console.log('🎨   - VR Draw enabled:', vrDraw.isActive && vrDraw.isActive());
+								console.log('🎨   - Frame/Session available:', !!frame, !!session);
+								console.log('🎨   - Input sources:', session.inputSources ? session.inputSources.length : 0);
+								console.log('🎨   - Hand sources:', session.inputSources ? session.inputSources.filter(s => s && s.hand).length : 0);
+								console.log('🎨   - Reference space:', !!(xrLocalSpace || xrViewerSpace));
+								console.log('🎨   - Primitive mode active:', !!window.__xrPrim);
+								window.__vrDrawLastLog = performance.now();
+							}
 							// Always update VR draw to detect pinch gestures and manage drawing state
 							vrDraw.update(frame, session, xrLocalSpace || xrViewerSpace); 
 							
@@ -5997,7 +5746,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							} 
 						} 
 					} catch(e) {
-						console.warn('VR Draw update error:', e);
+						console.error('🎨 VR Draw update error:', e);
 					}
 					// Ground lock is now handled by the AR edit service constraints to prevent stuttering
 				}
@@ -7038,4 +6787,105 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}); } catch{}
 	})();
 }
+
+// Add debugging commands for VR issues
+window.debugVR = {
+	checkDrawState: () => {
+		console.log('🔍 VR Debug: Draw State Analysis');
+		console.log('  vrDraw exists:', !!window.vrDraw);
+		if (window.vrDraw) {
+			console.log('  vrDraw.isActive():', window.vrDraw.isActive ? window.vrDraw.isActive() : 'N/A');
+			console.log('  vrDraw.group children:', window.vrDraw.group ? window.vrDraw.group.children.length : 'N/A');
+		}
+		console.log('  xrSession active:', !!(renderer && renderer.xr && renderer.xr.getSession && renderer.xr.getSession()));
+		if (typeof renderer !== 'undefined' && renderer.xr) {
+			const session = renderer.xr.getSession && renderer.xr.getSession();
+			if (session) {
+				console.log('  Input sources:', session.inputSources ? session.inputSources.length : 0);
+				console.log('  Hand sources:', session.inputSources ? session.inputSources.filter(s => s && s.hand).length : 0);
+			}
+		}
+	},
+	checkPrimitiveState: () => {
+		console.log('🔍 VR Debug: Primitive State Analysis');
+		console.log('  __xrPrim exists:', !!window.__xrPrim);
+		if (window.__xrPrim) {
+			const p = window.__xrPrim;
+			console.log('  tool:', p.tool);
+			console.log('  stage:', p.stage);
+			console.log('  preview exists:', !!p.preview);
+			console.log('  leftHand:', !!p.leftHand);
+			console.log('  rightHand:', !!p.rightHand);
+			if (p.preview && typeof scene !== 'undefined') {
+				console.log('  preview in scene:', scene.children.includes(p.preview));
+				console.log('  preview position:', p.preview.position);
+			}
+		}
+	},
+	forceCreateBox: () => {
+		console.log('🔧 Force creating test box...');
+		try {
+			if (typeof THREE === 'undefined' || typeof scene === 'undefined' || typeof material === 'undefined') {
+				console.error('❌ Required objects not available (THREE, scene, material)');
+				return;
+			}
+			const testBox = new THREE.Mesh(
+				new THREE.BoxGeometry(0.1, 0.1, 0.1),
+				material.clone()
+			);
+			testBox.position.set(0, 1.5, -1); // In front of user
+			testBox.name = 'Debug Box';
+			if (typeof addObjectToScene === 'function') {
+				addObjectToScene(testBox, { select: false });
+			} else {
+				scene.add(testBox);
+			}
+			console.log('✅ Debug box created successfully');
+		} catch(e) {
+			console.error('❌ Failed to create debug box:', e);
+		}
+	},
+	forceCreateDrawLine: () => {
+		console.log('🔧 Force creating test draw line...');
+		try {
+			if (!window.vrDraw) {
+				console.error('❌ vrDraw not available');
+				return;
+			}
+			if (typeof THREE === 'undefined') {
+				console.error('❌ THREE not available');
+				return;
+			}
+			// Manually create a test line
+			const points = [
+				new THREE.Vector3(0, 1.5, -0.8),
+				new THREE.Vector3(0.2, 1.5, -0.8),
+				new THREE.Vector3(0.2, 1.7, -0.8)
+			];
+			const geometry = new THREE.BufferGeometry();
+			const positions = [];
+			points.forEach(p => positions.push(p.x, p.y, p.z));
+			geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+			
+			const lineMaterial = new THREE.LineBasicMaterial({ color: 0xff0000 });
+			const line = new THREE.Line(geometry, lineMaterial);
+			line.name = 'Debug VR Line';
+			
+			if (window.vrDraw.group) {
+				window.vrDraw.group.add(line);
+				console.log('✅ Debug VR line created successfully, group children:', window.vrDraw.group.children.length);
+			} else {
+				console.error('❌ vrDraw.group not available');
+			}
+		} catch(e) {
+			console.error('❌ Failed to create debug line:', e);
+		}
+	}
+};
+
+console.log('🔧 VR Debug commands available:');
+console.log('  window.debugVR.checkDrawState() - Check VR Draw service state');
+console.log('  window.debugVR.checkPrimitiveState() - Check primitive creation state'); 
+console.log('  window.debugVR.forceCreateBox() - Force create a test primitive');
+console.log('  window.debugVR.forceCreateDrawLine() - Force create a test draw line');
 
