@@ -1,7 +1,7 @@
 // Room Designation UI: Interface for designating objects as rooms and managing room properties
 // Provides movable room manager panel and modal dialogs for room management
 
-export function createRoomDesignationUI({ roomSystem, roomManager }) {
+export function createRoomDesignationUI({ roomSystem, roomManager, selectedObjects, transformControls, isOverlayOrChild }) {
   
   let isInitialized = false;
   let currentRoom = null;
@@ -16,8 +16,8 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
     
     createRoomManagerPanel();
     createRoomDesignationModal();
-    createRoomPropertiesPanel();
     setupKeyboardShortcuts();
+    setupEventListeners();
     
     isInitialized = true;
     console.log('Room Designation UI initialized');
@@ -101,6 +101,101 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
                 </div>
               </div>
             </div>
+
+            <!-- Room Properties Section (Inline) -->
+            <div class="room-properties-section" id="roomPropertiesSection" style="display: none;">
+              <div class="room-properties-header">
+                <h4>Room Properties</h4>
+                <div class="room-properties-actions">
+                  <button class="btn btn-sm btn-outline" id="refreshRoomCalc" title="Recalculate properties">
+                    <i class="fas fa-sync-alt"></i>
+                  </button>
+                  <button class="btn btn-sm btn-secondary" id="closeRoomProperties" title="Close properties">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+              </div>
+              
+              <div class="room-properties-content">
+                <!-- Room Info Fields -->
+                <div class="room-info-section">
+                  <div class="form-group">
+                    <label for="editRoomName">Room Name</label>
+                    <input type="text" id="editRoomName" class="form-control" placeholder="Enter room name">
+                  </div>
+                  
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="editRoomNumber">Room Number</label>
+                      <input type="text" id="editRoomNumber" class="form-control" placeholder="e.g., 101">
+                    </div>
+                    
+                    <div class="form-group">
+                      <label for="editRoomDepartment">Department</label>
+                      <select id="editRoomDepartment" class="form-control">
+                        <option value="">Select Department</option>
+                      </select>
+                    </div>
+                  </div>
+                  
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="editRoomHeight">Height (feet)</label>
+                      <input type="number" id="editRoomHeight" class="form-control" min="6" max="20" step="0.5" placeholder="8">
+                    </div>
+                    
+                    <div class="form-group">
+                      <label for="editRoomOccupancy">Occupancy</label>
+                      <input type="number" id="editRoomOccupancy" class="form-control" min="0" placeholder="0">
+                    </div>
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="editRoomFunction">Function</label>
+                    <input type="text" id="editRoomFunction" class="form-control" placeholder="e.g., Conference Room, Office">
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="editRoomNotes">Notes</label>
+                    <textarea id="editRoomNotes" class="form-control" rows="2" placeholder="Additional notes..."></textarea>
+                  </div>
+                </div>
+                
+                <!-- Live Stats Display -->
+                <div class="room-stats-section">
+                  <h5>Live Properties <span class="update-indicator" id="statsUpdateIndicator"></span></h5>
+                  <div class="stats-grid">
+                    <div class="stat-item">
+                      <label>Square Footage:</label>
+                      <span id="currentSquareFootage" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-item">
+                      <label>Volume:</label>
+                      <span id="currentVolume" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-item">
+                      <label>Width:</label>
+                      <span id="currentWidth" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-item">
+                      <label>Depth:</label>
+                      <span id="currentDepth" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-item">
+                      <label>Height:</label>
+                      <span id="currentHeight" class="stat-value">--</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="room-actions-section">
+                  <button class="btn btn-primary btn-sm" id="saveRoomProperties">Save Changes</button>
+                  <button class="btn btn-danger btn-sm" id="removeRoomDesignation">Remove Room Designation</button>
+                  <button class="btn btn-secondary btn-sm" id="focusOnRoom">Focus Camera</button>
+                </div>
+              </div>
+            </div>
             
             <!-- Department Summary Section -->
             <div class="department-summary-section" style="display: none;">
@@ -161,6 +256,23 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
       document.getElementById('validateRooms').addEventListener('click', handleValidateRooms);
       document.getElementById('roomSearchInput').addEventListener('input', handleRoomSearch);
       document.getElementById('departmentFilter').addEventListener('change', handleDepartmentFilter);
+      
+      // Room properties event listeners (now inline)
+      document.getElementById('refreshRoomCalc').addEventListener('click', refreshRoomCalculations);
+      document.getElementById('closeRoomProperties').addEventListener('click', hideRoomProperties);
+      document.getElementById('saveRoomProperties').addEventListener('click', saveRoomProperties);
+      document.getElementById('removeRoomDesignation').addEventListener('click', handleRemoveRoomDesignation);
+      document.getElementById('focusOnRoom').addEventListener('click', handleFocusOnRoom);
+      
+      // Auto-save on input changes for live feedback
+      document.getElementById('editRoomName').addEventListener('input', scheduleAutoSave);
+      document.getElementById('editRoomNumber').addEventListener('input', scheduleAutoSave);
+      document.getElementById('editRoomDepartment').addEventListener('change', scheduleAutoSave);
+      document.getElementById('editRoomHeight').addEventListener('input', scheduleAutoSave);
+      document.getElementById('editRoomOccupancy').addEventListener('input', scheduleAutoSave);
+      document.getElementById('editRoomFunction').addEventListener('input', scheduleAutoSave);
+      document.getElementById('editRoomNotes').addEventListener('input', scheduleAutoSave);
+      
       console.log('Event listeners added successfully');
     } catch (error) {
       console.error('Error adding event listeners:', error);
@@ -328,32 +440,17 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
     } else {
       showRoomManagerPanel();
     }
-  }  /**
-   * Refresh room manager data and update displays
+  }
+  
+  /**
+   * Refresh room manager data and update displays (legacy function, redirects to new implementation)
    */
   function refreshRoomManagerData() {
-    try {
-      const stats = roomSystem.getRoomStatistics();
-      const issues = roomManager.getRoomIssues();
-      
-      // Update overview stats
-      document.getElementById('totalRoomsCount').textContent = stats.totalRooms;
-      document.getElementById('totalSquareFootage').textContent = Math.round(stats.totalSquareFootage).toLocaleString();
-      document.getElementById('departmentCount').textContent = stats.departments;
-      document.getElementById('roomIssuesCount').textContent = issues.length;
-      
-      // Update room list
-      updateRoomList();
-      
-      // Update department filter
-      updateDepartmentFilter();
-      
-      // Update department summary
-      updateDepartmentSummary(stats);
-      
-    } catch (error) {
-      console.error('Error refreshing room manager data:', error);
-    }
+    // Force a fresh calculation of all rooms
+    roomManager.forceUpdateAllRooms();
+    
+    // Update the UI
+    updateRoomManagerData();
   }
   
   /**
@@ -489,9 +586,22 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
    * Handle quick action: designate selected object
    */
   function handleDesignateSelected() {
-    // This would need access to the main app's selected objects
-    // For now, show a message
-    alert('Please select a 3D object in the scene first, then use this button or press \'R\' to designate it as a room.');
+    // Get the selected object using the same logic as the 'R' key handler
+    const selectedObject = selectedObjects && selectedObjects.length ? selectedObjects[0] : 
+                          (transformControls && transformControls.object ? transformControls.object : null);
+    
+    if (selectedObject && selectedObject.isMesh && !isOverlayOrChild(selectedObject)) {
+      // Check if already a room
+      const existingRoom = roomSystem.getRoomFromObject(selectedObject);
+      if (existingRoom) {
+        showRoomPropertiesPanel(existingRoom);
+      } else {
+        showRoomDesignationModal(selectedObject);
+      }
+    } else {
+      // Show helpful message if no valid object selected
+      alert('Please select a 3D object in the scene first. Click on an object to select it, then use this button or press \'R\' to designate it as a room.');
+    }
   }
   
   /**
@@ -671,106 +781,6 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
   /**
    * Create the room properties panel for editing existing rooms
    */
-  function createRoomPropertiesPanel() {
-    const panelHTML = `
-      <div id="roomPropertiesPanel" class="room-panel" style="display: none;">
-        <div class="room-panel-header">
-          <h3>Room Properties</h3>
-          <div class="room-panel-actions">
-            <button class="btn btn-sm btn-outline" id="refreshRoomCalc" title="Recalculate properties">
-              <i class="fas fa-sync-alt"></i>
-            </button>
-            <button class="room-panel-close" aria-label="Close">&times;</button>
-          </div>
-        </div>
-        
-        <div class="room-panel-body">
-          <div class="room-info-section">
-            <div class="form-group">
-              <label for="editRoomName">Room Name</label>
-              <input type="text" id="editRoomName" class="form-control">
-            </div>
-            
-            <div class="form-row">
-              <div class="form-group">
-                <label for="editRoomNumber">Room Number</label>
-                <input type="text" id="editRoomNumber" class="form-control">
-              </div>
-              
-              <div class="form-group">
-                <label for="editRoomDepartment">Department</label>
-                <select id="editRoomDepartment" class="form-control">
-                  <option value="">Select Department</option>
-                </select>
-              </div>
-            </div>
-            
-            <div class="form-row">
-              <div class="form-group">
-                <label for="editRoomHeight">Height (feet)</label>
-                <input type="number" id="editRoomHeight" class="form-control" min="6" max="20" step="0.5">
-              </div>
-              
-              <div class="form-group">
-                <label for="editRoomOccupancy">Occupancy</label>
-                <input type="number" id="editRoomOccupancy" class="form-control" min="0">
-              </div>
-            </div>
-            
-            <div class="form-group">
-              <label for="editRoomFunction">Function</label>
-              <input type="text" id="editRoomFunction" class="form-control">
-            </div>
-            
-            <div class="form-group">
-              <label for="editRoomNotes">Notes</label>
-              <textarea id="editRoomNotes" class="form-control" rows="2"></textarea>
-            </div>
-          </div>
-          
-          <div class="room-stats-section">
-            <h4>Current Properties</h4>
-            <div class="stats-grid">
-              <div class="stat-item">
-                <label>Square Footage:</label>
-                <span id="currentSquareFootage">--</span>
-              </div>
-              <div class="stat-item">
-                <label>Volume:</label>
-                <span id="currentVolume">--</span>
-              </div>
-              <div class="stat-item">
-                <label>Width:</label>
-                <span id="currentWidth">--</span>
-              </div>
-              <div class="stat-item">
-                <label>Depth:</label>
-                <span id="currentDepth">--</span>
-              </div>
-              <div class="stat-item">
-                <label>Height:</label>
-                <span id="currentHeight">--</span>
-              </div>
-            </div>
-          </div>
-          
-          <div class="room-actions-section">
-            <button class="btn btn-sm btn-primary" id="saveRoomProperties">Save Changes</button>
-            <button class="btn btn-sm btn-danger" id="removeRoomDesignation">Remove Room Designation</button>
-          </div>
-        </div>
-      </div>
-    `;
-    
-    document.body.insertAdjacentHTML('beforeend', panelHTML);
-    
-    // Add event listeners
-    document.getElementById('roomPropertiesPanel').querySelector('.room-panel-close').addEventListener('click', hideRoomPropertiesPanel);
-    document.getElementById('refreshRoomCalc').addEventListener('click', refreshRoomCalculations);
-    document.getElementById('saveRoomProperties').addEventListener('click', saveRoomProperties);
-    document.getElementById('removeRoomDesignation').addEventListener('click', handleRemoveRoomDesignation);
-  }
-  
   /**
    * Show room designation modal for selected object
    * @param {THREE.Object3D} object - Selected object
@@ -810,7 +820,75 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
   }
   
   /**
-   * Show room properties panel for existing room
+   * Auto-save timer for live updates
+   */
+  let autoSaveTimer = null;
+  
+  function scheduleAutoSave() {
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    
+    autoSaveTimer = setTimeout(() => {
+      if (currentRoom) {
+        saveRoomPropertiesQuiet();
+        updateLiveStats();
+      }
+    }, 1500); // Auto-save 1.5 seconds after last change
+  }
+  
+  /**
+   * Save room properties without showing success message (for auto-save)
+   */
+  function saveRoomPropertiesQuiet() {
+    if (!currentRoom) return;
+    
+    try {
+      const formData = collectRoomPropertiesData();
+      if (formData) {
+        roomManager.updateRoom(currentRoom, formData);
+        showUpdateIndicator();
+      }
+    } catch (error) {
+      console.warn('Auto-save failed:', error);
+    }
+  }
+  
+  /**
+   * Show update indicator
+   */
+  function showUpdateIndicator() {
+    const indicator = document.getElementById('statsUpdateIndicator');
+    if (indicator) {
+      indicator.textContent = '✓ Updated';
+      indicator.className = 'update-indicator updated';
+      setTimeout(() => {
+        indicator.textContent = '';
+        indicator.className = 'update-indicator';
+      }, 2000);
+    }
+  }
+  
+  /**
+   * Update live stats display
+   */
+  function updateLiveStats() {
+    if (!currentRoom) return;
+    
+    // Recalculate from current mesh
+    currentRoom.calculateFromMesh();
+    
+    // Update display
+    document.getElementById('currentSquareFootage').textContent = `${currentRoom.squareFootage.toFixed(1)} sq ft`;
+    document.getElementById('currentVolume').textContent = `${currentRoom.volume.toFixed(0)} cu ft`;
+    document.getElementById('currentWidth').textContent = `${(currentRoom.dimensions.width * 3.28084).toFixed(1)} ft`;
+    document.getElementById('currentDepth').textContent = `${(currentRoom.dimensions.depth * 3.28084).toFixed(1)} ft`;
+    document.getElementById('currentHeight').textContent = `${(currentRoom.dimensions.height * 3.28084).toFixed(1)} ft`;
+    
+    // Update main room list if visible
+    updateRoomList();
+  }
+  
+  /**
+   * Show room properties section for existing room (now inline)
    * @param {Room} room - Room to edit
    */
   function showRoomPropertiesPanel(room) {
@@ -824,16 +902,42 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
     // Update department dropdown
     updateEditDepartmentDropdown();
     
-    // Show panel
-    document.getElementById('roomPropertiesPanel').style.display = 'block';
+    // Show the properties section
+    document.getElementById('roomPropertiesSection').style.display = 'block';
+    
+    // Update live stats immediately
+    updateLiveStats();
+    
+    // Scroll to properties section
+    const propertiesSection = document.getElementById('roomPropertiesSection');
+    propertiesSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
   
   /**
-   * Hide room properties panel
+   * Hide room properties section
    */
-  function hideRoomPropertiesPanel() {
-    document.getElementById('roomPropertiesPanel').style.display = 'none';
+  function hideRoomProperties() {
+    document.getElementById('roomPropertiesSection').style.display = 'none';
     currentRoom = null;
+    
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+  }
+  
+  /**
+   * Handle focus camera on room
+   */
+  function handleFocusOnRoom() {
+    if (!currentRoom || !currentRoom.meshObject) return;
+    
+    // This would need to be connected to your camera system
+    // For now, just log the action
+    console.log('Focus camera on room:', currentRoom.name);
+    
+    // If you have a camera controller, you could do something like:
+    // cameraController.focusOn(currentRoom.meshObject);
   }
   
   /**
@@ -1086,12 +1190,26 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
     if (!currentRoom) return;
     
     try {
-      currentRoom.calculateFromMesh();
-      updateCurrentStats(currentRoom);
-      alert('Room calculations refreshed.');
+      // Force update this specific room
+      roomManager.forceUpdateRoom(currentRoom.id);
+      
+      // Update the live stats display
+      updateLiveStats();
+      
+      // Show brief success indicator
+      showUpdateIndicator();
+      
     } catch (error) {
       console.error('Error refreshing calculations:', error);
-      alert('Error refreshing calculations: ' + error.message);
+      const indicator = document.getElementById('statsUpdateIndicator');
+      if (indicator) {
+        indicator.textContent = '✗ Error';
+        indicator.className = 'update-indicator error';
+        setTimeout(() => {
+          indicator.textContent = '';
+          indicator.className = 'update-indicator';
+        }, 3000);
+      }
     }
   }
   
@@ -1171,6 +1289,92 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
       }
     });
   }
+  /**
+   * Setup event listeners for room manager events
+   */
+  function setupEventListeners() {
+    if (!roomManager) return;
+    
+    // Listen for room modifications for live updates
+    roomManager.addEventListener('roomModified', (data) => {
+      const { room, timestamp } = data;
+      
+      // Update the UI immediately if this room is currently being edited
+      if (currentRoom && currentRoom.id === room.id) {
+        updateLiveStats();
+      }
+      
+      // Always refresh the room list to show updated values
+      updateRoomList();
+      updateRoomManagerData();
+    });
+    
+    // Listen for room additions
+    roomManager.addEventListener('roomAdded', (data) => {
+      updateRoomList();
+      updateRoomManagerData();
+    });
+    
+    // Listen for room deletions
+    roomManager.addEventListener('roomDeleted', (data) => {
+      // If the deleted room was being edited, close properties
+      if (currentRoom && currentRoom.id === data.room.id) {
+        hideRoomProperties();
+      }
+      
+      updateRoomList();
+      updateRoomManagerData();
+    });
+    
+    // Listen for data save events
+    roomManager.addEventListener('roomDataSaved', (data) => {
+      console.log(`Room data saved: ${data.roomCount} rooms`);
+      
+      // Show a brief indicator that data was saved
+      showSaveIndicator();
+    });
+  }
+  
+  /**
+   * Show save indicator
+   */
+  function showSaveIndicator() {
+    const refreshButton = document.getElementById('refreshRoomData');
+    if (refreshButton) {
+      const originalHTML = refreshButton.innerHTML;
+      refreshButton.innerHTML = '<i class="fas fa-check" style="color: green;"></i>';
+      refreshButton.disabled = true;
+      
+      setTimeout(() => {
+        refreshButton.innerHTML = originalHTML;
+        refreshButton.disabled = false;
+      }, 1500);
+    }
+  }
+  
+  /**
+   * Enhanced room list update with real-time values
+   */
+  function updateRoomManagerData() {
+    try {
+      const status = roomManager.getStatus();
+      
+      // Update overview stats
+      document.getElementById('totalRoomsCount').textContent = status.roomCount;
+      document.getElementById('totalSquareFootage').textContent = Math.round(status.totalSquareFootage).toLocaleString();
+      document.getElementById('departmentCount').textContent = status.departmentCount;
+      document.getElementById('roomIssuesCount').textContent = status.issues;
+      
+      // Update room list
+      updateRoomList();
+      
+      // Update department filter
+      updateDepartmentFilter();
+      
+    } catch (error) {
+      console.error('Error updating room manager data:', error);
+    }
+  }
   
   // Return public API
   return {
@@ -1178,11 +1382,18 @@ export function createRoomDesignationUI({ roomSystem, roomManager }) {
     showRoomDesignationModal,
     showRoomPropertiesPanel,
     hideRoomDesignationModal,
-    hideRoomPropertiesPanel,
+    hideRoomPropertiesPanel: hideRoomProperties, // Updated function name
     updateDepartmentDropdown,
     refreshRoomCalculations,
     showRoomManagerPanel,
     hideRoomManagerPanel,
-    toggleRoomManagerPanel
+    toggleRoomManagerPanel,
+    
+    // New methods for better integration
+    updateRoomManagerData,
+    forceRefresh: () => {
+      roomManager.forceUpdateAllRooms();
+      updateRoomManagerData();
+    }
   };
 }

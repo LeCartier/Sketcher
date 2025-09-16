@@ -58,6 +58,28 @@ import {
 } from './features/selection-2d.js';
 import { hitTestObject, eraseObjectAt as eraseObjectAtMod, erasePixelAt as erasePixelAtMod, setHitTestWorldPerPx } from './features/erase-2d.js';
 import { exportPNG as exportPNGMod, exportPDF as exportPDFMod } from './features/export-2d.js';
+import { 
+  drawManualDimensions, 
+  hitTestDimensions, 
+  createManualDimension, 
+  selectDimension, 
+  clearDimensionSelections,
+  deleteManualDimension,
+  updateDimensionOffset,
+  updateDimensionsForParent,
+  updateDimensionsForObject,
+  updateAllDimensions,
+  hitTestDimensionGrabbers,
+  repositionDimensionGrabber,
+  getCursorForGrabber,
+  setDimensionSettings,
+  getDimensionSettings,
+  serializeManualDimensions,
+  restoreManualDimensions,
+  clearManualDimensions,
+  manualDimensions
+} from './features/manual-dimensions.js';
+import { drawLiveDimensions, shouldShowLiveDimensions, formatDimension } from './features/live-dimensions.js';
 
 const canvas = document.getElementById('grid2d');
 const ctx = canvas.getContext('2d');
@@ -88,6 +110,14 @@ let tool = 'pan'; // select | pan | pen | smart | polyline | polygon | regpoly |
 let stroke = '#111111';
 let fill = '#00000000';
 let thickness = 2;
+
+// Dimension settings
+let dimensionSettings = {
+  textSize: 11,
+  lineColor: 'rgba(120, 120, 120, 0.9)',
+  selectedColor: 'rgba(30, 136, 229, 0.9)'
+};
+
 let statusEl = document.getElementById('statusBar');
 let isPanning = false;
 let panStart = { vx: 0, vy: 0, sx: 0, sy: 0 };
@@ -105,6 +135,15 @@ const undoStack = []; const redoStack = []; const undoLimit = 100;
 let spacePanActive = false; // hold Space to pan temporarily
 let pinch = { active:false, startDist:0, startScale:1, startCenterWorld:{x:0,y:0} };
 
+// Dimension grabber state
+let dimensionGrabbing = {
+  active: false,
+  dimensionId: null,
+  grabberType: null,
+  startWorld: null,
+  originalPoint: null
+};
+
 // ============================================================================
 // [03] SNIP / TEMP SNIP EDIT MODES
 // Lasso-based subset extraction (Snip) for 3D handoff and temporary subset editing.
@@ -121,6 +160,276 @@ let tempSnipEdit = { active:false, id:null };
 
 // 2D Snip mode (lasso selection) for handing subset back to 3D
 const snip2D = { active: false, lasso: [], hover: null };
+
+// ============================================================================
+// [03.5] DIMENSION TOOL HELPERS
+// Helper functions for manual dimension creation and snap detection
+// ----------------------------------------------------------------------------
+
+/**
+ * Find snap targets for dimension creation
+ * Returns information about nearby objects and their edges
+ */
+function findSnapTarget(worldPoint, tolerance) {
+  // Check for existing objects to snap to
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const obj = objects[i];
+    const snapInfo = getObjectSnapInfo(obj, worldPoint, tolerance, i);
+    if (snapInfo) {
+      return snapInfo;
+    }
+  }
+  return null;
+}
+
+/**
+ * Get snap information for a specific object
+ */
+function getObjectSnapInfo(obj, worldPoint, tolerance, objectIndex) {
+  if (!obj) return null;
+  
+  switch (obj.type) {
+    case 'line':
+      if (obj.a && obj.b) {
+        // Check endpoints
+        if (Math.hypot(worldPoint.x - obj.a.x, worldPoint.y - obj.a.y) <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: obj.a, edgeIndex: 0, type: 'endpoint' };
+        }
+        if (Math.hypot(worldPoint.x - obj.b.x, worldPoint.y - obj.b.y) <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: obj.b, edgeIndex: 1, type: 'endpoint' };
+        }
+        // Check line segment
+        const distToLine = distancePointToLineSegment(worldPoint, obj.a, obj.b);
+        if (distToLine <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: 0, type: 'edge' };
+        }
+      }
+      break;
+      
+    case 'rect':
+      if (obj.a && obj.b) {
+        const corners = [
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) },
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) },
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) },
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) }
+        ];
+        
+        // Check corners
+        for (let i = 0; i < corners.length; i++) {
+          if (Math.hypot(worldPoint.x - corners[i].x, worldPoint.y - corners[i].y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: corners[i], edgeIndex: i, type: 'corner' };
+          }
+        }
+        
+        // Check edges
+        const edges = [
+          [corners[0], corners[1]], // top
+          [corners[1], corners[2]], // right
+          [corners[2], corners[3]], // bottom
+          [corners[3], corners[0]]  // left
+        ];
+        
+        for (let i = 0; i < edges.length; i++) {
+          const distToEdge = distancePointToLineSegment(worldPoint, edges[i][0], edges[i][1]);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: i, type: 'edge' };
+          }
+        }
+      }
+      break;
+      
+    case 'ellipse':
+      // Simplified ellipse snapping - check if near the ellipse boundary
+      if (obj.a && obj.b) {
+        const centerX = (obj.a.x + obj.b.x) / 2;
+        const centerY = (obj.a.y + obj.b.y) / 2;
+        const radiusX = Math.abs(obj.b.x - obj.a.x) / 2;
+        const radiusY = Math.abs(obj.b.y - obj.a.y) / 2;
+        
+        // Check key points (ends of major/minor axes)
+        const keyPoints = [
+          { x: centerX - radiusX, y: centerY, edgeIndex: 0 }, // left
+          { x: centerX + radiusX, y: centerY, edgeIndex: 0 }, // right
+          { x: centerX, y: centerY - radiusY, edgeIndex: 1 }, // top
+          { x: centerX, y: centerY + radiusY, edgeIndex: 1 }  // bottom
+        ];
+        
+        for (const point of keyPoints) {
+          if (Math.hypot(worldPoint.x - point.x, worldPoint.y - point.y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: { x: point.x, y: point.y }, edgeIndex: point.edgeIndex, type: 'keypoint' };
+          }
+        }
+      }
+      break;
+  }
+  
+  return null;
+}
+
+/**
+ * Calculate distance from point to line segment (reused from manual-dimensions.js)
+ */
+function distancePointToLineSegment(point, lineStart, lineEnd) {
+  const A = point.x - lineStart.x;
+  const B = point.y - lineStart.y;
+  const C = lineEnd.x - lineStart.x;
+  const D = lineEnd.y - lineStart.y;
+
+  const dot = A * C + B * D;
+  const lenSq = C * C + D * D;
+  
+  if (lenSq === 0) {
+    return Math.sqrt(A * A + B * B);
+  }
+  
+  let param = dot / lenSq;
+  
+  let xx, yy;
+  if (param < 0) {
+    xx = lineStart.x;
+    yy = lineStart.y;
+  } else if (param > 1) {
+    xx = lineEnd.x;
+    yy = lineEnd.y;
+  } else {
+    xx = lineStart.x + param * C;
+    yy = lineStart.y + param * D;
+  }
+
+  const dx = point.x - xx;
+  const dy = point.y - yy;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * Draw dimension creation preview
+ */
+function drawDimensionPreview(ctx, drawing, worldToScreen) {
+  if (!drawing || !drawing.startPoint) return;
+  
+  const startScreen = worldToScreen(drawing.startPoint);
+  const endScreen = worldToScreen(drawing.endPoint);
+  
+  // Calculate distance for text
+  const worldDistance = Math.sqrt(
+    (drawing.endPoint.x - drawing.startPoint.x) ** 2 + 
+    (drawing.endPoint.y - drawing.startPoint.y) ** 2
+  );
+  
+  if (worldDistance < 0.01) return;
+  
+  ctx.save();
+  ctx.strokeStyle = 'rgba(30, 136, 229, 0.7)'; // Blue preview color
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]); // Dashed line for preview
+  
+  if (drawing.__stage === 1) {
+    // Stage 1: Show line from start to current cursor position
+    ctx.beginPath();
+    ctx.moveTo(startScreen.x, startScreen.y);
+    ctx.lineTo(endScreen.x, endScreen.y);
+    ctx.stroke();
+    
+    // Draw start point indicator
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(30, 136, 229, 0.8)';
+    ctx.beginPath();
+    ctx.arc(startScreen.x, startScreen.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+  } else if (drawing.__stage === 2) {
+    // Stage 2: Show dimension line preview with positioning
+    const offsetScreen = worldToScreen(drawing.offsetPoint);
+    const dimText = formatDimension(worldDistance);
+    drawSimpleDimensionPreview(ctx, startScreen, endScreen, offsetScreen, dimText);
+  }
+  
+  ctx.restore();
+}
+
+/**
+ * Draw simplified dimension preview (fallback)
+ */
+function drawSimpleDimensionPreview(ctx, start, end, offsetPoint, text) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  
+  if (length === 0) return;
+  
+  const ux = dx / length;
+  const uy = dy / length;
+  const px = -uy;
+  const py = ux;
+  
+  // Calculate offset
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  const offsetDx = offsetPoint.x - midX;
+  const offsetDy = offsetPoint.y - midY;
+  const offset = offsetDx * px + offsetDy * py;
+  
+  const dimStart = {
+    x: start.x + px * offset,
+    y: start.y + py * offset
+  };
+  const dimEnd = {
+    x: end.x + px * offset,
+    y: end.y + py * offset
+  };
+  
+  ctx.strokeStyle = 'rgba(30, 136, 229, 0.7)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 2]);
+  
+  // Extension lines
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  ctx.lineTo(dimStart.x, dimStart.y);
+  ctx.moveTo(end.x, end.y);
+  ctx.lineTo(dimEnd.x, dimEnd.y);
+  ctx.stroke();
+  
+  // Dimension line
+  ctx.beginPath();
+  ctx.moveTo(dimStart.x, dimStart.y);
+  ctx.lineTo(dimEnd.x, dimEnd.y);
+  ctx.stroke();
+  
+  // Text
+  const midDimX = (dimStart.x + dimEnd.x) / 2;
+  const midDimY = (dimStart.y + dimEnd.y) / 2;
+  
+  ctx.save();
+  ctx.translate(midDimX, midDimY);
+  
+  const textAngle = Math.atan2(dy, dx);
+  let displayAngle = textAngle;
+  if (textAngle > Math.PI/2 || textAngle < -Math.PI/2) {
+    displayAngle = textAngle + Math.PI;
+  }
+  ctx.rotate(displayAngle);
+  
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  
+  // Background
+  const metrics = ctx.measureText(text);
+  const bgWidth = metrics.width + 8;
+  const bgHeight = 14;
+  
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.fillRect(-bgWidth/2, -bgHeight/2, bgWidth, bgHeight);
+  
+  // Text
+  ctx.fillStyle = 'rgba(30, 136, 229, 0.9)';
+  ctx.fillText(text, 0, 0);
+  
+  ctx.restore();
+}
+
 // ============================================================================
 // [04] GEOMETRY & SELECTION HELPERS (LASSO + BBOX)
 // Pure functions aiding selection, lasso containment, intersection tests, centering & fit.
@@ -560,15 +869,10 @@ function drawObject(o, g = ctx){
       let pts = (Array.isArray(o.__preview) && o.__preview.length>=2) ? o.__preview : o.pts;
       // Measurement/dimension live preview handling
       if(o.__mode==='measure' && o.pts && o.pts.length>=2){ pts = [o.pts[0], o.pts[1]]; }
-      if(o.__mode==='dimension' && o.pts){
-        if(o.pts.length===2){ pts=[o.pts[0], o.pts[1]]; }
-        else if(o.pts.length>=3){
-          const a=o.pts[0], b=o.pts[1], off=o.pts[2];
-          const v={ x:b.x-a.x, y:b.y-a.y }; const L=Math.hypot(v.x,v.y)||1; const nx=v.x/L, ny=v.y/L; const perp={ x:-ny, y:nx };
-          const offset = ((off.x-a.x)*perp.x + (off.y-a.y)*perp.y);
-          const A={ x:a.x+perp.x*offset, y:a.y+perp.y*offset }, B={ x:b.x+perp.x*offset, y:b.y+perp.y*offset };
-          pts=[A,B];
-        }
+      if(o.__mode==='dimension'){
+        // Skip drawing here - dimension previews are handled separately
+        g.restore(); 
+        return;
       }
       g.beginPath();
       for(let i=0;i<pts.length;i++){
@@ -905,6 +1209,35 @@ function draw(){
   }
   // Selection overlay above
   if(selectToggle && selection.index>=0){ drawSelectionOverlay(); }
+  
+  // Live dimensions overlay
+  if(shouldShowLiveDimensions(selection, selectToggle, drawing)) {
+    // Show dimensions for selected object
+    if(selectToggle && selection.index >= 0) {
+      const selectedObject = objects[selection.index];
+      if(selectedObject) {
+        drawLiveDimensions(ctx, view, selectedObject, worldToScreen);
+      }
+    }
+    
+    // Show dimensions for object being drawn
+    if(drawing) {
+      try {
+        drawLiveDimensions(ctx, view, drawing, worldToScreen);
+      } catch (error) {
+        // Silently handle errors for incomplete drawing objects
+      }
+    }
+  }
+  
+  // Draw manual dimensions (always visible)
+  drawManualDimensions(ctx, worldToScreen);
+  
+  // Draw dimension tool preview
+  if (tool === 'dimension' && drawing && drawing.__mode === 'dimension') {
+    drawDimensionPreview(ctx, drawing, worldToScreen);
+  }
+  
   // Toggle delete bar only on devices likely without a hardware keyboard
   try {
     const ua = navigator.userAgent || '';
@@ -982,7 +1315,18 @@ function setTool(id){
   const el = document.getElementById(id); if(!el) return; el.addEventListener('click',()=>{
     const map = { tPen:'pen', tSmart:'smart', tLine:'line', tPolyline:'polyline', tRect:'rect', tEllipse:'ellipse', tPolygon:'polygon', tRegPoly:'regpoly', tRoundRect:'roundrect', tStar:'star', tArc3:'arc3', tArcCenter:'arccenter', tBezier:'bezier', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel', tOffset:'offset', tFillet:'fillet', tChamfer:'chamfer', tTrim:'trim', tMirror:'mirror', tArray:'array', tDimension:'dimension', tMeasure:'measure', tHatch:'hatch' };
     const targetTool = map[id];
-    setTool(targetTool);
+    // Special toggle behavior for measure and dimension tools
+    if((id === 'tMeasure' || id === 'tDimension') && tool === targetTool) {
+      // If clicking the same tool, toggle it off (set to default tool)
+      setTool('pan');
+      // Clear any active drawing state for these tools
+      if(drawing && (drawing.__mode === 'measure' || drawing.__mode === 'dimension')) {
+        drawing = null;
+      }
+      draw();
+    } else {
+      setTool(targetTool);
+    }
   });
 });
 
@@ -1076,6 +1420,165 @@ const exportPDF = () => exportPDFMod(canvas, W, H, dpr);
 
 const exportPNGBtn = document.getElementById('exportPNG'); if(exportPNGBtn) exportPNGBtn.addEventListener('click', exportPNG);
 const exportPDFBtn = document.getElementById('exportPDF'); if(exportPDFBtn) exportPDFBtn.addEventListener('click', exportPDF);
+
+// Dimension Settings Modal
+const dimensionSettingsBtn = document.getElementById('tDimensionSettings');
+const dimensionSettingsModal = document.getElementById('dimensionSettingsModal');
+const dimensionTextSize = document.getElementById('dimensionTextSize');
+const dimensionTextSizeValue = document.getElementById('dimensionTextSizeValue');
+const dimensionLineColor = document.getElementById('dimensionLineColor');
+const dimensionPreviewCanvas = document.getElementById('dimensionPreviewCanvas');
+const dimensionSettingsCancel = document.getElementById('dimensionSettingsCancel');
+const dimensionSettingsApply = document.getElementById('dimensionSettingsApply');
+
+function showDimensionSettings() {
+  if (!dimensionSettingsModal) return;
+  
+  // Load current settings
+  dimensionTextSize.value = dimensionSettings.textSize;
+  dimensionTextSizeValue.textContent = dimensionSettings.textSize;
+  
+  // Convert rgba color to hex for color input
+  const rgbaMatch = dimensionSettings.lineColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (rgbaMatch) {
+    const r = parseInt(rgbaMatch[1]);
+    const g = parseInt(rgbaMatch[2]);
+    const b = parseInt(rgbaMatch[3]);
+    const hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+    dimensionLineColor.value = hex;
+  }
+  
+  updateDimensionPreview();
+  dimensionSettingsModal.style.display = 'flex';
+}
+
+function hideDimensionSettings() {
+  if (dimensionSettingsModal) {
+    dimensionSettingsModal.style.display = 'none';
+  }
+}
+
+function updateDimensionPreview() {
+  if (!dimensionPreviewCanvas) return;
+  
+  const ctx = dimensionPreviewCanvas.getContext('2d');
+  const canvas = dimensionPreviewCanvas;
+  
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Get current values
+  const fontSize = parseInt(dimensionTextSize.value);
+  const colorHex = dimensionLineColor.value;
+  
+  // Convert hex to rgba
+  const r = parseInt(colorHex.slice(1, 3), 16);
+  const g = parseInt(colorHex.slice(3, 5), 16);
+  const b = parseInt(colorHex.slice(5, 7), 16);
+  const lineColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
+  
+  // Draw sample dimension
+  const startX = 40, endX = 280, y = 40;
+  const offsetY = -15;
+  
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1;
+  
+  // Extension lines
+  ctx.beginPath();
+  ctx.moveTo(startX, y + 5);
+  ctx.lineTo(startX, y + offsetY);
+  ctx.moveTo(endX, y + 5);
+  ctx.lineTo(endX, y + offsetY);
+  ctx.stroke();
+  
+  // Dimension line
+  ctx.beginPath();
+  ctx.moveTo(startX - 2, y + offsetY);
+  ctx.lineTo(endX + 2, y + offsetY);
+  ctx.stroke();
+  
+  // Tick marks
+  ctx.beginPath();
+  ctx.moveTo(startX, y + offsetY - 3);
+  ctx.lineTo(startX, y + offsetY + 2);
+  ctx.moveTo(endX, y + offsetY - 3);
+  ctx.lineTo(endX, y + offsetY + 2);
+  ctx.stroke();
+  
+  // Text
+  ctx.font = `${fontSize}px system-ui, sans-serif`;
+  ctx.fillStyle = lineColor.replace('0.9)', '1)');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  
+  // Background pill
+  const text = '20.0 ft';
+  const textMetrics = ctx.measureText(text);
+  const textWidth = textMetrics.width + 8;
+  const textHeight = Math.max(12, fontSize + 3);
+  const textX = (startX + endX) / 2;
+  const textY = y + offsetY;
+  
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+  ctx.beginPath();
+  ctx.roundRect(textX - textWidth/2, textY - textHeight/2, textWidth, textHeight, textHeight/2);
+  ctx.fill();
+  
+  ctx.fillStyle = lineColor.replace('0.9)', '1)');
+  ctx.fillText(text, textX, textY);
+}
+
+if (dimensionSettingsBtn) {
+  dimensionSettingsBtn.addEventListener('click', showDimensionSettings);
+}
+
+if (dimensionTextSize) {
+  dimensionTextSize.addEventListener('input', () => {
+    dimensionTextSizeValue.textContent = dimensionTextSize.value;
+    updateDimensionPreview();
+  });
+}
+
+if (dimensionLineColor) {
+  dimensionLineColor.addEventListener('input', updateDimensionPreview);
+}
+
+if (dimensionSettingsCancel) {
+  dimensionSettingsCancel.addEventListener('click', hideDimensionSettings);
+}
+
+if (dimensionSettingsApply) {
+  dimensionSettingsApply.addEventListener('click', () => {
+    // Apply settings
+    const colorHex = dimensionLineColor.value;
+    const r = parseInt(colorHex.slice(1, 3), 16);
+    const g = parseInt(colorHex.slice(3, 5), 16);
+    const b = parseInt(colorHex.slice(5, 7), 16);
+    
+    dimensionSettings.textSize = parseInt(dimensionTextSize.value);
+    dimensionSettings.lineColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
+    dimensionSettings.selectedColor = `rgba(30, 136, 229, 0.9)`; // Keep blue for selected
+    
+    // Update manual dimensions module
+    setDimensionSettings(dimensionSettings);
+    
+    // Redraw to show changes
+    draw();
+    
+    hideDimensionSettings();
+    setStatus('Dimension settings applied');
+  });
+}
+
+// Close modal when clicking outside
+if (dimensionSettingsModal) {
+  dimensionSettingsModal.addEventListener('click', (e) => {
+    if (e.target === dimensionSettingsModal) {
+      hideDimensionSettings();
+    }
+  });
+}
 
 // ============================================================================
 // [13] SERIALIZATION / AUTOSAVE / BROADCAST
@@ -1662,10 +2165,70 @@ function onPointerDown(e){
       }
     }
     // hit-test objects from top
-  // Strict selection tolerance: ~1 CSS pixel in world feet
-  const rFeet = 1 / (view.scale * view.pxPerFt);
+    // Enhanced selection tolerance: more generous than 1 pixel for better usability
+    // Use minimum 4-pixel hit zone in world coordinates for comfortable selection
+    const minHitPixels = 4;
+    const rFeet = Math.max(minHitPixels / (view.scale * view.pxPerFt), 1 / (view.scale * view.pxPerFt));
     let hitIdx = -1;
     for(let i=objects.length-1;i>=0;i--){ const o = objects[i]; const ht = hitTestObject(o, world, rFeet); if(ht && ht.hit){ hitIdx=i; break; } }
+    
+    // Check for dimension grabber hit testing first (higher priority when selected)
+    const grabberHit = hitTestDimensionGrabbers({ x: local.x, y: local.y }, worldToScreen, 8);
+    if (grabberHit) {
+      // Start grabbing a dimension control point
+      pushUndo();
+      dimensionGrabbing.active = true;
+      dimensionGrabbing.dimensionId = grabberHit.dimensionId;
+      dimensionGrabbing.grabberType = grabberHit.grabberType;
+      dimensionGrabbing.startWorld = { ...world };
+      
+      // Store original point for reference
+      const dimension = manualDimensions.find(d => d.id === grabberHit.dimensionId);
+      if (dimension) {
+        switch (grabberHit.grabberType) {
+          case 'start':
+            dimensionGrabbing.originalPoint = { ...dimension.startPoint };
+            break;
+          case 'end':
+            dimensionGrabbing.originalPoint = { ...dimension.endPoint };
+            break;
+          case 'text':
+            dimensionGrabbing.originalPoint = { 
+              x: (dimension.startPoint.x + dimension.endPoint.x) / 2, 
+              y: (dimension.startPoint.y + dimension.endPoint.y) / 2 
+            };
+            break;
+          case 'offset':
+            dimensionGrabbing.originalPoint = { ...dimension.offsetPoint };
+            break;
+        }
+      }
+      
+      canvas.style.cursor = getCursorForGrabber(grabberHit.grabberType);
+      setStatus(`Repositioning dimension ${grabberHit.grabberType} point`);
+      return;
+    }
+    
+    // Also check for dimension hit testing
+    const dimensionId = hitTestDimensions({ x: local.x, y: local.y }, worldToScreen, 10);
+    
+    if (dimensionId) {
+      // Hit a dimension - select it and clear object selection
+      clearDimensionSelections();
+      selectDimension(dimensionId, true);
+      selection.index = -1;
+      selection.mode = null;
+      selection.handle = null;
+      selection.orig = null;
+      selection.bbox0 = null;
+      setStatus('Dimension selected (Delete key to remove)');
+      draw();
+      return;
+    }
+    
+    // Clear dimension selections if we're selecting an object
+    clearDimensionSelections();
+    
     selection.index = hitIdx;
     if(hitIdx>=0){
       const bb = getObjectBBox(objects[hitIdx]);
@@ -1757,14 +2320,97 @@ function onPointerDown(e){
     drawing = { type:'path', pts:[world], closed:false, stroke:'#008000', fill:'#00000000', thickness: 1, __mode:'measure' };
     draw(); return;
   } else if(tool === 'dimension'){
-    // Aligned dimension: pick start and end, then place text offset on move
-    drawing = { type:'path', pts:[world], closed:false, stroke, fill:'#00000000', thickness: 1, __mode:'dimension', __stage:1 };
-    draw(); return;
+    // Manual dimension creation: 3-step process similar to measure but creates persistent objects
+    // Step 1: Click first point (start of measurement)
+    // Step 2: Click second point (end of measurement) 
+    // Step 3: Click to position dimension line offset
+    
+    if(!drawing || drawing.__mode !== 'dimension') {
+      // Start new dimension - first click sets start point (similar to measure tool)
+      pushUndo();
+      
+      // Check if we're clicking on an existing shape to snap to (optional)
+      const rFeet = 1 / (view.scale * view.pxPerFt);
+      let snapInfo = findSnapTarget(world, rFeet * 2); // Larger snap radius
+      
+      // If no snap found, that's OK - dimension can be placed anywhere
+      if (!snapInfo) {
+        snapInfo = { point: world, parentId: null, edgeIndex: null };
+      }
+      
+      // IMPORTANT: Use the snap point, not the raw click point
+      const startPoint = snapInfo.point || world;
+      
+      // Use similar structure to measure tool but with dimension-specific data
+      drawing = { 
+        type: 'path', // Make it compatible with drawObject
+        pts: [startPoint], // Use pts array like measure tool
+        closed: false,
+        stroke: '#008000',
+        fill: '#00000000',
+        thickness: 2, // Make it more visible during creation
+        startPoint: startPoint,
+        endPoint: startPoint,
+        offsetPoint: startPoint,
+        snapStart: snapInfo,
+        __mode: 'dimension', 
+        __stage: 1 
+      };
+      setStatus('Dimension: Click second point');
+      draw(); // Ensure immediate visual feedback
+    } else if (drawing.__stage === 1) {
+      // Second click sets end point
+      const rFeet = 1 / (view.scale * view.pxPerFt);
+      let snapInfo = findSnapTarget(world, rFeet * 2); // Larger snap radius
+      
+      // If no snap found, use the raw click point
+      if (!snapInfo) {
+        snapInfo = { point: world, parentId: null, edgeIndex: null };
+      }
+      
+      // IMPORTANT: Use the snap point, not the raw click point
+      const endPoint = snapInfo.point || world;
+      
+      // Update both pts array and dimension-specific points
+      if(drawing.pts.length === 1) {
+        drawing.pts.push(endPoint);
+      } else {
+        drawing.pts[1] = endPoint;
+      }
+      drawing.endPoint = endPoint;
+      drawing.snapEnd = snapInfo;
+      drawing.__stage = 2;
+      setStatus('Dimension: Click to position dimension line');
+      draw(); // Ensure visual feedback for stage 2
+    } else if (drawing.__stage === 2) {
+      // Third click positions the dimension line and creates the final dimension
+      drawing.offsetPoint = world;
+      
+      // Create the actual manual dimension with separate start/end snap info
+      createManualDimension(
+        drawing.startPoint, 
+        drawing.endPoint, 
+        drawing.offsetPoint, 
+        drawing.snapStart,
+        drawing.snapEnd
+      );
+      
+      // Clear the drawing state
+      drawing = null;
+      setStatus('Dimension created');
+      draw();
+      scheduleSave();
+      return;
+    }
+    
+    draw(); 
+    return;
   } else if(tool === 'offset'){
     // Pick a path and nearest segment; live preview offset distance by cursor
     // Find top-most path under cursor (or nearest segment within small radius)
-  // Strict selection tolerance: ~1 CSS pixel in world feet
-  const rFeet = 1 / (view.scale * view.pxPerFt);
+    // Enhanced selection tolerance: 3 pixels for easier path segment selection
+    const minHitPixels = 3;
+    const rFeet = Math.max(minHitPixels / (view.scale * view.pxPerFt), 1 / (view.scale * view.pxPerFt));
     let hit = { idx:-1, seg:null, obj:null };
     for(let i=objects.length-1;i>=0;i--){ const o=objects[i]; if(o.type!=='path' || !Array.isArray(o.pts)) continue; const seg = findNearestPathSegment(o, world); if(!seg) continue; if(seg.dist<=rFeet){ hit={ idx:i, seg, obj:o }; break; } }
     if(hit.idx>=0){
@@ -1819,15 +2465,42 @@ function onPointerMove(e){
     view.y = panStart.vy - (local.y - panStart.sy) / s;
   draw(); scheduleSave(); return;
   }
+  
+  // Handle dimension grabber repositioning
+  if (dimensionGrabbing.active) {
+    const success = repositionDimensionGrabber(
+      dimensionGrabbing.dimensionId, 
+      dimensionGrabbing.grabberType, 
+      world, 
+      objects
+    );
+    
+    if (success) {
+      draw(); 
+      scheduleSave();
+    }
+    return;
+  }
+  
   if(selectToggle && selection.index>=0 && selection.mode){
     const o0 = selection.orig; if(!o0){ draw(); return; }
     if(selection.mode==='move'){
-      const dx = world.x - selection.startWorld.x; const dy = world.y - selection.startWorld.y; objects[selection.index] = moveObject(o0, dx, dy);
+      const dx = world.x - selection.startWorld.x; const dy = world.y - selection.startWorld.y; 
+      objects[selection.index] = moveObject(o0, dx, dy);
+      // Update any dimensions attached to this object
+      updateDimensionsForObject(objects, selection.index);
       draw(); scheduleSave(); return;
     } else if(selection.mode==='scale'){
-      objects[selection.index] = scaleObject(o0, selection.bbox0, selection.handle, world); draw(); scheduleSave(); return;
+      objects[selection.index] = scaleObject(o0, selection.bbox0, selection.handle, world); 
+      // Update any dimensions attached to this object
+      updateDimensionsForObject(objects, selection.index);
+      draw(); scheduleSave(); return;
     } else if(selection.mode==='rotate'){
-      const center = getBBoxCenter(selection.bbox0); const a0 = Math.atan2(selection.startWorld.y - center.y, selection.startWorld.x - center.x); const a1 = Math.atan2(world.y - center.y, world.x - center.x); const da = a1 - a0; objects[selection.index] = rotateObject(o0, center, da); draw(); scheduleSave(); return;
+      const center = getBBoxCenter(selection.bbox0); const a0 = Math.atan2(selection.startWorld.y - center.y, selection.startWorld.x - center.x); const a1 = Math.atan2(world.y - center.y, world.x - center.x); const da = a1 - a0; 
+      objects[selection.index] = rotateObject(o0, center, da); 
+      // Update any dimensions attached to this object
+      updateDimensionsForObject(objects, selection.index);
+      draw(); scheduleSave(); return;
     }
   }
   // Object erase: only on click, not on hover/move
@@ -1894,10 +2567,18 @@ function onPointerMove(e){
     } else if(drawing.__mode==='measure'){
       if(drawing.pts.length===1){ drawing.pts.push(world); } else { drawing.pts[1] = world; }
     } else if(drawing.__mode==='dimension'){
-      if(drawing.__stage===1){ if(drawing.pts.length===1){ drawing.pts.push(world); } else { drawing.pts[1]=world; } }
-      else {
-        // Offset point for dimension line placement
-        if(drawing.pts.length===2){ drawing.pts.push(world); } else drawing.pts[2]=world;
+      // Update dimension preview based on stage (similar to measure)
+      if(drawing.__stage === 1) {
+        // Stage 1: Live preview line from start to current cursor position
+        if(drawing.pts.length === 1) {
+          drawing.pts.push(world);
+        } else {
+          drawing.pts[1] = world;
+        }
+        drawing.endPoint = world;
+      } else if(drawing.__stage === 2) {
+        // Stage 2: Preview dimension line positioning
+        drawing.offsetPoint = world;
       }
     } else if(drawing.__mode==='offset'){
       const base = objects[drawing.__baseIdx]; if(!base){ drawing=null; draw(); return; }
@@ -1943,12 +2624,37 @@ function onPointerMove(e){
     }
     drawing.b = b;
   }
+  
+  // Update cursor based on what's under the mouse (only when not actively dragging)
+  if (!isPanning && !dimensionGrabbing.active && !selection.mode && pointersDown.size === 0) {
+    const grabberHit = hitTestDimensionGrabbers({ x: local.x, y: local.y }, worldToScreen, 8);
+    if (grabberHit) {
+      canvas.style.cursor = getCursorForGrabber(grabberHit.grabberType);
+    } else {
+      canvas.style.cursor = 'default';
+    }
+  }
+  
   draw(); scheduleSave();
 }
 function onPointerUp(e){
   if(snip2D.active){ try { canvas.releasePointerCapture(e.pointerId); } catch{} return; }
   try { canvas.releasePointerCapture(e.pointerId); } catch{}
   pointersDown.delete(e.pointerId);
+  
+  // End dimension grabber repositioning
+  if (dimensionGrabbing.active) {
+    dimensionGrabbing.active = false;
+    dimensionGrabbing.dimensionId = null;
+    dimensionGrabbing.grabberType = null;
+    dimensionGrabbing.startWorld = null;
+    dimensionGrabbing.originalPoint = null;
+    canvas.style.cursor = 'default';
+    setStatus('Dimension repositioned');
+    draw();
+    return;
+  }
+  
   if(pinch.active && pointersDown.size<2){ pinch.active = false; setStatus('Ready'); }
   if(isPanning && pointersDown.size===0){ isPanning=false; setStatus('Ready'); canvas.style.cursor='default'; }
   if(drawing){
@@ -1964,27 +2670,9 @@ function onPointerUp(e){
       drawing=null; draw(); return;
     }
     if(tool==='dimension' && drawing && drawing.__mode==='dimension'){
-      if((drawing.__stage||1) < 2){ drawing.__stage=2; draw(); return; }
-      // Emit simple dimension as a light path and a text object at mid of the offset line
-      if(drawing.pts.length>=3){
-        const a=drawing.pts[0], b=drawing.pts[1], o=drawing.pts[2];
-        const v={ x:b.x-a.x, y:b.y-a.y }; const L=Math.hypot(v.x,v.y)||1; const nx=v.x/L, ny=v.y/L; // unit along
-        // project offset point onto normal of AB
-        const perp={ x:-ny, y:nx };
-        const offset = ((o.x-a.x)*perp.x + (o.y-a.y)*perp.y);
-        const A={ x:a.x+perp.x*offset, y:a.y+perp.y*offset }, B={ x:b.x+perp.x*offset, y:b.y+perp.y*offset };
-        objects.push({ type:'path', pts:[A,B], closed:false, stroke:'#444', fill:'#00000000', thickness: 1 });
-        // arrow ticks
-        const tick=0.2; const t1={ x:A.x - nx*tick + perp.x*(tick*0.5), y:A.y - ny*tick + perp.y*(tick*0.5) };
-        const t2={ x:B.x + nx*tick - perp.x*(tick*0.5), y:B.y + ny*tick - perp.y*(tick*0.5) };
-        objects.push({ type:'path', pts:[A,t1], closed:false, stroke:'#444', fill:'#00000000', thickness: 1 });
-        objects.push({ type:'path', pts:[B,t2], closed:false, stroke:'#444', fill:'#00000000', thickness: 1 });
-        // text at midpoint
-        const mid={ x:(A.x+B.x)/2, y:(A.y+B.y)/2 };
-        const val = `${L.toFixed(2)} ft`;
-        objects.push({ type:'text', p: mid, text: val, stroke:'#333', thickness: 1, fill:'#00000000' });
-      }
-      drawing=null; draw(); scheduleSave(); return;
+      // Dimension tool uses click-click-click, not drag. Don't clear on pointer up.
+      // The actual stage advancement happens in onPointerDown.
+      return;
     }
     if(tool==='polygon' && drawing.type==='path' && drawing.__mode==='polygon'){
       draw(); scheduleSave(); return;
@@ -2063,10 +2751,17 @@ function onPointerUp(e){
       const snapped = smartInterpretPath(drawing.pts);
       if(snapped){ objects.push({ ...snapped, stroke, fill: (snapped.type==='line' ? '#00000000' : fill), thickness }); }
       else { objects.push(drawing); }
-    } else {
+    } else if (drawing.__mode !== 'dimension') {
+      // Don't create objects for dimension tool - it handles its own object creation
       objects.push(drawing);
     }
-    drawing = null; draw(); scheduleSave();
+    
+    // Only clear drawing state if it's not a dimension tool in progress
+    if (drawing.__mode !== 'dimension') {
+      drawing = null;
+    }
+    
+    draw(); scheduleSave();
   }
   if(selectToggle && selection.mode){ selection.mode=null; selection.handle=null; selection.orig=null; }
   if(tool === 'erase-pixel'){
@@ -2212,7 +2907,7 @@ window.addEventListener('keydown', e => {
     }
   }
   else if(k==='backspace' || k==='delete'){
-    // Delete selected object
+    // Delete selected object or dimension
     if(selection.index>=0 && selection.index < objects.length){
       e.preventDefault();
       pushUndo();
@@ -2220,6 +2915,17 @@ window.addEventListener('keydown', e => {
       selection.index = -1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null;
       setStatus('Deleted');
       draw(); scheduleSave();
+    } else {
+      // Check for selected dimensions to delete
+      const selectedDimensionIds = manualDimensions.filter(dim => dim.isSelected).map(dim => dim.id);
+      if (selectedDimensionIds.length > 0) {
+        e.preventDefault();
+        pushUndo();
+        selectedDimensionIds.forEach(id => deleteManualDimension(id));
+        setStatus(`Deleted ${selectedDimensionIds.length} dimension(s)`);
+        draw();
+        scheduleSave();
+      }
     }
   }
   else if(k==='e') setTool(e.shiftKey ? 'erase-object' : 'erase-pixel');
@@ -2273,6 +2979,16 @@ if (mobileDeleteBtn2D) {
       selection.index = -1; selection.mode=null; selection.handle=null; selection.orig=null; selection.bbox0=null;
       setStatus('Deleted');
       draw(); scheduleSave();
+    } else {
+      // Check for selected dimensions to delete
+      const selectedDimensionIds = manualDimensions.filter(dim => dim.isSelected).map(dim => dim.id);
+      if (selectedDimensionIds.length > 0) {
+        pushUndo();
+        selectedDimensionIds.forEach(id => deleteManualDimension(id));
+        setStatus(`Deleted ${selectedDimensionIds.length} dimension(s)`);
+        draw();
+        scheduleSave();
+      }
     }
   });
 }
@@ -2362,7 +3078,7 @@ function wireCollapse(toggleId, groupId){
       if (groupId === 'erase2DGroup' && (tool==='erase-object' || tool==='erase-pixel')) {
         setTool('pan');
       }
-      if (groupId === 'modify2DGroup' && ['offset','fillet','chamfer','trim','mirror','array','dimension','measure','hatch'].includes(tool)) {
+      if (groupId === 'modify2DGroup' && ['offset','fillet','chamfer','trim','mirror','array','hatch'].includes(tool)) {
         setTool('pan'); hideModifyHUD && hideModifyHUD();
       }
     }
@@ -2370,7 +3086,7 @@ function wireCollapse(toggleId, groupId){
     placeMobileDeleteBar2D();
   });
 }
-// Wire collapsible groups in required order: drawing, shapes, text, style, erase, edit/export
+// Wire collapsible groups in required order: drawing, shapes, text, style, erase, edit/export, dimensions
 wireCollapse('toggle2DDraw', 'draw2DGroup');
 wireCollapse('toggle2DShapes', 'shapes2DGroup');
 wireCollapse('toggle2DText', 'text2DGroup');
@@ -2378,3 +3094,7 @@ wireCollapse('toggle2DStyle', 'style2DGroup');
 wireCollapse('toggle2DErase', 'erase2DGroup');
 wireCollapse('toggle2DEdit', 'edit2DGroup');
 wireCollapse('toggle2DModify', 'modify2DGroup');
+wireCollapse('toggle2DDimensions', 'dimensions2DGroup');
+
+// Initialize dimension settings
+setDimensionSettings(dimensionSettings);

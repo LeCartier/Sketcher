@@ -1,16 +1,101 @@
-// AR Edit service: bimanual grab/translate/scale/twist with controllers or hands, with optional gizmo and haptics.
-// Usage:
-//   const arEdit = createAREdit(THREE, scene, renderer);
-//   arEdit.setEnabled(true|false);
-//   arEdit.setGizmoEnabled(true|false);
-//   arEdit.setTarget(group); // the placed AR root
-//   arEdit.start(session);
-//   // per-frame:
-//   arEdit.update(frame, xrLocalSpace);
-//   // on session end:
-//   arEdit.stop();
+/*
+====================================================================================
+AR EDIT SERVICE  (createAREdit)
+====================================================================================
+Plain Meaning:
+  Lets a person in AR grab a 3D thing with one or two hands / controllers and move,
+  rotate, or scale it naturally. Adds smart helpers like magnetic snapping, a simple
+  visual gizmo, and optional haptic buzzes so it “feels” responsive.
+
+Developer Summary:
+  Provides unified manipulation for a target Object3D in immersive WebXR (hands or
+  controllers). Supports:
+    - One‑hand 6DoF pose hold (position + orientation)
+    - Two‑hand scale + orbit (with 1:1 scale magnetic hysteresis snapping)
+    - Per‑object sub‑selection mode vs whole‑scene mode
+    - Face (box face) magnetic snapping with distance‑weighted attraction + highlights
+    - Optional ground‑locked constraint (Y frozen + yaw‑only rotation)
+    - Low‑pass smoothing of position/rotation/scale updates
+    - Haptic pulses on grab begin, scale snap, and face snap proximity
+    - Gizmo line + endpoint spheres for quick visual feedback
+    - Dirty set tracking for changed sub‑objects (used by persistence/export)
+
+Design Goals:
+  1. Natural interaction: mimic tangible object handling while guarding against jitter.
+  2. Extensibility: isolated helpers for snapping, gizmo, and collision gating.
+  3. Safety: no mutation outside provided target subtree; defensive try/catch wrappers.
+  4. Non‑invasive: if disabled or no session, early‑out fast.
+
+Key Concepts (High‑Level):
+  One‑Hand Mode: Object follows the grabbing hand exactly (with smoothing).
+  Two‑Hand Mode: Distance drives scale; vector between hands defines rotation delta.
+  1:1 Snap: Magnetic scale lock to true real‑world size with hysteresis (enter vs exit).
+  Face Snap: Aligns bounding box faces between moving object and nearby neighbors.
+  Per‑Object Mode: User selects individual child meshes inside a larger root for fine edits.
+  Ground Lock: Prevents vertical drifting; orientation constrained to yaw.
+
+Performance Notes:
+  - Uses on‑the‑fly Box3 computations; kept coarse (no deep geometry math beyond needed).
+  - Smoothing factor (state.smooth) trades latency vs steadiness.
+  - Face snapping does early exits + size heuristics to reduce false positives.
+
+Usage (Quick Start):
+  const arEdit = createAREdit(THREE, scene, renderer, { snapping, snapVisuals });
+  arEdit.setTarget(rootGroup);          // Root object to manipulate
+  arEdit.setPerObjectEnabled(true);     // (Optional) allow selecting individual children
+  arEdit.start(xrSession);              // Begin after XR session starts
+  // In RAF / XR frame loop:
+  arEdit.update(frame, xrLocalSpace);
+  // On end:
+  arEdit.stop();
+
+Public API:
+  setEnabled(on)          Toggle system globally
+  setGizmoEnabled(on)     Show/hide visual gizmo
+  setTarget(obj)          Assign main target/root
+  setPerObjectEnabled(on) Child selection / fine editing mode
+  setScaleEnabled(on)     Allow/disallow two‑hand scaling
+  setGroundLocked(on)     Constrain Y + yaw for large assemblies
+  setOnTransform(fn)      Callback when a meaningful transform occurs
+  setFaceSnapEnabled(on)  Toggle face snapping system
+  getDirtyInfo()          Return changed sub‑nodes (per‑object mode)
+  clearDirty()            Reset dirty tracking
+  start(session) / stop() Lifecycle hooks
+  update(frame, space)    Per‑frame processing
+
+Table of Contents (Numbered Section Markers):
+  [01] State & Configuration
+  [02] Face Snapping: Overview & Helpers
+  [03] API Setters / Dirty Tracking / Lifecycle
+  [04] Gizmo Construction & Updates
+  [05] Haptics Utility
+  [06] Core Constants (Thresholds & Tuning)
+  [07] 1:1 Scale Snap Helper (Box Highlight)
+  [08] Collision Check Utility (Sphere vs Box)
+  [09] Active Point Collection (Hands & Controllers)
+  [10] Main Update Orchestrator (Mode Routing)
+  [11] One‑Hand Manipulation Logic
+  [12] Face Snap Application Within One‑Hand Flow
+  [13] Two‑Hand Manipulation (Scale / Orbit / 1:1 Snap)
+  [14] Ground Lock Constraints (Single & Dual Hand)
+  [15] Post‑Transform Dirty Tracking & Callbacks
+  [16] Passive Collision Push (Disabled Placeholder)
+  [17] Face Snap Visual Clear / Highlight Handling
+  [18] Defensive Try/Catch Strategy
+  [19] Performance & Smoothing Rationale
+  [20] Public API Export
+
+Implementation Reading Guide:
+  Each numbered block in code is annotated with a PLAIN meaning line (for non‑coders)
+  followed by DEV details that explain math / state transitions.
+------------------------------------------------------------------------------------
+*/
 
 export function createAREdit(THREE, scene, renderer, options = {}){
+  // [01] STATE & CONFIGURATION
+  // Plain: Keeps track of the current editing session, target object, user hand states,
+  //        and feature toggles (scaling, snapping, etc.).
+  // Dev:   'state' centralizes mutable runtime info to avoid scattering variables.
   // Face snapping dependencies (passed in via options)
   const { snapping, snapVisuals } = options;
   
@@ -43,7 +128,11 @@ export function createAREdit(THREE, scene, renderer, options = {}){
   faceSnapDelta: null, // Current snap delta vector
   };
 
-  // Face snapping helper functions
+  // [02] FACE SNAPPING HELPERS
+  // Plain: Finds nearby objects and checks if the moving object should magnetically
+  //        align its box face to one of theirs.
+  // Dev:   Uses bounding boxes + heuristics (size thresholds, overlap ratios) and an
+  //        injected 'snapping.computeSnapDelta' service for the geometric delta.
   function getAllSnapTargets() {
     if (!state.root) return [];
     const targets = [];
@@ -152,6 +241,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     }
   }
 
+  // [03] API SETTERS / DIRTY TRACKING / LIFECYCLE
+  // Plain: Toggle features, choose object, manage selection mode, and clean up visuals.
+  // Dev:   Each setter sanitizes input, may clear manipulation to avoid stale states.
   function setEnabled(on){ state.enabled = !!on; if(!on) clearManip(); updateGizmo([]); }
   function setGizmoEnabled(on){ state.gizmo = !!on; if(!on) removeGizmo(); }
   function setTarget(obj){ state.target = obj || null; state.root = obj || null; }
@@ -198,6 +290,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     clearFaceSnapVisuals(); 
   }
 
+  // [04] GIZMO CREATION / UPDATE
+  // Plain: Shows a line (between two grab points) and spheres for visual feedback.
+  // Dev:   Lazily allocates Three.js objects; high renderOrder for overlay clarity.
   function ensureGizmo(){
     if (state.gizmoGroup) return;
     const g = new THREE.Group(); g.name = 'AR Edit Gizmo';
@@ -214,9 +309,15 @@ export function createAREdit(THREE, scene, renderer, options = {}){
   function removeGizmo(){ if(state.gizmoGroup && state.gizmoGroup.parent){ state.gizmoGroup.parent.remove(state.gizmoGroup); } state.gizmoGroup=null; state.gizmoLine=null; state.gizmoSpheres=[]; }
   function updateGizmo(points){ if(!state.gizmo) return; if(points.length===0){ if(state.gizmoGroup) state.gizmoGroup.visible=false; return; } ensureGizmo(); state.gizmoGroup.visible=true; if(points.length===1){ state.gizmoSpheres[0].position.set(points[0].x, points[0].y, points[0].z); state.gizmoSpheres[1].position.copy(state.gizmoSpheres[0].position); if(state.gizmoLine){ const pos=state.gizmoLine.geometry.attributes.position; pos.setXYZ(0, points[0].x, points[0].y, points[0].z); pos.setXYZ(1, points[0].x, points[0].y, points[0].z); pos.needsUpdate=true; } } else { const p0=points[0], p1=points[1]; state.gizmoSpheres[0].position.set(p0.x,p0.y,p0.z); state.gizmoSpheres[1].position.set(p1.x,p1.y,p1.z); if(state.gizmoLine){ const pos=state.gizmoLine.geometry.attributes.position; pos.setXYZ(0, p0.x,p0.y,p0.z); pos.setXYZ(1, p1.x,p1.y,p1.z); pos.needsUpdate=true; } } }
 
+  // [05] HAPTICS UTILITY
+  // Plain: Tries to buzz the controller (if hardware supports it) for tactile feedback.
+  // Dev:   Wrapped in try/catch to tolerate browsers/hardware without haptics.
   function hapticPulse(src, strength, duration){ try { if (src && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) { src.gamepad.hapticActuators[0].pulse(strength, duration); } } catch {}
   }
 
+  // [06] CONSTANTS (THRESHOLDS & TUNING)
+  // Plain: Magic numbers controlling hand pinch distance, snap tolerances, etc.
+  // Dev:   Adjust carefully—these values shape UX feel (latency, stickiness, precision).
   const PINCH_THRESHOLD_M = 0.035;
   const HAND_SPHERE_R = 0.045; // ~4.5cm interaction sphere
   const CONTROLLER_SPHERE_R = 0.040; // ~4cm sphere for controller grip/pose
@@ -232,6 +333,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
   state.snapTarget = 1.0; // cached sTarget when latched
   state.snapHelper = null; // THREE.Box3Helper
 
+  // [07] SNAP HELPER (1:1 SCALE VISUAL)
+  // Plain: Draws a green outline box when scale snaps to exact 1:1.
+  // Dev:   Uses Box3Helper; disposed/rebuilt to avoid memory leaks.
   function clearSnapHelper(){
     try {
       if (state.snapHelper){
@@ -261,6 +365,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     h.visible = true;
   }
 
+  // [08] COLLISION CHECK (SPHERE vs BOX)
+  // Plain: Detects if a hand/controller sphere is touching the object’s box.
+  // Dev:   Simple closest‑point test; avoids complex mesh intersection cost.
   function isCollidingWithBox(px, py, pz, radius, box){
     if (!box || box.isEmpty()) return false;
     // Compute nearest point on/in box to the sphere center
@@ -272,6 +379,10 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     return dist <= (radius + GRAB_NEAR_MARGIN);
   }
 
+  // [09] COLLECT ACTIVE POINTS
+  // Plain: Reads XR input sources; figures out which hands/controllers are grabbing.
+  // Dev:   Builds unified point records with position, quaternion (for hand pose), and
+  //        pinch/controller button state; collision gating prevents “through air” grabs.
   function collectActivePoints(frame, localSpace, targetBox){
     const session = state.session || (renderer.xr && renderer.xr.getSession && renderer.xr.getSession());
     if (!session) return [];
@@ -354,6 +465,11 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     return out;
   }
 
+  // [10] UPDATE ORCHESTRATOR
+  // Plain: Runs every frame; decides whether we’re in per‑object or whole‑scene mode
+  //        and delegates to manipulation logic.
+  // Dev:   Early outs keep overhead low when disabled; per‑object selection picks
+  //        closest valid child on new grab start.
   function update(frame, localSpace){
     if (!state.enabled || !frame || !localSpace) { updateGizmo([]); return; }
 
@@ -443,11 +559,18 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     return updateWithTarget(points, effectiveTarget, targetBox);
   }
 
+  // [11] ONE-HAND & TWO-HAND MANIPULATION ENTRY
+  // Plain: Decides if we are using one grab point (move/rotate) or two (scale/orbit).
+  // Dev:   Shared smoothing & parent space conversion; caches initial deltas for
+  //        stable relative transforms.
   function updateWithTarget(points, targetObj, targetBox){
     const grabbingPts = points.filter(p=>p.grabbing);
     const nonGrabPts = points.filter(p=>!p.grabbing);
     updateGizmo(grabbingPts);
     if(grabbingPts.length===1){
+      // [11A] ONE-HAND LOGIC
+      // Plain: Object sticks to one hand’s pose (position + orientation).
+      // Dev:   Stores hand->object delta pos & quaternion once; reapplies each frame.
       const p = grabbingPts[0];
       // World-space 6DoF hold; then convert back to parent's local space
       const parent = targetObj.parent || null;
@@ -493,7 +616,10 @@ export function createAREdit(THREE, scene, renderer, options = {}){
         desiredLocalQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle);
       }
       
-      // VR Face Snapping: Check for magnetic snap to nearby faces
+  // [12] FACE SNAP (SINGLE HAND)
+  // Plain: If enabled, gently pulls object so its face aligns with a nearby face.
+  // Dev:   Computes candidate alignment using bounding boxes; distance drives
+  //        magnetic strength; optional subtle rotation nudges for better flush.
       let faceSnapInfo = null;
       if (state.faceSnapEnabled && state.perObject && targetObj) {
         // Create a temporary transform to test snapping
@@ -613,6 +739,10 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       }
       state.two = null; // reset two-hand state if switching modes
   } else if(grabbingPts.length>=2){
+    // [13] TWO-HAND MANIPULATION
+    // Plain: Two grab points allow uniform scale + orbit around their midpoint.
+    // Dev:   Start snapshot caches distance, vector, scale, rotation; live diff
+    //        produces scale factor and rotation quaternion; hysteresis for 1:1 snap.
       // Require both hands/controllers to be currently colliding to orbit/scale
       const colliding = (p)=>{
         if (!targetBox || targetBox.isEmpty()) return false;
@@ -709,7 +839,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       } catch{}
       const beforePos = targetObj.position.clone(); const beforeQuat = targetObj.quaternion.clone(); const beforeScale = targetObj.scale && targetObj.scale.clone();
       
-      // Ground lock constraint: preserve Y position and constrain rotation to yaw only for scene-level operations
+  // [14] GROUND LOCK (DUAL HAND)
+  // Plain: If ground lock is on, keep object from lifting or tipping.
+  // Dev:   Forces Y to prior value and extracts yaw from desired quaternion.
       if (state.groundLocked && !state.perObject) {
         desiredLocalPos.y = beforePos.y;
         
@@ -723,7 +855,8 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       if (state.allowScale) { try { targetObj.scale.lerp(desiredLocalScale, state.smooth); } catch { targetObj.scale.copy(desiredLocalScale); } }
       try { targetObj.position.lerp(desiredLocalPos, state.smooth); } catch { targetObj.position.copy(desiredLocalPos); }
       try { targetObj.quaternion.slerp(desiredLocalQuat, state.smooth); } catch { targetObj.quaternion.copy(desiredLocalQuat); }
-      if (state.perObject && targetObj){
+  // [15] DIRTY TRACKING & CALLBACK (TWO-HAND)
+  if (state.perObject && targetObj){
         const moved = !beforePos.equals(targetObj.position) || !beforeQuat.equals(targetObj.quaternion) || (state.allowScale && beforeScale && !beforeScale.equals(targetObj.scale));
         if (moved){ try { state.dirtySet.add(targetObj); } catch{} try { if (state.onTransform) state.onTransform(targetObj); } catch{} }
       }
@@ -744,6 +877,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
       } catch{}
       state.one = null; // reset one-hand state
     } else {
+      // [11B] NO ACTIVE GRAB
+      // Plain: Nothing is touching; clear temporary states and visuals.
+      // Dev:   Ensures helper objects removed so stale highlights don’t persist.
       state.one = null; state.two = null;
       // Hide snap visual when not manipulating
       clearSnapHelper(); state.snapped = false;
@@ -751,6 +887,9 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     }
 
   // Passive push disabled; object only responds when grabbing
+  // [16] PASSIVE COLLISION PUSH (DISABLED)
+  // Plain: (Currently off) Could nudge object if hands bump it without grabbing.
+  // Dev:   Left as a feature gate; potential future enhancement for physicality.
   if (false && state.useCollision && nonGrabPts.length && state.target) {
       try {
         const box = new THREE.Box3().setFromObject(state.target);
@@ -781,5 +920,8 @@ export function createAREdit(THREE, scene, renderer, options = {}){
     }
   }
 
+  // [20] PUBLIC API EXPORT
+  // Plain: Functions other parts of the app can call to control AR editing.
+  // Dev:   Stable surface; avoid breaking names to keep external integrations intact.
   return { setEnabled, setGizmoEnabled, setTarget, setPerObjectEnabled, setScaleEnabled, setGroundLocked, setOnTransform, setFaceSnapEnabled, getDirtyInfo, clearDirty, start, stop, update };
 }

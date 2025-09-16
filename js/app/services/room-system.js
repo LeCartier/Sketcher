@@ -61,18 +61,28 @@ export function createRoomSystem({ THREE, scene }) {
         const bbox = new THREE.Box3().setFromObject(this.meshObject);
         const size = bbox.getSize(new THREE.Vector3());
         
+        // Determine if this is a blocking mass or regular object
+        const isBlockingMass = this.meshObject.userData?.isBlockingMass || false;
+        
         this.dimensions = {
           width: size.x,
           depth: size.z,
-          height: size.y
+          // For blocking masses, preserve user-defined height from userData
+          // For regular objects, use geometry height from mesh
+          height: isBlockingMass ? 
+            (this.meshObject.userData?.dimensions?.height || this.height || 8) : 
+            size.y
         };
+        
+        // Update the room's height property to match dimensions
+        this.height = this.dimensions.height;
         
         // Calculate square footage (width * depth, converted from meters to sq ft)
         const metersToFeet = 3.28084;
         this.squareFootage = (size.x * size.z) * (metersToFeet * metersToFeet);
         
-        // Calculate volume (width * depth * height in cubic feet)
-        this.volume = (size.x * size.y * size.z) * (metersToFeet * metersToFeet * metersToFeet);
+        // Calculate volume using the room height (width * depth * height in cubic feet)
+        this.volume = (size.x * size.z * this.dimensions.height) * (metersToFeet * metersToFeet * metersToFeet);
         
         // Update position
         const center = bbox.getCenter(new THREE.Vector3());

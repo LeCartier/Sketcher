@@ -1,8 +1,68 @@
+/* =================================================================================================
+   COLLABORATION SERVICE (Supabase Realtime)
+   -------------------------------------------------------------------------------------------------
+   Factory:
+     const collab = createCollab({
+       THREE,
+       findObjectByUUID,        // (uuid)=>object | null
+       addObjectToScene,        // (obj, { select })
+       clearSceneObjects,       // () => void (clears current scene content)
+       loadSceneFromJSON,       // (json) => void (rebuild scene graph)
+       getSnapshot,             // async () => { json, overlay }
+       applyOverlayData         // (overlayJson) => void (2D / hybrid data)
+     });
+
+   Purpose:
+     Provide lightweight, opportunistic multi‑user synchronization of: scene object add/delete,
+     object transforms (delta + interpolation), overlay documents, camera/pose avatars, and VR draw
+     strokes. It degrades gracefully to a no‑op when the Supabase CDN or keys are unavailable.
+
+   Core Concepts:
+     - Supabase Channel per room: broadcast events (self suppressed) + presence metadata.
+     - Host & Backup Host: Original host immediately answers snapshot requests; secondary clients
+       can self‑elevate after dwell (host migration resilience).
+     - Snapshot Flow: join() emits snapshot:request -> any host/backup responds with complete scene.
+     - Delta Compression: Only broadcast transform when exceeding small thresholds (pos/rot/scale).
+     - Interpolation & Prediction: Remote transforms lerp toward targets; minimal velocity prediction
+       reduces visible lag for fast movements.
+     - Avatars: Desktop vs VR representation (headset + controllers) + ephemeral labels.
+     - VR Drawing: stroke lifecycle (start, point, end, clear) mirrored into a remote line group.
+     - Fault Tolerance: Every external / networked interaction behind try/catch to remain inert
+       if runtime capabilities vanish.
+
+   Failure / Offline Strategy:
+     - Absence of Supabase library => sb == null => ensureChannel returns null => all send() no‑ops.
+     - Unexpected broadcast payload shape safely ignored.
+     - Resource cleanup (avatars, lines) performed on leave() & periodic old avatar culling.
+
+   ================================================================================================
+   TABLE OF CONTENTS
+   --------------------------------------------------------------------------------
+    [01] Imports & Factory Signature
+    [02] Internal State & Collections
+    [03] Throttling Utilities (generic & context-aware)
+    [04] Channel Initialization (ensureChannel / presence wiring)
+    [05] Message Dispatch (handleMessage) & Kind Handlers
+    [06] Host / Join / Leave Lifecycle
+    [07] Broadcast Helpers (send / export)
+    [08] Transform Delta Compression & Significant Change Test
+    [09] Avatar Management (create / update / cleanup)
+    [10] VR Drawing (ensure group + stroke handlers)
+    [11] Transform Broadcast (onTransform throttled)
+    [12] Overlay & Camera Broadcast
+    [13] VR Drawing Broadcast API
+    [14] Public API Export
+   --------------------------------------------------------------------------------
+   NOTE: Section markers follow // [NN] Title for grep-friendly navigation.
+   ================================================================================================ */
+
+// [01] Imports & Factory Signature ----------------------------------------------------------------
 // Realtime collaboration service using Supabase Realtime channels
 // Lightweight, optional: if CDN fails or keys missing, it becomes a no-op.
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config/community.js';
 
 export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData }) {
+  // [02] Internal State & Collections ------------------------------------------------------------
   let sb = null;
   let channel = null;
   let roomId = null;
@@ -47,6 +107,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   function isApplyingRemote() { return !!applying; }
 
   function throttle(fn, ms = 66) { // ~15 Hz default
+    // [03] Basic Throttle ------------------------------------------------------------------------
     let t = 0; let lastArgs = null; let pending = false;
     return function(...args){
       const now = Date.now();
@@ -63,6 +124,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // Create different throttling rates for different interaction types
   function createSmartThrottle(fn) {
+    // [03] Context-Aware Throttle (vr/desktop/touch) ---------------------------------------------
     const vrThrottle = throttle(fn, 33);    // 30 Hz for VR/AR - smoother hand tracking
     const desktopThrottle = throttle(fn, 50); // 20 Hz for desktop - good responsiveness
     const touchThrottle = throttle(fn, 40);   // 25 Hz for touch - mobile-friendly
@@ -90,6 +152,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   async function ensureChannel(id) {
+    // [04] Channel Initialization & Presence Wiring ----------------------------------------------
     const client = await getClient();
     if (!client) return null;
     if (channel) return channel;
@@ -195,6 +258,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function handleMessage(msg) {
+    // [05] Message Dispatch ----------------------------------------------------------------------
     if (!msg || msg.from === userId) return;
     const kind = msg.type;
     applying = true;
@@ -338,6 +402,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   async function host(id) {
+    // [06] Host Lifecycle -----------------------------------------------------------------------
     isHost = true;
     canActAsHost = true; // Hosts can always act as host
     window.__roomJoinTime = Date.now(); // Track when we joined/created room
@@ -352,6 +417,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   async function join(id) {
+    // [06] Join Lifecycle -----------------------------------------------------------------------
     isHost = false;
     window.__roomJoinTime = Date.now(); // Track when we joined room
     const ch = await ensureChannel(id);
@@ -362,6 +428,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function leave() {
+    // [06] Leave Lifecycle & Cleanup -------------------------------------------------------------
     try { 
       // Send graceful departure notification
       if (channel && active) {
@@ -419,6 +486,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // Broadcast helpers
   function exportSingleObjectJSON(obj) {
+    // [07] Export Single Object (wrap & serialize) -----------------------------------------------
     try {
       const root = new THREE.Group();
       const clone = obj.clone(true);
@@ -428,6 +496,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function send(kind, payload) {
+    // [07] Broadcast Helper ---------------------------------------------------------------------
     if (!channel || !active) return;
     try { channel.send({ type: 'broadcast', event: 'sketcher', payload: { from: userId, type: kind, ...payload } }); } catch {}
   }
@@ -444,6 +513,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   const deltaThreshold = { position: 0.001, rotation: 0.01, scale: 0.001 }; // Minimum change to sync
   
   function hasSignificantChange(objId, transform) {
+    // [08] Delta Significance Test ---------------------------------------------------------------
     const cached = transformCache.get(objId);
     if (!cached) return true;
     
@@ -477,6 +547,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // User avatar management for camera position sync
   function createUserAvatar(userId, isVR = false) {
+    // [09] Avatar Creation (desktop vs VR) -------------------------------------------------------
     if (!findObjectByUUID || !addObjectToScene) return null;
     
     const avatarGroup = new THREE.Group();
@@ -568,6 +639,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function updateUserAvatar(fromUserId, cameraData) {
+    // [09] Avatar Update ------------------------------------------------------------------------
     if (!cameraData || fromUserId === userId) return; // Don't show our own avatar
     
     // Avatar visibility rules:
@@ -648,6 +720,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function cleanupOldAvatars() {
+    // [09] Avatar Reap (timeout) ----------------------------------------------------------------
     const now = Date.now();
     const TIMEOUT = 30000; // 30 seconds
     
@@ -676,6 +749,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // VR Drawing collaboration handlers
   function ensureVRDrawGroup() {
+    // [10] VR Draw Group Ensure -----------------------------------------------------------------
     if (!vrDrawGroup) {
       // Find or create the VR draw group
       if (typeof window !== 'undefined' && window.scene) {
@@ -691,6 +765,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function handleVRDrawStart(msg) {
+    // [10] VR Draw: Start Stroke ---------------------------------------------------------------
     try {
       const group = ensureVRDrawGroup();
       if (!group) return;
@@ -725,6 +800,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function handleVRDrawPoint(msg) {
+    // [10] VR Draw: Add Point ------------------------------------------------------------------
     try {
       const { strokeId, point } = msg;
       const stroke = remoteVRStrokes.get(strokeId);
@@ -749,6 +825,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function handleVRDrawEnd(msg) {
+    // [10] VR Draw: End Stroke ------------------------------------------------------------------
     try {
       const { strokeId } = msg;
       const stroke = remoteVRStrokes.get(strokeId);
@@ -764,6 +841,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function handleVRDrawClear() {
+    // [10] VR Draw: Clear All -------------------------------------------------------------------
     try {
       const group = ensureVRDrawGroup();
       if (!group) return;
@@ -790,6 +868,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   const onTransform = createSmartThrottle((obj, context) => {
+    // [11] Transform Broadcast (throttled + delta) ----------------------------------------------
     if (!obj || applying) return;
     const u = obj.uuid;
     if (!u) return;
@@ -818,12 +897,14 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // Broadcast overlay document changes (2D sketch data JSON)
   function onOverlay(data) {
+    // [12] Overlay Broadcast --------------------------------------------------------------------
     if (!data || applying) return;
     try { send('overlay', { overlay: data }); } catch {}
   }
 
   // Camera position sync for user avatars
   function onCameraUpdate(cameraData) {
+    // [12] Camera Pose Broadcast ---------------------------------------------------------------
     if (!cameraData || applying) return;
     try { 
       cameraThrottle({
@@ -841,6 +922,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
 
   // VR Drawing collaboration functions
   function onVRDrawStart(strokeId, point, color, lineWidth) {
+    // [13] VR Draw Broadcast: Start --------------------------------------------------------------
     if (applying) return;
     try {
       send('vr_draw_start', { 
@@ -853,6 +935,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function onVRDrawPoint(strokeId, point) {
+    // [13] VR Draw Broadcast: Point --------------------------------------------------------------
     if (applying) return;
     try {
       send('vr_draw_point', { 
@@ -863,6 +946,7 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function onVRDrawEnd(strokeId) {
+    // [13] VR Draw Broadcast: End ---------------------------------------------------------------
     if (applying) return;
     try {
       send('vr_draw_end', { strokeId });
@@ -870,12 +954,14 @@ export function createCollab({ THREE, findObjectByUUID, addObjectToScene, clearS
   }
 
   function onVRDrawClear() {
+    // [13] VR Draw Broadcast: Clear -------------------------------------------------------------
     if (applying) return;
     try {
       send('vr_draw_clear', {});
     } catch {}
   }
 
+  // [14] Public API Export ----------------------------------------------------------------------
   return { 
     host, 
     join, 

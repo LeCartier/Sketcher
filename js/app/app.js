@@ -2159,10 +2159,67 @@ export async function init() {
 				if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; }
 				enableTranslateGizmo();
 				enableRotateGizmo();
+				
+				// Auto-show room properties if the selected object is a designated room
+				try {
+					const selectedObj = selectedObjects[0];
+					if (selectedObj && selectedObj.isMesh && !__isOverlayOrChild(selectedObj) && roomDesignationUI && roomSystem) {
+						const existingRoom = roomSystem.getRoomFromObject(selectedObj);
+						if (existingRoom) {
+							// Automatically show room properties for the selected room
+							roomDesignationUI.showRoomPropertiesPanel(existingRoom);
+						} else {
+							// Hide room properties if selected object is not a room
+							roomDesignationUI.hideRoomPropertiesPanel();
+						}
+					} else {
+						// Hide room properties if no valid object is selected or it's an overlay
+						if (roomDesignationUI && roomDesignationUI.hideRoomPropertiesPanel) {
+							roomDesignationUI.hideRoomPropertiesPanel();
+						}
+					}
+				} catch (error) {
+					console.warn('Error checking for room selection:', error);
+				}
 			}
 		}
-		else if(selectedObjects.length >= 2){ updateMultiSelectPivot(); transformControls.attach(multiSelectPivot); if ('showX' in transformControls) { transformControls.showX = true; } if ('showY' in transformControls) { transformControls.showY = true; } if ('showZ' in transformControls) { transformControls.showZ = true; } transformControlsRotate.attach(multiSelectPivot); if ('showX' in transformControlsRotate) { transformControlsRotate.showX = true; } if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; } if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; } enableTranslateGizmo(); enableRotateGizmo(); clearHandles(); }
-		else { transformControls.detach(); transformControlsRotate.detach(); clearHandles(); }
+		else if(selectedObjects.length >= 2){ 
+			updateMultiSelectPivot(); 
+			transformControls.attach(multiSelectPivot); 
+			if ('showX' in transformControls) { transformControls.showX = true; } 
+			if ('showY' in transformControls) { transformControls.showY = true; } 
+			if ('showZ' in transformControls) { transformControls.showZ = true; } 
+			transformControlsRotate.attach(multiSelectPivot); 
+			if ('showX' in transformControlsRotate) { transformControlsRotate.showX = true; } 
+			if ('showY' in transformControlsRotate) { transformControlsRotate.showY = true; } 
+			if ('showZ' in transformControlsRotate) { transformControlsRotate.showZ = true; } 
+			enableTranslateGizmo(); 
+			enableRotateGizmo(); 
+			clearHandles();
+			
+			// Hide room properties when multiple objects are selected
+			try {
+				if (roomDesignationUI && roomDesignationUI.hideRoomPropertiesPanel) {
+					roomDesignationUI.hideRoomPropertiesPanel();
+				}
+			} catch (error) {
+				console.warn('Error hiding room properties for multi-selection:', error);
+			}
+		}
+		else { 
+			transformControls.detach(); 
+			transformControlsRotate.detach(); 
+			clearHandles();
+			
+			// Hide room properties when no objects are selected
+			try {
+				if (roomDesignationUI && roomDesignationUI.hideRoomPropertiesPanel) {
+					roomDesignationUI.hideRoomPropertiesPanel();
+				}
+			} catch (error) {
+				console.warn('Error hiding room properties for empty selection:', error);
+			}
+		}
 	}
 	function captureMultiStart(){ multiStartPivotMatrix = getWorldMatrix(multiSelectPivot); multiStartMatrices.clear(); selectedObjects.forEach(o=> multiStartMatrices.set(o, getWorldMatrix(o))); }
 	function applyMultiDelta(){ if(selectedObjects.length<2) return; const currentPivot=getWorldMatrix(multiSelectPivot); const invStart=multiStartPivotMatrix.clone().invert(); const delta=new THREE.Matrix4().multiplyMatrices(currentPivot,invStart); selectedObjects.forEach(o=>{ const start=multiStartMatrices.get(o); if(!start) return; const newWorld=new THREE.Matrix4().multiplyMatrices(delta,start); setWorldMatrix(o,newWorld); }); try { if (collab && collab.isActive && collab.isActive() && (!collab.isApplyingRemote || !collab.isApplyingRemote())) { selectedObjects.forEach(o=>{ try { collab.onTransform(o); } catch{} }); } } catch{} }
@@ -5977,7 +6034,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Spatial room metadata, blocking/stacking, mass system & designation UI initialization.
 	const roomSystem = createRoomSystem({ THREE, scene });
 	const roomManager = createRoomManager({ THREE, scene, roomSystem, persistence });
-	const roomDesignationUI = createRoomDesignationUI({ roomSystem, roomManager });
+	const roomDesignationUI = createRoomDesignationUI({ 
+		roomSystem, 
+		roomManager, 
+		selectedObjects, 
+		transformControls, 
+		isOverlayOrChild: __isOverlayOrChild 
+	});
 	
 	// Initialize room system
 	roomManager.initialize();

@@ -1,3 +1,67 @@
+/* =================================================================================================
+   FIRST-PERSON (FP) DESKTOP LOCOMOTION SERVICE
+   -------------------------------------------------------------------------------------------------
+   Public Factory:
+     const fp = createFirstPerson({ THREE, renderer, scene, camera, domElement, fpQuality });
+     fp.start({ hFov:100, constrainHeight:true, fly:false });
+     fp.update(dtSeconds); // per-frame
+     fp.stop();
+
+   Purpose:
+     High‑quality immersive desktop exploration with two cohesive modes:
+       Walk  (gravity + step navigation + collision capsule)
+       Fly   (unconstrained 6DOF drift using pitch direction)
+
+   Design Highlights:
+     - Decoupled yaw/pitch accumulation (camera rebuilt each frame) for stable horizon.
+     - Gravity + multi-sample ground probing (capsule feet zone) instead of naive height clamp.
+     - Horizontal collision resolution via expanded AABB sweeps against dynamic collider cache.
+     - Step assist: small obstacles (<= STEP_TOLERANCE) become instant step‑ups (no jitter climb).
+     - Quality escalation (anisotropy, pixel ratio, tone mapping, shadow config) w/ restoration.
+     - Material style modes (original / white / white+outline / wire / xray) applied non‑destructively.
+     - Desktop pseudo “environment” (sun / ground / optional HDRI skybox) isolated & reversible.
+     - Free‑aim teleport (screen‑space ray picking) integrated with global teleport service.
+     - Responsive UI panel with persistent quality preference + dynamic safe‑area compensation.
+     - HDR horizon‑locked skybox shader (selective vertical clamp + optional rotate / flip controls).
+
+   Error Policy:
+     All non‑critical operations wrapped in try/catch to avoid breaking the interactive session.
+
+   Thread / Reentrancy:
+     Single‑threaded animation loop consumption; no shared mutable external state mutated outside
+     controlled start/stop lifecycle.
+
+   ================================================================================================
+   TABLE OF CONTENTS
+   --------------------------------------------------------------------------------
+    [01] State & Constants
+    [02] Field-Of-View Management (Horizontal -> Vertical conversion)
+    [03] Quality Escalation (enter) & Restoration (exit)
+    [04] Input Handling (Keyboard / Pointer / Wheel)
+    [05] Lifecycle: start() / stop()
+    [06] Per-Frame Update (orientation, movement, gravity, collisions)
+    [07] Collider Cache (refresh & helper filters)
+    [08] Horizontal Collision Resolution (capsule vs. AABBs + step assist)
+    [09] Ground Detection (multi-sample raycasts) & Gravity Solver
+    [10] UI Construction (mode, quality, materials, enviro)
+    [11] Free-Aim Teleport (screen->ray picking)
+    [12] Desktop Environment Setup (sun / ground / sky)
+    [13] Desktop Environment Disposal & Resource Cleanup
+    [14] Sky / Sun Utilities
+    [15] Environment Control Panel (sliders / HDRI / ground)
+    [16] HDRI Loading Pipeline (RGBELoader + PMREM + skybox)
+    [17] Horizon-Locked Skybox Shader (selective vertical clamp)
+    [18] Background Mode Application (sky vs HDR)
+    [19] Material & Shadow Styling Modes (original/white/wire/xray/outline)
+    [20] Outline Generation & Disposal
+    [21] Material Restoration / Memory Hygiene
+    [22] Public API Return
+   --------------------------------------------------------------------------------
+   NOTE: Section dividers below use the pattern  // [NN] <Title>  for quick grep navigation.
+   ================================================================================================ */
+
+// [01] State & Constants --------------------------------------------------------------------------------
+// (Original header retained below for quick legacy reference)
 // First-person walk/fly service for desktop
 // API: const fp = createFirstPerson({ THREE, renderer, scene, camera, domElement });
 // fp.start({ hFov:100, constrainHeight:true }); fp.stop(); fp.update(dt);
@@ -36,6 +100,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const clickState = { downX:0, downY:0, downT:0, moveSum:0 };
 
   function setHFov(deg){
+    // [02] Field-Of-View Management --------------------------------------------------------------
     if (!camera || !camera.isPerspectiveCamera) return;
     const aspect = Math.max(0.0001, renderer.domElement.clientWidth / Math.max(1, renderer.domElement.clientHeight));
     const h = THREE.MathUtils.degToRad(Math.max(10, Math.min(150, deg)));
@@ -45,6 +110,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyHighQualityMaterials(){
+    // [03] Quality Escalation --------------------------------------------------------------------
     console.info('[FP] Applying high-quality material settings');
     try {
       scene.traverse(obj => {
@@ -84,6 +150,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function restoreQuality(){
+    // [03] Quality Restoration -------------------------------------------------------------------
     console.info('[FP] Restoring previous quality settings');
     try { if (state.prevPixelRatio != null) renderer.setPixelRatio(state.prevPixelRatio); } catch{}
     try { if (state.prevToneMapping != null) renderer.toneMapping = state.prevToneMapping; } catch{}
@@ -109,6 +176,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function onKey(e, down){
+    // [04] Input Handling: Keyboard --------------------------------------------------------------
     if (!state.active) return; const k = e.key;
     const map = {
       'w':'w','W':'w','ArrowUp':'w',
@@ -124,6 +192,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   // Pointer-based look controls
   let lastPX = 0, lastPY = 0;
   function onPointerDown(e){
+    // [04] Input Handling: Pointer (down) --------------------------------------------------------
     if (!state.active) return;
     try { domElement.setPointerCapture && domElement.setPointerCapture(e.pointerId); } catch{}
     state.dragging = true; lastPX = e.clientX; lastPY = e.clientY;
@@ -134,6 +203,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     e.preventDefault();
   }
   function onPointerUp(e){
+    // [04] Input Handling: Pointer (up) ----------------------------------------------------------
     if (!state.active) return;
     state.dragging = false; try { domElement.releasePointerCapture && domElement.releasePointerCapture(e.pointerId); } catch{}
     try { domElement.style.cursor = 'grab'; } catch{}
@@ -150,6 +220,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     e.preventDefault();
   }
   function onPointerMove(e){
+    // [04] Input Handling: Pointer (move / look) -------------------------------------------------
     if (!state.active) return;
     // Reticle hover feedback when not dragging
     if (!state.dragging){ try { tryHoverReticleAtClient(e.clientX, e.clientY); } catch{} }
@@ -170,6 +241,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   function add(el, type, fn, opts){ el.addEventListener(type, fn, opts); state.cleanup.push(()=> el.removeEventListener(type, fn, opts)); }
 
   async function start(opts={}){
+    // [05] Lifecycle: start() --------------------------------------------------------------------
     if (state.active) return;
     state.active = true;
   // Normalize options: Fly implies no height constraint
@@ -201,6 +273,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function stop(){
+    // [05] Lifecycle: stop() ---------------------------------------------------------------------
     if (!state.active) return;
     state.active = false; state.dragging = false; state.keys.clear();
     // Restore camera
@@ -222,6 +295,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function update(dt){
+    // [06] Per-Frame Update ----------------------------------------------------------------------
     if (!state.active) return;
     // Compose new orientation from yaw/pitch
     const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), state.yaw);
@@ -259,6 +333,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const PERSON_RADIUS = 0.75; // feet (1.5ft wide)
   // Build/refresh a list of potential colliders (visible meshes) periodically
   function refreshCollidersIfNeeded(dt){
+    // [07] Collider Cache Refresh ---------------------------------------------------------------
     state.colliderRefreshTimer -= dt;
     if (state.colliderRefreshTimer > 0) return;
     state.colliderRefreshTimer = 0.35; // refresh ~3x per second
@@ -282,6 +357,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function isHelperLike(obj){
+    // [07] Helper Filter ------------------------------------------------------------------------
     try {
       if (obj.isGridHelper) return true;
       const n = (obj.name||'').toLowerCase();
@@ -294,6 +370,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyWalkCollisions(camera){
+    // [08] Horizontal Collision Resolution ------------------------------------------------------
     const pos = camera.position;
     if (!state.colliders || state.colliders.length === 0) return;
     // The capsule spans from feetY .. headY
@@ -352,6 +429,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   // Find ground Y below the camera by raycasting downward across a small area (diameter 1ft => radius 0.5ft).
   // Returns the highest hit Y among samples, or null if none.
   function findGroundY(camera, radius = 0.5){
+    // [09] Ground Sampling (multi-ray) ----------------------------------------------------------
     try {
       const samples = [];
       // Sample center + 8 around circle (approx)
@@ -388,6 +466,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const STEP_TOLERANCE = 0.5; // feet: small step that can be stepped onto without falling
 
   function resolveVerticalAndGravity(dt, camera){
+    // [09] Gravity & Vertical Position Solver ---------------------------------------------------
     // Determine ground support within a 1ft diameter zone
     const supportY = findGroundY(camera, 0.5);
     const floorY = (supportY !== null) ? supportY : 0;
@@ -423,6 +502,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   async function buildUI(){
+    // [10] UI Construction ----------------------------------------------------------------------
     const ui = document.createElement('div'); ui.id='fp-ui';
     // Bottom-center, responsive to safe-area and VisualViewport changes
     Object.assign(ui.style, {
@@ -550,6 +630,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
   function setPointerFromClient(clientX, clientY){
+    // [11] Teleport: Screen -> NDC --------------------------------------------------------------
     const r = domElement.getBoundingClientRect();
     const x = (clientX - r.left) / Math.max(1, r.width);
     const y = (clientY - r.top) / Math.max(1, r.height);
@@ -557,12 +638,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     ndc.y = - (y*2 - 1);
   }
   function tryTeleportAtClient(clientX, clientY){
+    // [11] Teleport: Click Attempt --------------------------------------------------------------
     if (!window.__teleport) return false;
     const picked = pickTeleportPointAtClient(clientX, clientY);
     if (picked && picked.point){ try { window.__teleport.teleportToPoint(picked.point, picked.normal); } catch{} return true; }
     return false; // no valid surface
   }
   function tryHoverReticleAtClient(clientX, clientY){
+    // [11] Teleport: Hover Reticle --------------------------------------------------------------
     if (!window.__teleport || !window.__teleport.showReticleAt) return;
     const picked = pickTeleportPointAtClient(clientX, clientY);
     if (picked && picked.point){ try { window.__teleport.showReticleAt(picked.point, picked.normal); } catch{} }
@@ -570,6 +653,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function pickTeleportPointAtClient(clientX, clientY){
+    // [11] Teleport: Raycast Picking ------------------------------------------------------------
     try {
       setPointerFromClient(clientX, clientY);
       raycaster.setFromCamera(ndc, camera);
@@ -600,6 +684,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
 
   // ---- Desktop environment (sun/ground/sky + optional HDRI) ----
   function initDesktopEnv(){
+    // [12] Desktop Environment Setup ------------------------------------------------------------
     if (state.env) return;
     const group = new THREE.Group(); group.name = '__fp_env';
     // Sky background (simple gradient texture)
@@ -655,6 +740,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function disposeDesktopEnv(){
+    // [13] Desktop Environment Disposal ---------------------------------------------------------
     const e = state.env; if (!e) return; state.env = null;
   try { restoreMaterialsAndShadows(e); } catch{}
   try { scene.background = e.prevBg || null; } catch{}
@@ -692,6 +778,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function makeSkyTexture(top, bottom){
+    // [14] Sky Gradient Texture -----------------------------------------------------------------
     const c = document.createElement('canvas'); c.width = 512; c.height = 512; const ctx = c.getContext('2d');
     const grd = ctx.createLinearGradient(0,0,0,512); grd.addColorStop(0, top); grd.addColorStop(1, bottom);
     ctx.fillStyle = grd; ctx.fillRect(0,0,512,512);
@@ -699,6 +786,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applySun(params, sun){
+    // [14] Sun Parameter Application ------------------------------------------------------------
     const elev = THREE.MathUtils.degToRad(THREE.MathUtils.clamp(params.elevation, 0, 90));
     const az = THREE.MathUtils.degToRad(((params.azimuth%360)+360)%360);
     const h = Math.cos(elev); const y = Math.sin(elev);
@@ -712,6 +800,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function toggleEnviroPanel(){
+    // [15] Environment Control Panel ------------------------------------------------------------
     const id = 'fp-enviro-panel';
     let p = document.getElementById(id);
     if (p){ p.remove(); return; }
@@ -867,6 +956,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
 
   // ---- HDRI environment ----
   async function loadHDRI(url){
+    // [16] HDRI Loading Pipeline ----------------------------------------------------------------
     console.info('[FP] Starting HDR load:', url);
     try {
       const [{ RGBELoader }] = await Promise.all([
@@ -980,6 +1070,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function createHorizonLockedSkybox(hdrTexture) {
+    // [17] Horizon-Locked Skybox Shader ---------------------------------------------------------
     console.info('[FP] Creating horizon-locked skybox');
     try {
       // Remove existing skybox if present
@@ -1081,6 +1172,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function loadHDRIFromFile(file){
+    // [16] HDRI File Loader (File -> Object URL -> loadHDRI) ------------------------------------
     console.info('[FP] Loading HDRI from file:', file.name, file.size, 'bytes');
     try {
       const url = URL.createObjectURL(file);
@@ -1092,6 +1184,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyBackgroundMode(){
+    // [18] Background Mode Application (sky vs hdr) ---------------------------------------------
     const e = state.env; if (!e) return;
     const mode = e.bgMode || 'sky';
     console.info('[FP] Applying background mode:', mode);
@@ -1135,6 +1228,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
 
   // ---- Materials and shadows management ----
   function enableSceneShadows(){
+    // [19] Shadows Enable (scene meshes) --------------------------------------------------------
     const e = state.env; if (!e) return;
     try {
       scene.traverse(obj => {
@@ -1147,6 +1241,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function setMaterialMode(mode){
+    // [19] Material Styling Mode Switch ---------------------------------------------------------
     const e = state.env; if (!e) return;
     const valid = new Set(['original','white','white-outline','wire','xray']);
     if (!valid.has(mode)) return;
@@ -1166,6 +1261,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
   
   function applyWhiteMaterials(){
+    // [19] Mode: White --------------------------------------------------------------------------
     const e = state.env; if (!e) return;
     scene.traverse(obj => {
       if (!obj || !obj.isMesh) return;
@@ -1183,6 +1279,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyWireframeMaterials(){
+    // [19] Mode: Wireframe ----------------------------------------------------------------------
     const e = state.env; if (!e) return;
     scene.traverse(obj => {
       if (!obj || !obj.isMesh) return;
@@ -1197,6 +1294,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function applyXRayMaterials(){
+    // [19] Mode: X-Ray --------------------------------------------------------------------------
     const e = state.env; if (!e) return;
     scene.traverse(obj => {
       if (!obj || !obj.isMesh) return;
@@ -1211,6 +1309,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function addOutlines(){
+    // [20] Outline Generation ------------------------------------------------------------------
     const e = state.env; if (!e) return;
     scene.traverse(obj => {
       if (!obj || !obj.isMesh) return;
@@ -1225,6 +1324,7 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function removeOutlines(){
+    // [20] Outline Disposal ---------------------------------------------------------------------
     const e = state.env; if (!e) return;
     try {
       for (const l of e.outlines){
@@ -1237,12 +1337,14 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
   }
 
   function disposeTempMaterials(){
+    // [21] Temp Material Disposal ---------------------------------------------------------------
     const e = state.env; if (!e) return;
     try { for (const m of e.tempMaterials){ try { m.dispose && m.dispose(); } catch{} } } catch{}
     e.tempMaterials = new Set();
   }
 
   function restoreMaterialsAndShadows(e, opts={}){
+    // [21] Material & Shadow Restoration --------------------------------------------------------
     const restoreOnlyMaterials = !!opts.restoreOnlyMaterials;
     try {
       // Restore materials
@@ -1266,5 +1368,6 @@ export function createFirstPerson({ THREE, renderer, scene, camera, domElement, 
     } catch{}
   }
 
+  // [22] Public API -----------------------------------------------------------------------------
   return { start, stop, update, setHFov, setFlyMode:(on)=>{ state.fly=!!on; state.constrainHeight = !state.fly; }, isActive: ()=> state.active };
 }

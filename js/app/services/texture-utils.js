@@ -1,6 +1,66 @@
-// Texture and Material System utilities. MIT License.
+/*
+====================================================================================
+TEXTURE & MATERIAL SYSTEM UTILITIES
+====================================================================================
+Plain Meaning:
+    Tools that (a) shrink huge images so performance stays smooth and (b) let the app
+    quickly switch the entire scene’s “look” (original, cardboard, MDF, sketch, toon)
+    without breaking individual model materials. Also supports painting a single face
+    or a flat patch and highlighting geometry edges for a clean sketch style.
+
+Developer Summary:
+    Exports:
+        downscaleLargeTextures(root, { maxSize, onProgress })
+            Traverses root; collects referenced textures; resamples on a canvas if larger
+            than maxSize; replaces image and flags needsUpdate.
+
+        createMaterialSystem(deps)
+            Returns an object managing global style overrides + face overlay editing.
+            Key features:
+                - Shared procedural material generation (noise‑based cardboard/MDF, toon, sketch)
+                - Optional photoreal async upgrade (cardboard, MDF) when not on narrow/mobile
+                - Scene‑wide or subtree style application with preservation flags
+                - Sketch outlines (EdgesGeometry) with disposal lifecycle
+                - Face picking overlay (single triangle or coplanar patch) using cloned mats
+                - LocalStorage persistence of chosen style
+                - Public browser API (window.sketcherMaterialsAPI) + readiness event
+
+High‑Level Concepts:
+    Material Style: A global theme replacing mesh materials (except preserved subtrees).
+    Procedural vs Photo: Procedural = instant fallback; Photo = loaded asynchronously.
+    Sketch Outlines: Thin edge lines added as child helpers for crisp whitebox look.
+    Face Overlay: A temporary mesh that visually replaces one face/patch for editing.
+
+Performance Notes:
+    - Downscaling only touches unique texture objects once (Set) to avoid duplicates.
+    - Outlines skipped for preserved nodes and disposed promptly to free memory.
+    - Photoreal upgrade deferred and aborted on small mobile screens.
+
+Table of Contents (Section Markers):
+    [01] Export: downscaleLargeTextures (Overview & Flow)
+    [02] Material System Factory: Inputs & Internal Caches
+    [03] Procedural Texture Generators (Noise / Cardboard / MDF / Sketch / Toon)
+    [04] Material Preservation & Override Rules
+    [05] Style Application Helpers (Uniform / Subtree / Restore)
+    [06] Photo Texture Loading (Async Upgrade Pipeline)
+    [07] Sketch Mode Overrides & Outline Management
+    [08] Shared Material Accessors (Active vs Procedural)
+    [09] Style Button Sync & State Persistence
+    [10] applyMaterialStyle Orchestration
+    [11] System Initialization & Global Browser API
+    [12] Face Overlay System (Single Triangle & Coplanar Patch)
+    [13] Public API Return
+
+Reading Guide:
+    Each numbered block has: Plain meaning (non‑coder) + Dev notes (implementation).
+------------------------------------------------------------------------------------
+*/
 
 // Resize overlarge textures at runtime to reduce memory
+// [01] DOWNSCALE LARGE TEXTURES
+// Plain: Shrinks images that are bigger than a maximum size so memory stays lower.
+// Dev:   Collects unique textures referenced by mesh materials; uses a canvas to
+//        resample; replaces tex.image to prevent reallocation of a new texture object.
 export async function downscaleLargeTextures(root, opts = {}){
     const { maxSize = 2048, onProgress } = opts;
     const textures = new Set();
@@ -39,6 +99,9 @@ export async function downscaleLargeTextures(root, opts = {}){
 
 // Create Material System with dependency injection
 export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScene, originalMaterials, setGridColor, defaultMaterial, uiElements = {} }) {
+    // [02] FACTORY INPUTS & CACHES
+    // Plain: Keep shared versions of each special material so we don’t recreate them.
+    // Dev:   Lazy creation + reuse avoids overloading GPU state & supports fast theme swaps.
     // Material caches (shared instances)
     let __cardboardMat = null; // final shared material (photo if available, else procedural)
     let __mdfMat = null;       // final shared material (photo if available, else procedural)
@@ -60,6 +123,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
     let __sketchOutlines = null; // THREE.Group of outlines
 
     // Procedural fallback textures (lightweight, immediate)
+    // [03] PROCEDURAL GENERATORS
+    // Plain: Creates small synthetic textures/materials so the app has instant visuals.
+    // Dev:   Noise canvas -> CanvasTexture -> MeshStandard/ToonMaterial with tuned params.
     function makeNoiseCanvas(w=256,h=256,opts={}){
         const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
         ctx.fillStyle=opts.base||'#c9a46a'; ctx.fillRect(0,0,w,h);
@@ -113,6 +179,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
 
     function restoreOriginalMaterials(){ forEachMeshInScene(m=>{ const orig = originalMaterials.get(m); if (orig) m.material = orig; }); }
 
+    // [04] PRESERVATION RULES
+    // Plain: Some subtrees can say “don’t replace my materials globally.”
+    // Dev:   userData.__materialOverride / __preserveMaterials flags short‑circuit overrides.
     function __isMaterialOverrideChain(node){
         // Skip global overrides when any ancestor explicitly preserves materials
         let n = node;
@@ -126,6 +195,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         return false;
     }
 
+    // [05] GLOBAL / SUBTREE APPLICATION HELPERS
+    // Plain: Either apply one material everywhere (unless preserved) or to a specific subtree.
+    // Dev:   Captures original material once; on restore we put it back safely.
     function applyUniformMaterial(sharedMat){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; ensureOriginalMaterial(m); m.material = sharedMat; }); }
     function restoreOriginalMaterialsRespectingOverrides(){ forEachMeshInScene(m=>{ if (__isMaterialOverrideChain(m)) return; const orig = originalMaterials.get(m); if (orig) m.material = orig; }); }
 
@@ -159,6 +231,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         return null;
     }
 
+    // [06] PHOTO MATERIAL LOADING
+    // Plain: Tries to load nicer photographic textures; falls back to procedural if missing.
+    // Dev:   loadTextureAny iterates candidate URLs; reuses common setup (repeat, anisotropy).
     async function buildPhotoMaterial(kind){
         const base = `./assets/textures/`;
         if (kind === 'cardboard'){
@@ -188,6 +263,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         return `#${c.getHexString()}`;
     }
 
+    // [07] SKETCH MODE OVERRIDES & OUTLINES
+    // Plain: Temporarily forces white background + lighter grid and adds black edge lines.
+    // Dev:   Disables user pickers (UI), stores previous colors, attaches EdgesGeometry helpers.
     function applySketchOverrides(){
         if (__sketchOverrideActive) return;
         __sketchPrevBg = getRendererClearColorHex();
@@ -248,6 +326,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         return grp;
     }
 
+    // [08] SHARED MATERIAL ACCESSORS
+    // Plain: Return already-built material for a style.
+    // Dev:   Returns null if not built yet; creation happens via procedural path.
     function getActiveSharedMaterial(style){
         if (style === 'cardboard') return __cardboardMat || null;
         if (style === 'mdf') return __mdfMat || null;
@@ -276,6 +357,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         return null;
     }
 
+    // [09] UI BUTTON SYNC & PERSISTENCE
+    // Plain: Highlights which style is active & remembers choice in localStorage.
+    // Dev:   aria-pressed attributes support accessibility tooling.
     function setMaterialButtons(style){
         if (uiElements.matOriginalBtn) uiElements.matOriginalBtn.setAttribute('aria-pressed', style==='original'?'true':'false');
         if (uiElements.matCardboardBtn) uiElements.matCardboardBtn.setAttribute('aria-pressed', style==='cardboard'?'true':'false');
@@ -284,6 +368,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         const matToonBtn = document.getElementById('matToon'); if (matToonBtn) matToonBtn.setAttribute('aria-pressed', style==='toon'?'true':'false');
     }
 
+    // [10] STYLE ORCHESTRATION (applyMaterialStyle)
+    // Plain: Switch scene look now; if fancy photo textures needed, load them in background.
+    // Dev:   Immediate procedural apply ensures no flash; async promise upgrades when ready.
     function applyMaterialStyle(style){
         style = style || 'original';
         currentMaterialStyle = style;
@@ -340,6 +427,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
     }
 
     // Initialize selected material style from storage and expose public API
+    // [11] INITIALIZATION + GLOBAL API
+    // Plain: Reads last saved style, applies it, and exposes a small browser-accessible API.
+    // Dev:   Dispatches a custom event so late UI modules can wire themselves.
     function initializeMaterialSystem() {
         let saved = 'original';
         try { const s = localStorage.getItem('sketcher.materialStyle'); if (s) saved = s; } catch {}
@@ -374,6 +464,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
         __lastFacePreview = null;
     }
 
+    // [12] FACE OVERLAY (SINGLE TRIANGLE)
+    // Plain: Builds a tiny mesh matching one triangle so a new material can preview/apply.
+    // Dev:   Cloned material with polygon offset prevents z-fighting with original surface.
     function __makeFaceOverlayMesh(mesh, faceIndex, material){
         try {
             const geom = mesh.geometry; if (!geom || !geom.isBufferGeometry) return null;
@@ -416,6 +509,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
     }
 
     // Build a coplanar patch overlay: expands from the clicked triangle across adjacent triangles
+    // [12B] FACE OVERLAY (COPLANAR PATCH)
+    // Plain: Expands from picked triangle to all touching triangles on the same plane.
+    // Dev:   BFS over shared edges; plane test uses |n·p + d| tolerance; merges into one BufferGeometry.
     function __makeCoplanarOverlayMesh(mesh, faceIndex, material){
         try {
             const geom = mesh.geometry; if (!geom || !geom.isBufferGeometry) return null;
@@ -502,6 +598,9 @@ export function createMaterialSystem({ THREE, renderer, scene, forEachMeshInScen
     }
 
     // Return public API
+    // [13] PUBLIC API RETURN
+    // Plain: Export functions other modules / UI panels use.
+    // Dev:   Stable contract—avoid renaming without updating global browser API.
     return {
         // Core material functions
         applyMaterialStyle,

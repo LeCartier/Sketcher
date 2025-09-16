@@ -131,24 +131,61 @@
           <rect x="16" y="6" width="4" height="4" fill="none" stroke="#222" stroke-width="2"/>
         </svg>
       </button>
-      <button id="tDimension" class="icon-btn" aria-pressed="false" title="Dimension" aria-label="Dimension">
+    </div>
+    <!-- Measure tool (simple toggle like selection) -->
+    <button id="tMeasure" class="icon-btn toggle-btn" title="Measure" aria-label="Measure" aria-pressed="false">
+      <span class="sr-only">Measure</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Ruler body -->
+        <rect x="3" y="10" width="18" height="4" fill="none" stroke="#222" stroke-width="1.5"/>
+        <!-- Large tick marks -->
+        <path d="M6 8 L6 16 M12 8 L12 16 M18 8 L18 16" stroke="#222" stroke-width="1.5"/>
+        <!-- Small tick marks -->
+        <path d="M9 9 L9 15 M15 9 L15 15" stroke="#222" stroke-width="1"/>
+        <!-- Corner marks for scale -->
+        <circle cx="3" cy="12" r="1" fill="#222"/>
+        <circle cx="21" cy="12" r="1" fill="#222"/>
+      </svg>
+    </button>
+    
+    <!-- Dimension parent (dimension tool + settings) -->
+    <button id="toggle2DDimensions" class="icon-btn toggle-btn" title="Dimensions" aria-label="Dimensions" aria-pressed="false">
+      <span class="sr-only">Dimensions</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Extension lines -->
+        <path d="M6 6 L6 16 M18 6 L18 16" stroke="#222" stroke-width="1"/>
+        <!-- Dimension line -->
+        <path d="M6 12 L18 12" stroke="#222" stroke-width="1.5"/>
+        <!-- Left arrowhead -->
+        <path d="M6 12 L8 11 L8 13 Z" fill="#222"/>
+        <!-- Right arrowhead -->
+        <path d="M18 12 L16 11 L16 13 Z" fill="#222"/>
+        <!-- Tick marks at extension points -->
+        <path d="M6 5.5 L6 6.5 M18 5.5 L18 6.5" stroke="#222" stroke-width="1.5"/>
+        <path d="M6 15.5 L6 16.5 M18 15.5 L18 16.5" stroke="#222" stroke-width="1.5"/>
+      </svg>
+    </button>
+    <div id="dimensions2DGroup" class="collapse" aria-hidden="true">
+      <button id="tDimension" class="icon-btn" aria-pressed="false" title="Dimension Tool" aria-label="Dimension Tool">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6 16 L18 8" stroke="#222" stroke-width="2"/>
-          <path d="M7 17 L5 15 M19 9 L17 7" stroke="#222" stroke-width="2"/>
-          <text x="12" y="12" font-size="3" text-anchor="middle" fill="#222">↔</text>
+          <!-- Extension lines -->
+          <path d="M6 6 L6 16 M18 6 L18 16" stroke="#222" stroke-width="1"/>
+          <!-- Dimension line -->
+          <path d="M6 12 L18 12" stroke="#222" stroke-width="1.5"/>
+          <!-- Left arrowhead -->
+          <path d="M6 12 L8 11 L8 13 Z" fill="#222"/>
+          <!-- Right arrowhead -->
+          <path d="M18 12 L16 11 L16 13 Z" fill="#222"/>
         </svg>
       </button>
-      <button id="tMeasure" class="icon-btn" aria-pressed="false" title="Measure" aria-label="Measure">
+      <button id="tDimensionSettings" class="icon-btn" aria-pressed="false" title="Dimension Settings" aria-label="Dimension Settings">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M5 18 L19 6" stroke="#222" stroke-width="2"/>
-          <circle cx="5" cy="18" r="1.2" fill="#222"/>
-          <circle cx="19" cy="6" r="1.2" fill="#222"/>
-        </svg>
-      </button>
-      <button id="tHatch" class="icon-btn" aria-pressed="false" title="Hatch" aria-label="Hatch">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2"/>
-          <path d="M7 17 L17 7 M9 19 L19 9 M5 15 L15 5" stroke="#222" stroke-width="1.5"/>
+          <!-- Settings gear icon with dimension elements -->
+          <circle cx="12" cy="12" r="3" fill="none" stroke="#222" stroke-width="1.5"/>
+          <path d="M12 1 L13 4 L16 4 L13 7 L14 10 L12 8 L10 10 L11 7 L8 4 L11 4 Z" fill="#222" opacity="0.7"/>
+          <!-- Small dimension line overlay -->
+          <path d="M4 19 L20 19" stroke="#222" stroke-width="1"/>
+          <path d="M4 17 L4 21 M20 17 L20 21" stroke="#222" stroke-width="1"/>
         </svg>
       </button>
     </div>
@@ -509,6 +546,47 @@
       </div>
     </div>
   </div>
+
+  <!-- Dimension Settings Modal -->
+  <div id="dimensionSettingsModal" style="display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,0.5); align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.2); width:90%; max-width:400px; max-height:90vh;">
+      <div style="padding:16px 20px; border-bottom:1px solid #e0e0e0;">
+        <h3 style="margin:0; font:600 16px/1.2 system-ui; color:#222;">Dimension Settings</h3>
+      </div>
+      <div style="padding:20px; display:flex; flex-direction:column; gap:16px;">
+        
+        <!-- Text Size -->
+        <div>
+          <label for="dimensionTextSize" style="display:block; font:500 13px/1.2 system-ui; color:#333; margin-bottom:6px;">Text Size (px)</label>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input id="dimensionTextSize" type="range" min="8" max="24" value="11" step="1" style="flex:1; cursor:pointer;" />
+            <span id="dimensionTextSizeValue" style="font:500 12px/1 system-ui; color:#666; min-width:24px;">11</span>
+          </div>
+        </div>
+        
+        <!-- Line Color -->
+        <div>
+          <label for="dimensionLineColor" style="display:block; font:500 13px/1.2 system-ui; color:#333; margin-bottom:6px;">Line Color</label>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input id="dimensionLineColor" type="color" value="#787878" style="width:40px; height:32px; border:1px solid #ddd; border-radius:6px; cursor:pointer;" />
+            <span style="font:400 12px/1 system-ui; color:#666;">Default dimension color</span>
+          </div>
+        </div>
+        
+        <!-- Preview -->
+        <div style="border:1px solid #e0e0e0; border-radius:6px; padding:12px; background:#fafafa;">
+          <div style="font:500 12px/1.2 system-ui; color:#666; margin-bottom:8px;">Preview</div>
+          <canvas id="dimensionPreviewCanvas" width="320" height="80" style="width:100%; height:40px; border:1px solid #ddd; border-radius:4px; background:#fff;"></canvas>
+        </div>
+        
+      </div>
+      <div style="padding:16px 20px; border-top:1px solid #e0e0e0; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="dimensionSettingsCancel" class="btn secondary" type="button" style="padding:8px 16px; border:1px solid #ddd; background:#f5f5f5; border-radius:6px; font:500 13px/1 system-ui;">Cancel</button>
+        <button id="dimensionSettingsApply" class="btn" type="button" style="padding:8px 16px; background:#111; color:#fff; border-radius:6px; font:500 13px/1 system-ui;">Apply</button>
+      </div>
+    </div>
+  </div>
+  
   <!-- Floating 3D button to return to main scene -->
   <a id="to3D" class="floating-nav nav-top-right" href="./index.html" title="3D" aria-label="3D">
     <svg viewBox="0 0 24 24" aria-hidden="true">

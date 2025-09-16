@@ -1,6 +1,66 @@
+/* =================================================================================================
+   XR HUD SERVICE
+   -------------------------------------------------------------------------------------------------
+   Factory:
+     const hud = createXRHud({
+       THREE,
+       scene,
+       renderer,
+       getLocalSpace,   // () => XRReferenceSpace (current frame localized)
+       getButtons       // (createHudButton)=> [{ mesh, onClick, setLabel }]
+     });
+
+   Purpose:
+     Wrist / palm anchored interactive HUD for WebXR sessions supporting controller rays AND
+     direct right‑hand fingertip poke interactions (depress -> click). Provides extensible
+     button creation (textured, 3D primitives, OBJ preview, draw/tiles) plus nested draw submenu.
+
+   Interaction Model:
+     - Anchor: Left palm (preferred) -> dynamic orientation from wrist joint / fallback controller.
+     - Controller Rays: Hover + trigger -> click (cooldown & suppression heuristics).
+     - Finger Poke: Right index fingertip; depth penetration along button normal animates press.
+     - Submenus: Draw mode overrides main grid; primitives/objects submenus prioritized in hit order.
+
+   Safety / Noise Reduction:
+     - Global click cooldown (prevents accidental double activation after menu transitions).
+     - Hand crossing detection -> temporary suppression during ambiguous overlap.
+     - Grace period after HUD show to ignore immediate pinch/grab noise.
+     - Shrunk active hit box (ACTIVE_SHRINK_X/Y) to reduce edge misfires.
+
+   Performance Notes:
+     - Per-frame traversal limits: button target list built only from visible nodes.
+     - Icon auto billboard (camera-facing) restricted to nodes flagged __icon3D.
+     - Press physics uses cached base scale to avoid layout recomputation.
+
+   Extensibility:
+     - createPrimitive3DButton / createOBJ3DButton / createDraw3DButton / createTile3DButton
+       all return uniform interface ({ mesh, onClick, setLabel, ...optionals }).
+     - showDrawSubmenu / hideDrawSubmenu orchestrate dynamic button replacement while preserving
+       pointer/finger logic.
+
+   ================================================================================================
+   TABLE OF CONTENTS
+   --------------------------------------------------------------------------------
+    [01] Constants & Core State
+    [02] Hand Joint Definitions & Bone Map
+    [03] Press Mechanics (depth thresholds & helpers)
+    [04] Button Texture (Canvas) + Basic Text Button Factory
+    [05] 3D Button Factories (Primitive / OBJ / Draw / Tile)
+    [06] Hand Visualization (ensure + palette + style)
+    [07] HUD Ensure / Layout & Removal
+    [08] Frame Update (anchor placement / rays / finger poke / visibility rules)
+    [09] Press State & Click Cooldowns (reset / adjust)
+    [10] Hand Viz Style Setter
+    [11] Draw Submenu (show/hide/arrange)
+    [12] Public API Export
+   --------------------------------------------------------------------------------
+   NOTE: Search for  // [NN]  markers for rapid navigation.
+   ================================================================================================ */
+// [01] Constants & Core State --------------------------------------------------------------------
 // XR HUD: 3D wrist-anchored curved button bar with hover/select via rays
 // Note: pass getLocalSpace() to resolve the latest XR reference space each frame.
 export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons }){
+  // [01] Constants & Core State (continued) ------------------------------------------------------
   // Button sizing and layout for palm grid (.75 inch ≈ 19.05mm)
   const BUTTON_SIZE = 0.01905; // 0.75in square
   const BUTTON_W = BUTTON_SIZE; // meters (square)
@@ -28,6 +88,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let handVizMode = null; // 'default' | 'hands-only'
   let handVizStyle = 'fingertips'; // 'fingertips' | 'skeleton' | 'off'
 
+  // [02] Hand Joint Definitions & Bone Map ------------------------------------------------------
   // WebXR hand joint names and a simple bone connectivity map
   const FINGERS = ['thumb','index-finger','middle-finger','ring-finger','pinky-finger'];
   const FINGER_JOINTS = {
@@ -48,6 +109,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
     return bones;
   })();
+  // [03] Press Mechanics ------------------------------------------------------------------------
   // Finger poke/depress interaction — increased thresholds to prevent accidental activation
   const PRESS_START_M = Math.max(0.003, 0.35 * BUTTON_H);   // ~8mm (increased from ~4mm)
   const PRESS_RELEASE_M = Math.max(0.0015, 0.20 * BUTTON_H); // ~4mm (increased from ~2mm) 
@@ -81,6 +143,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function makeButtonTexture(label){
+    // [04] Button Texture (Canvas-based) --------------------------------------------------------
     // Square texture for rounded-square buttons
     const w=256,h=256; const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
     const bg='rgba(30,30,35,0.78)',fg='#ffffff',hl='rgba(255,255,255,0.16)';
@@ -121,6 +184,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createHudButton(label, onClick){
+    // [04] Basic Text Button Factory ------------------------------------------------------------
     const tex=makeButtonTexture(label);
   const geom=new THREE.PlaneGeometry(BUTTON_W, BUTTON_H);
     // Render HUD always on top in AR; depthTest off avoids passthrough occlusion issues.
@@ -138,6 +202,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createPrimitive3DButton(primitiveType, onClick) {
+    // [05] 3D Primitive Button Factory ----------------------------------------------------------
     // Create a group to hold the 3D primitive and background
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label: primitiveType, onClick, base: null, hover: null };
@@ -241,6 +306,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createOBJ3DButton(objPreview, filename, onClick) {
+    // [05] 3D OBJ Preview Button Factory --------------------------------------------------------
     // Create a group to hold the 3D object preview and background
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label: filename, onClick, base: null, hover: null };
@@ -341,6 +407,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createDraw3DButton(onClick) {
+    // [05] 3D Draw Tool Button Factory ----------------------------------------------------------
     console.log('🎨 Creating Draw 3D button with onClick handler:', typeof onClick);
     
     // Create a group to hold the 3D draw icon and background
@@ -476,6 +543,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function createTile3DButton(label, onClick) {
+    // [05] 3D Tile Button Factory ---------------------------------------------------------------
     // Create a group to hold the 3D icon and tile background
     const buttonGroup = new THREE.Group();
     buttonGroup.userData.__hudButton = { label, onClick, base: null, hover: null };
@@ -1034,6 +1102,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function ensureHandViz() {
+    // [06] Hand Visualization Creation ----------------------------------------------------------
     if (!handVizL) {
       handVizL = new THREE.Group(); handVizL.name = 'XR Left Hand Viz'; handVizL.userData.__helper = true;
       handVizR = new THREE.Group(); handVizR.name = 'XR Right Hand Viz'; handVizR.userData.__helper = true;
@@ -1089,6 +1158,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function setHandVizPalette(mode){
+    // [06] Hand Viz Palette Swap ----------------------------------------------------------------
     if (handVizMode === mode) return;
     handVizMode = mode;
     const apply = (group) => {
@@ -1122,6 +1192,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function ensure(){
+    // [07] HUD Ensure & Button Layout ------------------------------------------------------------
     if (hud) return hud;
     hud = new THREE.Group(); hud.name='XR HUD 3D'; hud.userData.__helper = true;
     buttons = (getButtons(createHudButton) || []);
@@ -1152,6 +1223,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function remove(){
+    // [07] HUD Removal & Cleanup ----------------------------------------------------------------
     try { const l = hud && hud.userData && hud.userData.__listeners; if (l?.session){ l.session.removeEventListener('selectstart', l.onSelectStart); l.session.removeEventListener('selectend', l.onSelectEnd); } } catch {}
     if (hud?.parent) hud.parent.remove(hud);
   hud = null; buttons = []; xrHoverBySource = new WeakMap(); xrPressedSources = new WeakSet();
@@ -1166,6 +1238,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
 
   function update(frame){
+    // [08] Frame Update -------------------------------------------------------------------------
     if (!hud) return;
     const isXR = !!(renderer && renderer.xr && renderer.xr.isPresenting);
     if (!isXR) return;
@@ -1864,13 +1937,18 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     } catch {}
   }
 
-  function resetPressStates(){ try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {} }
+  function resetPressStates(){
+    // [09] Press State Reset --------------------------------------------------------------------
+    try { for (const b of buttons){ const st = ensurePressState(b.mesh); st.pressed=false; st.depth=0; st._stable=0; } } catch {}
+  }
 
   function setGlobalClickCooldown(durationMs = 300) {
+    // [09] Global Click Cooldown Setter ---------------------------------------------------------
     globalClickCooldownUntil = performance.now() + durationMs;
   }
 
   function setHandVizStyle(style){
+    // [10] Hand Viz Style Setter (fingertips / skeleton / off) ----------------------------------
   const allowed = ['fingertips','skeleton','off'];
     if (allowed.includes(style)) handVizStyle = style;
     // Hide spheres immediately if turned off
@@ -1890,6 +1968,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   let drawStartStopButton = null; // reference to Start/Stop toggle tile
   
   function showDrawSubmenu(vrDrawService) {
+    // [11] Draw Submenu: Show & Populate --------------------------------------------------------
     console.log('🎨 showDrawSubmenu called! Current state:');
     console.log('🎨   - drawSubmenuActive:', drawSubmenuActive);
     console.log('🎨   - vrDrawService available:', !!vrDrawService);
@@ -2010,6 +2089,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
   
   function hideDrawSubmenu() {
+    // [11] Draw Submenu: Hide & Restore ---------------------------------------------------------
     if (!drawSubmenuActive) return;
     
     // Add brief cooldown to prevent rapid menu switching during hand crossing
@@ -2049,6 +2129,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   }
   
   function arrangeSubmenuButtons() {
+    // [11] Draw Submenu: Layout Grid ------------------------------------------------------------
   // Arrange submenu buttons in a 4x3+ grid; first row starts with Start/Stop
   const cols = 4;
     const buttonSpacing = BUTTON_W + GRID_GAP_X;
@@ -2086,6 +2167,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   } catch {}
 
   return { 
+    // [12] Public API Export --------------------------------------------------------------------
     ensure, 
     remove, 
     update, 
