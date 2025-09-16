@@ -1,4 +1,3 @@
-git config core.hooksPath .githooks
 # Sketcher / AnArch
 
 Lightweight browser-based spatial sketching + conceptual modeling environment merging a real‑time 3D scene (Three.js) with a precision 2D drafting canvas. Designed for rapid early‑stage spatial layout, AR review, export, and iterative collaboration.
@@ -115,22 +114,6 @@ AR layers adjust material properties for physically‑based consistency, switch 
 - Modern browser supporting ES Modules & WebXR (Chrome, Edge, Firefox for basic features; AR best in Chromium).
 - PowerShell (for version bump hook on Windows) or adjust script for bash.
 
-### Local Run
-Use any static server:
-```powershell
-python -m http.server 8000
-# or
-npx serve .
-```
-Open: `http://localhost:8000/`
-
-### Git Version Bump Hook
-Enable once:
-```powershell
-git config core.hooksPath .githooks
-```
-Automatically updates `version.json` patch + date each commit.
-
 ---
 ## Code Conventions
 - Section banners with enumerated indices in large files for navigation.
@@ -187,4 +170,5 @@ Proprietary — see `LICENSE`. Third-party libraries retain their original licen
 
 ---
 *Version:* 4.1.1  ·  *Date:* 2025-09-16
+
 
