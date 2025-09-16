@@ -1,72 +1,190 @@
-# Sketcher
-
-## Version bump on commit
-
-This repo includes a Git pre-commit hook that automatically bumps `version.json` (patch number and date) on every commit.
-
-Files:
-- `scripts/bump-version.ps1` — PowerShell script that increments `version.json` and sets today’s date.
-- `.githooks/pre-commit` — Git hook that runs the script and re-adds `version.json`.
-
-Enable the hooks for this repository:
-
-```powershell
-# Run once inside the repo root
 git config core.hooksPath .githooks
+# Sketcher / AnArch
+
+Lightweight browser-based spatial sketching + conceptual modeling environment merging a real‑time 3D scene (Three.js) with a precision 2D drafting canvas. Designed for rapid early‑stage spatial layout, AR review, export, and iterative collaboration.
+
+---
+## Core Pillars
+| Pillar | Summary |
+| ------ | ------- |
+| 3D Modeling Core | Box primitives + imported assets, transforms, grouping, visibility, snapping |
+| 2D Drafting Layer | High‑DPI canvas: polyline, arcs, bezier, offset/fillet/chamfer, erase (object/pixel), dimensioning |
+| Underlay & Scale | PDF & DXF import with architectural scale parsing + overlay persistence |
+| AR / XR Review | WebXR AR (with polyfill fallback) + immersive HUD + first‑person navigation |
+| Collaboration (WIP) | Channel/broadcast scaffolding (see `collab.js`) for future real‑time sync |
+| Export Pipelines | OBJ (3D), PNG/PDF (2D), IFC (early mapping) |
+| Persistence | Local/session storage, content library (Supabase/IndexedDB abstraction) |
+| Performance & Quality | Adaptive pixel ratio, quality toggles, geometry simplification, import optimization |
+
+---
+## High-Level Feature Matrix
+| Domain | Capabilities |
+| ------ | ------------ |
+| 3D Scene | Grid, orbit/pan, box creation (drag footprint + set height), transform gizmos, grouping, visibility toggle, rename, snapping alignment (WIP) |
+| Assets | GLB/GLTF/OBJ import, object library loader (`obj-library.js`), material assignment (AR aware) |
+| 2D Drafting | Pen, line, rect, ellipse, polygon/reg polygon/star, arcs (3‑pt & center), quadratic bezier, round‑rect, measure, dimension, smart shape interpretation, offset, fillet, chamfer, erase (object/pixel mask), lasso snip & temp snip editing |
+| Underlay | PDF page import & scaling, DXF minimal entities (LINE/LWPOLYLINE/CIRCLE) -> live geometry, persistence with downscaled preview image |
+| Navigation | First‑person (keyboard/mouse), VR/AR HUD overlays, XR draw (prototype) |
+| Export | 3D OBJ, 2D PNG/PDF (`export-2d.js`), IFC skeleton (`ifc-export.js`) |
+| Persistence | Local/session autosave, thumbnail generation, gallery (“Columbarium”), broadcast syncing between tabs/windows |
+| AR / XR | Material adaptation (`ar-materials.js`), AR editing (`ar-edit.js`), HUD (`xr-hud.js`), VR drawing (`vr-draw.js`) |
+| Performance | Import optimization (`optimize-import.js`), simplification, adaptive DPR, quality controls (`fp-quality.js`) |
+| Room Semantics | Room system & manager, designation UI, scan integration (stubs) |
+| Collaboration (Future) | Placeholder scaffolding for multi-user state & presence in `collab.js` |
+
+---
+## Repository Layout (Key Paths)
+```
+js/
+	app/                3D application orchestrator
+		app.js            Main 3D runtime (banner documented)
+		services/         Cross-cutting domain + infra modules
+			room-system.js  Core spatial/room data model & topology
+			room-manager.js Lifecycle/control layer above room-system
+			room-designation-ui.js  UI for labeling / classification
+			room-scan.js    (Stub) future ingestion from scans
+			ifc-export.js   IFC export mapping
+			obj-library.js  Object catalog & on-demand load
+			ar-edit.js / ar-materials.js  AR interaction & material adaptation
+			xr-hud.js       Immersive overlay UI elements
+			first-person.js + fp-quality.js  Navigation + perf tuning
+			texture-utils.js  Texture loading/processing helpers
+			optimize-import.js  Import mesh optimization
+			mass-creation.js  Batch/parametric placement experiments
+			blocking-stacking.js + blocking-ui.js  Spatial constraint UI logic
+			collab.js       Collaboration scaffolding (future real-time)
+			community-api.js / supabase-sources.js Remote storage & feeds
+			excel-parser.js  Data extraction for bulk ops
+			vr-draw.js      Experimental XR line drawing
+		features/         Focused geometry / primitive helpers
+			primitives.js   3D primitive creation utilities
+			alignment-tile.js  Grid alignment experiments
+	app2d/              2D drafting subsystem
+		app2d.js          Full canvas engine (banner documented)
+		features/         2D geometry + selection + export + erase
+			geometry-2d.js
+			selection-2d.js
+			erase-2d.js
+			export-2d.js
+			smart-draw.js
+assets/               HDR env + OBJ test assets + textures
+css/                  Global styling & UI
+index.html            3D entry
+sketch2d.html         2D entry
+columbarium.html      Saved sketch/gallery view
+community.html        Community / shared scenes (future)
 ```
 
-Notes:
-- Requires PowerShell (Windows PowerShell or PowerShell 7+). The hook tries `pwsh` first, then `powershell`.
-- The hook only bumps the patch segment (x.y.Z). To bump minor/major, edit `version.json` manually before commit.
-# AnArch – Lightweight 3D Modeling Playground
-[https://lecartier.github.io/Sketcher/](https://lecartier.github.io/Sketcher/)
+---
+## Architectural Overview
+### Dual-Plane Editing
+The project intentionally separates concerns:
+- 3D (`app.js`): Scene graph orchestration, object transforms, lighting, overlays, AR session entry, export.
+- 2D (`app2d.js`): High‑frequency pointer drawing optimized around a single high‑DPI canvas with layered composition (underlay → grid → objects → erase mask → overlays/selection).
+A BroadcastChannel keeps 2D changes visible in 3D (as an overlay or for future projection).
 
-A single‑page Three.js scene for drawing boxes (in feet), importing models, editing with transform gizmos, grouping, visibility toggles, and exporting to OBJ. Includes optional WebXR AR viewing.
+### Room Semantics
+`room-system.js` maintains an internal model of rooms (likely polygonal bounds) with adjacency, area computation, and future export hooks. `room-manager.js` coordinates creation, destruction, UI designation, and potential IFC mapping.
 
-## Features
-- Create: drag on grid to draw a box with adjustable height
-- Edit: select single/multiple, move or rotate, snap to floor, group
-- Import: load .glb/.gltf/.obj, place on ground
-- Visibility: per‑object show/hide and inline rename
-- Export: OBJ of only user-created/imported objects
-- AR: WebXR immersive‑ar (with polyfill attempt on iOS)
-- Localization: language selector (English, Spanish) with easy extension
+### Import & Underlay Flow
+PDF and DXF imports flow through a unified modal that normalizes scale (feet per inch) and persists an underlay snapshot (downscaled PNG) for session continuity. DXF parsing is purposefully narrow—only essential entity types for early conceptual tracing.
 
-### 2D Sketch (new)
-Open `sketch2d.html` for a flat 2D canvas with Pen/Line/Rect/Ellipse/Text, stroke/fill color, thickness, pan/zoom, Undo/Redo, and PNG/PDF export. Shift to constrain lines/rects; Esc to cancel a shape.
+### Modify & Precision Tools (2D)
+Offset, fillet, chamfer, and dimension tools run on polylines with temporary previews and HUD numeric entry (plus join type cycling for offsets). Pixel erase uses a composited alpha mask separate from object removal for reversible visual refinement and performance.
 
-## Run
-Use any static server. If you have Live Server in VS Code:
+### Snip & Temp Edit
+Snip lasso extracts a subset for 3D or isolated editing. Temp Snip Edit mode suppresses autosave/broadcast until explicitly finished/canceled, preventing state races with the primary sketch.
 
-```powershell
-# Right‑click index.html > Open with Live Server
-# or on port from .vscode/settings.json (5501)
-```
+### AR / XR Integration
+AR layers adjust material properties for physically‑based consistency, switch interaction metaphors, and provide a HUD channel distinct from desktop UI. Experimental VR draw features demonstrate extensibility.
 
-Or with Python (optional):
+### Export Pipelines
+- OBJ: Mesh extraction of user objects only.
+- IFC: Early, modular mapping layer (not production‑complete) for future BIM pipeline integration.
+- 2D: PNG/PDF at device pixel scaling; dimension text + vector paths preserved in on‑canvas render before rasterization.
 
+### Performance Strategies
+- Adaptive device pixel ratio (clamped) for crisp yet efficient 2D.
+- Debounced autosave (200ms) + masked erase operations.
+- Import mesh optimization pipeline for heavy assets.
+- Optional geometry simplification & first-person quality reductions.
+
+---
+## Development Workflow
+### Prerequisites
+- Modern browser supporting ES Modules & WebXR (Chrome, Edge, Firefox for basic features; AR best in Chromium).
+- PowerShell (for version bump hook on Windows) or adjust script for bash.
+
+### Local Run
+Use any static server:
 ```powershell
 python -m http.server 8000
+# or
+npx serve .
+```
+Open: `http://localhost:8000/`
+
+### Git Version Bump Hook
+Enable once:
+```powershell
+git config core.hooksPath .githooks
+```
+Automatically updates `version.json` patch + date each commit.
+
+---
+## Code Conventions
+- Section banners with enumerated indices in large files for navigation.
+- World units: feet (1 Three.js unit = 1 ft). 2D canvas uses feet mapped to screen via `view.pxPerFt`.
+- Avoid overly chatty comments—focus on invariants, intent, and side‑effects.
+- Use feature modules (`js/app2d/features/*` and `js/app/features/*`) to isolate algorithms from orchestration.
+
+### Suggested Banner Pattern
+```
+// ============================================================================
+// [NN] TITLE
+// One‑line scope + nuances.
+// ----------------------------------------------------------------------------
 ```
 
-Then open http://localhost:8000/ (adjust port as needed).
+---
+## Extending the System
+| Area | How to Extend |
+| ---- | ------------- |
+| Add 2D Tool | Implement preview + commit flow; integrate into `setTool()` mapping + keyboard shortcut if needed |
+| New Import Type | Follow unified modal API (scale, preview) and map entities -> internal objects |
+| Additional Export | Create service module; expose async function; wire button & status feedback |
+| AR Feature | Extend `ar-edit.js` or HUD; ensure graceful fallback when no XR session |
+| Room Logic | Add geometry helpers inside `room-system.js`; document invariants (e.g., non‑self‑intersecting polygons) |
+| Collaboration | Flesh out `collab.js`: define message schema, diff/patch strategy, presence model |
 
-## Tips
-- Orbit: two fingers on touch; middle mouse to orbit, hold Shift for pan
-- Multi‑select: Ctrl/Cmd/Shift click in viewport or list
-- Delete: Delete/Backspace removes all selected
-- ESC while drawing cancels the preview
-- Change language via the dropdown at the top left
+---
+## Testing & Validation (Lightweight)
+No formal test harness yet; recommended manual passes:
+- 2D offset/fillet/chamfer on open & closed polylines
+- PDF + DXF import scaling accuracy (compare known dimension)
+- Undo/redo after mixed edit + erase operations
+- Snip → temp edit → finish/cancel state integrity
+- OBJ export then re-import for geometry fidelity
+- AR session entry/exit on supported device (materials & lighting) 
 
-## Notes
-- Units: 1 Three.js unit equals 1 foot. Grid is 20×20 ft.
-- Export excludes helpers/lights/gizmos.
-- Tested with Three r155 via ESM CDN imports.
+---
+## Known Limitations / Roadmap
+- Collaboration real-time sync is placeholder only.
+- IFC export incomplete (property sets, multi-storey not covered).
+- DXF parser minimal; ignores layers, arcs, splines.
+- No persistent multi-user conflict resolution yet.
+- Limited mobile UI optimization outside core interactions.
 
-### Add a new language
-Edit `js/i18n.js` and add a new top‑level key (e.g., `fr`) in `dictionaries`. Then add an `<option>` in the `#langSelect` in `index.html` and include the new code in `initLocale([...])` if desired.
-
+---
 ## License
+Proprietary — see `LICENSE`. Third-party libraries retain their original licenses (Three.js, loaders, pdf.js, etc.).
 
-Proprietary — permission required to re‑use code. See `LICENSE` for details. Third‑party components (e.g., three.js, example loaders) are under their own licenses.
+---
+## Credits / Acknowledgements
+- Three.js ecosystem + example loaders (GLTF, DRACO, KTX2, IFC)
+- pdf.js project (Mozilla) for PDF rendering
+- Community inspiration for lightweight BIM & spatial sketch tooling
+
+---
+*Version:* 4.1.1  ·  *Date:* 2025-09-16
 

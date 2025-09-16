@@ -1,8 +1,66 @@
 // Main application entry extracted from index.html
 // Exports an init function executed by index.html
 
+/*
+====================================================================================
+ Sketcher - 3D / XR Authoring Environment
+------------------------------------------------------------------------------------
+ File: app.js
+ Role: Monolithic bootstrap & runtime orchestrator for the 3D editor + XR (AR/VR) mode.
+
+ SUMMARY OF RESPONSIBILITIES
+ * Scene & object lifecycle (creation, import, selection, transforms, grouping)
+ * XR session flow (enter/exit AR/VR, clone handling, scale modes, ground locking)
+ * Interaction modalities (orbit vs first-person, ray vs grab, draw tools,
+   two-click architectural primitives, face alignment, per-object vs whole-scene edit)
+ * Collaboration (rooms host/join, presence, transform + overlay + camera sync)
+ * Persistence (autosave draft, baselines for reset, local scene library, undo stack)
+ * Material/style systems (global style themes, texture editor, AR material modes)
+ * Utilities (grid management, snapping, teleport, alignment tile, blocking/stacking)
+
+ COMMENT STYLE (applied progressively)
+ * SECTION BANNERS:  // ================= [ SECTION NAME ] =================
+ * INDEX OF SECTIONS (added for quick Ctrl+F navigation):
+ *   DYNAMIC IMPORT BUNDLE
+ *   VERSION BADGE FETCH
+ *   TOOLBOX ROOM GROUP INJECTION
+ *   GLOBAL ERROR BANNER
+ *   CONDITIONAL WEBXR POLYFILL
+ *   SCENE & RENDERER SETUP
+ *   MATERIAL & STYLE SYSTEM
+ *   SELECTION, SNAPPING & TRANSFORMS
+ *   IMPORT & EXPORT PIPELINE
+ *   COLLABORATION (ROOM / OVERLAY SYNC)
+ *   ROOM & BLOCKING SYSTEMS
+ *   PERSISTENCE & UNDO
+ *   CAMERA & VIEW MODES
+ *   OBJECT LIFECYCLE HELPERS
+ *   TWO-CLICK PLACEMENT (FLOOR/WALL)
+ *   GROUPING & PRIMITIVE CREATION
+ *   FACE ALIGN TOOL
+ *   POSITION UTILITIES
+ *   AR PREP & RESET HELPERS
+ *   XR POLLING & INPUT STATE MACHINE
+ * SUB-SECTIONS:     // --- Subtopic: description ---
+ * FUNCTION DOCS:    Brief purpose + non-obvious side effects (avoid restating code)
+ * INLINE:           Explain WHY (heuristics, thresholds) not WHAT (obvious calls)
+ * AVOID:            Redundant narration of clear API usage or trivial DOM wiring.
+
+ NOTE: Future refactor opportunity to split into smaller controller modules. Until
+ then, structured commentary serves as a navigational index for new contributors.
+====================================================================================
+*/
+
 export async function init() {
-	// Delegate tweenCamera to views.js while keeping the same call shape
+	// ================= [ DYNAMIC IMPORT BUNDLE ] =================
+	// Loads core libs + internal feature modules in parallel. Keeping this grouped
+	// allows future code‑splitting (e.g., conditional XR module load) if needed.
+
+	/**
+	 * Camera tween helper wrapper.
+	 * Delegates to views module while preserving legacy call signature used
+	 * throughout this file (centralized here in case easing/controls coupling changes).
+	 */
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
@@ -44,6 +102,7 @@ export async function init() {
 		]);
 
 	// Version badge
+	// ================= [ VERSION BADGE FETCH ] =================
 	(async () => {
 		try {
 			const res = await fetch('./version.json', { cache: 'no-store' });
@@ -59,6 +118,8 @@ export async function init() {
 	})();
 
 	// Inject Room parent toggle and group into the toolbox DOM (buttons wired later)
+	// ================= [ TOOLBOX ROOM GROUP INJECTION ] =================
+	// Lazily ensure Room group exists even if HTML template omits it (backwards compat).
 	(function ensureRoomToolboxDOM(){
 		try {
 			const tb = document.getElementById('toolbox'); if (!tb) return;
@@ -77,6 +138,8 @@ export async function init() {
 	})();
 
 	// Global error banner to surface runtime failures
+	// ================= [ GLOBAL ERROR BANNER ] =================
+	// Centralized runtime error surfacing (unhandled promise & synchronous errors).
 	(function setupErrorBanner(){
 		function show(msg){
 			try {
@@ -101,15 +164,23 @@ export async function init() {
 
 
 
-		async function loadWebXRPolyfillIfNeeded() {
+	// ================= [ CONDITIONAL WEBXR POLYFILL ] =================
+	/**
+	 * Loads WebXR polyfill on iOS Safari (which presently lacks native WebXR) so
+	 * AR quick look / immersive sessions use a consistent API surface.
+	 */
+	async function loadWebXRPolyfillIfNeeded() {
 		const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 		if (isIOS && !('xr' in navigator)) {
-				try { await import('../vendor/webxr-polyfill.module.js'); } catch {}
+			try { await import('../vendor/webxr-polyfill.module.js'); } catch {}
 		}
 	}
 	loadWebXRPolyfillIfNeeded();
 
 	// Scene
+	// ================= [ SCENE & RENDERER SETUP ] =================
+	// Core Three.js scene graph, renderer tuning (shadows, tone mapping, XR flags),
+	// and an overlay 2D canvas used for transient UI (selection lasso, etc.).
 	const scene = new THREE.Scene();
 	window.scene = scene; // Make scene globally accessible for collaboration
 	let cameraType = 'perspective';
@@ -213,21 +284,30 @@ export async function init() {
 	let xrInteractionRay = false;
 
 	// Defensive: ensure the scene root has identity transform (no offsets/rotations/scales)
+	/**
+	 * Resets any unintended world transform drift on the root scene (defensive –
+	 * some XR flows or external libs might mutate scene root). Keeps invariants for
+	 * AR clone placement assumptions (scene assumed identity transform).
+	 */
 	function resetSceneTransform(){
 		try {
 			if (!scene) return;
-			if (scene.position){ scene.position.set(0,0,0); }
-			if (scene.quaternion){ scene.quaternion.identity(); }
-			if (scene.rotation){ scene.rotation.set(0,0,0); }
-			if (scene.scale){ scene.scale.set(1,1,1); }
+			if (scene.position) scene.position.set(0,0,0);
+			if (scene.quaternion) scene.quaternion.identity();
+			if (scene.rotation) scene.rotation.set(0,0,0);
+			if (scene.scale) scene.scale.set(1,1,1);
 			if (scene.updateMatrixWorld) scene.updateMatrixWorld(true);
 		} catch {}
 	}
+	/**
+	 * Computes cached size metrics of AR clone content (in meters) for scaling modes.
+	 * Sets: arBaseBox, arBaseDiagonal (largest dimension used for Fit logic).
+	 */
 	function computeArBaseMetrics(root){
 		try {
 			root.updateMatrixWorld(true);
-				const box = new THREE.Box3().setFromObject(root);
-			arBaseBox = box; 
+			const box = new THREE.Box3().setFromObject(root);
+			arBaseBox = box;
 			try { if (!arContent.userData) arContent.userData = {}; arContent.userData.__oneScale = FEET_TO_METERS; } catch{}
 			const size = box.getSize(new THREE.Vector3());
 			arBaseDiagonal = Math.max(1e-4, Math.max(size.x, size.y, size.z));
@@ -354,6 +434,9 @@ export async function init() {
 		renderer,
 		getLocalSpace: ()=> xrLocalSpace,
 		getButtons: (createHudButton) => {
+			// ================= [ AR PREP & RESET HELPERS ] =================
+			// Capture & revert helpers for AR clone content; allows lightweight reset of per-node transforms
+			// without reloading full scene or consuming undo history.
 			// Helper: capture baseline local TR for each descendant (excluding root unless needed for fallback)
 			function __captureArContentBaseline(root){
 				try {
@@ -1159,6 +1242,8 @@ export async function init() {
 	});
 
 	// Initialize OBJ Library service
+	// ================= [ IMPORT & EXPORT PIPELINE ] =================
+	// Handles external asset ingestion (OBJ library, map import, Excel/IFC parsers) and export tools (OBJ, GLTF, USDZ, IFC).
 	const objLibrary = createOBJLibrary({
 		THREE,
 		OBJLoader,
@@ -1777,6 +1862,8 @@ export async function init() {
 		grid,
 		loadWebXRPolyfillIfNeeded,
 	});
+	// ================= [ SELECTION, SNAPPING & TRANSFORMS ] =================
+	// Selection outlines, transform control attach/detach logic, custom handle scaling and soft snapping thresholds.
 	// Soft snapping config (feet): snap when within SNAP_ENTER; allow pushing past with up to SNAP_OVERLAP before releasing
 	let SNAP_ENABLED = true; // soft snap on by default
 	const SNAP_ENTER = 0.3; // start snapping within this gap
@@ -2148,6 +2235,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			const params = new URLSearchParams(location.search);
 			const room = params.get('room');
 			const asHost = params.has('host');
+			// ================= [ COLLABORATION (ROOM / OVERLAY SYNC) ] =================
+			// Lazy creation of collaboration service when entering a shared room; wires presence, status,
+			// scene diff application, overlay forwarding, and camera transform broadcasting.
 			if (room && createCollab) {
 				collab = createCollab({ THREE, findObjectByUUID, addObjectToScene, clearSceneObjects, loadSceneFromJSON, getSnapshot, applyOverlayData });
 				try {
@@ -2222,6 +2312,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const planLockBtn = document.getElementById('planLock');
 	// Scenes UI
 
+	// ================= [ MATERIAL & STYLE SYSTEM ] =================
+	// Centralized material/style management (theme switching, grid & background color, procedural/shared materials)
+	// Provides helpers used by primitive creation, AR simplification, and exports.
 	// Initialize Material System
 	const __originalMaterials = new WeakMap();
 	function forEachMeshInScene(cb){
@@ -2263,7 +2356,26 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let currentSceneId = null;
 	let currentSceneName = '';
 
-	// --- Session draft autosave (persist state across reloads/navigation) ---
+	// ================= [ PERSISTENCE & UNDO ] =================
+	/*
+		Persistence Overview:
+		- Session Draft Autosave: lightweight serialization of current scene (user objects only) to sessionStorage (primary) and localStorage (fallback) so accidental reloads recover state.
+		- Baselines (sessionStorage):
+		    baseline       -> Mutable mid-session snapshot (updated after imports) used by VR Reset.
+		    baselineStart  -> Immutable snapshot captured when entering VR with content (fallback if baseline absent).
+		    baseline:uuids -> UUID allowlist so reset can prune non-baseline additions (primitives, drawings, previews).
+		- Undo Stack (__history): up to 50 serialized scene states (deduplicated); captures on mutating actions.
+		- AR Baseline (__captureArContentBaseline): per-node local TR capture for AR revert without full scene baseline when AR-only adjustments occur.
+		Key Helpers Exposed:
+		  serializeScene() -> JSON friendly object list via persistence module.
+		  getPersistableObjects() -> filters helpers / cameras / lights.
+		  __captureSnapshot(reason) / __undo() -> history management.
+		  clearSceneObjects() -> removes all user objects (and notifies collab if active).
+		Design Notes:
+		- Baseline logic intentionally decoupled from undo so Reset semantics remain predictable even after many undos/redos.
+		- Helper filtering centralizes criteria for persistence & export; any new helper types should extend __isHelperObject.
+	*/
+	// Session draft autosave (persist state across reloads/navigation)
 	function __isHelperObject(obj){
 		if (!obj) return true;
 		if (obj === grid) return true;
@@ -2273,6 +2385,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		if (obj.isGridHelper) return true;
 		return false;
 	}
+	/**
+	 * getPersistableObjects
+	 * Returns array of user content roots to serialize. Starts from 'objects' list then adds
+	 * any additional scene children that qualify (Mesh/Group/Points) and are not helpers.
+	 * Ensures objects added externally (e.g., via loaders) but not yet pushed into 'objects'
+	 * still persist.
+	 */
 	function getPersistableObjects(){
 		const list = [...objects];
 		const have = new Set(list);
@@ -2286,12 +2405,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		}
 		return list;
 	}
-	// AR clone source should include overlay even though it's marked helper, so it appears in AR
+	/** AR clone source includes 2D Overlay (even though flagged helper) so it appears in AR exports. */
 	function getARCloneSourceObjects(){
 		const list = getPersistableObjects().slice();
 		try { const ov = scene.getObjectByName('2D Overlay'); if (ov && !list.includes(ov)) list.push(ov); } catch {}
 		return list;
 	}
+	/** Serialize current user scene (excluding helpers) using persistence module. */
 	function serializeScene() { return persistence.serializeSceneFromObjects(THREE, getPersistableObjects()); }
 
 	// Expose a safe global accessor for current scene JSON (used by share-to-community flow)
@@ -2308,6 +2428,10 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			updateCameraClipping();
 		} catch(e){ console.warn('Collab loadSceneFromJSON failed', e); }
 	}
+	/**
+	 * getSnapshot
+	 * Builds a collaboration snapshot: 3D JSON + 2D overlay drawing state (if present) for broadcast.
+	 */
 	async function getSnapshot(){
 		try {
 			const json = serializeScene();
@@ -2396,6 +2520,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	let __historyIndex = -1;
 	const __historyLimit = 50;
 	let __isRestoringHistory = false;
+	/**
+	 * __captureSnapshot
+	 * Pushes current scene JSON into undo history with optional reason tag.
+	 * - Deduplicates consecutive identical states.
+	 * - Truncates redo tail after divergence.
+	 * - Enforces max length via FIFO.
+	 */
 	function __captureSnapshot(reason = ''){
 		try {
 			const json = serializeScene();
@@ -2409,6 +2540,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			__historyIndex = __history.length - 1;
 		} catch {}
 	}
+	/** Rebuild scene from a history entry at index (internal; no new snapshot created). */
 	async function __restoreFromSnapshot(idx){
 		if (idx < 0 || idx >= __history.length) return;
 		const rec = __history[idx]; if (!rec) return;
@@ -2428,6 +2560,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			__isRestoringHistory = false;
 		}
 	}
+	/** Step back one snapshot if possible and restore. */
 	function __undo(){
 		if (__historyIndex <= 0) return;
 		__historyIndex -= 1;
@@ -3527,6 +3660,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} catch{}
 	});
 	// Camera view logic for standard views
+	// ================= [ CAMERA & VIEW MODES ] =================
+	/**
+	 * setCameraView
+	 * Switches between perspective, orthographic plan/elevation/axon views.
+	 * Responsibilities:
+	 *  - Compute tight scene bounding box and derive camera placement.
+	 *  - Animate transition with tweenCamera for user orientation continuity.
+	 *  - Maintain plan view lock (overrides requested perspective changes).
+	 * Side Effects: mutates global camera reference & OrbitControls target/object.
+	 * When planViewLocked is true we force orthographic top (plan) until unset.
+	 */
 	function setCameraView(type) {
 		// If Plan View Lock is active, force 'plan' regardless of requested type
 		if (planViewLocked) type = 'plan';
@@ -4374,6 +4518,15 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		} catch{}
 		return list;
 	}
+	// ================= [ OBJECT LIFECYCLE HELPERS ] =================
+	/**
+	 * addObjectToScene
+	 * Central add hook: registers object, applies current global material style
+	 * (unless map import / teleport disc), updates visibility tree + camera clip
+	 * bounds, broadcasts to collaborators, and optionally selects.
+	 * @param {THREE.Object3D} obj
+	 * @param {boolean} select - whether to select the object immediately.
+	 */
 	function addObjectToScene(obj, { select = false } = {}){
 		scene.add(obj); objects.push(obj);
 			// If a loaded object is a teleport disc, re-register it so picking and activation work
@@ -4403,6 +4556,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		// Heuristic: if pointerType is 'touch' but device is not mobile, likely a trackpad
 		return e.pointerType === 'touch' && !isTouchDevice && navigator.userAgent.match(/Mac|Windows/);
 	}
+	/**
+	 * applyAutoTouchMapping
+	 * Heuristic mapping of touch gestures to OrbitControls intents. On laptops with
+	 * touch surfaces we allow two-finger pan / pinch zoom while keeping single-finger
+	 * rotate active only in edit mode.
+	 */
 	function applyAutoTouchMapping(){
 		// On laptops, allow two-finger drag to pan, pinch to zoom, single-finger drag to rotate
 		controls.touches = (mode === 'edit') ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: THREE.TOUCH.NONE, TWO: THREE.TOUCH.DOLLY_PAN };
@@ -4452,6 +4611,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		placingTool = kind; placingStage = 0; controls.enabled = false;
 		const btn = document.getElementById(kind==='wall' ? 'addWall' : 'addFloor'); if (btn) btn.setAttribute('aria-pressed','true');
 	}
+	// ================= [ TWO-CLICK PLACEMENT (FLOOR/WALL) ] =================
+	/**
+	 * updatePlacingPreview
+	 * Rebuilds transient preview mesh + optional outline based on initial anchor
+	 * (placingStart) and current pointer ground projection. Shift snaps wall angle
+	 * to 90° increments. For planViewLocked we add a thin outline for readability.
+	 */
 	function updatePlacingPreview(current, modifiers={}){
 		const shift = !!modifiers.shift;
 		if (!placingTool || placingStage !== 1) return;
@@ -4524,6 +4690,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			}
 		}
 	}
+	/**
+	 * finalizePlacing
+	 * Commits current preview (wall or floor) into the scene, enforcing minimum
+	 * size and naming, then resets placement state. Avoids degenerate geometry if
+	 * drag distance is negligible.
+	 */
 	function finalizePlacing(endPt){
 		if (!placingTool) return;
 		// Avoid creating degenerate walls/floors if the drag distance is too small
@@ -4676,24 +4848,50 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if (handleDrag){ handleDrag = null; controls.enabled = true; updateHandles(); snapVisuals.hide(); saveSessionDraftSoon(); }
 	});
 
-	// Grouping logic for toolbox button
+	// ================= [ GROUPING & PRIMITIVE CREATION ] =================
+	/**
+	 * handleGroupSelected
+	 * Wrap currently selected objects (requires >=2) in a new THREE.Group positioned
+	 * at the average world position of all selected roots. Child objects are re-parented
+	 * with local positions adjusted so their world transforms stay visually stable.
+	 * Side effects: updates selection to new group, refreshes outlines & UI, saves draft.
+	 */
 	function handleGroupSelected() {
-		if(selectedObjects.length<2) return;
-		const center = new THREE.Vector3(); selectedObjects.forEach(obj => { obj.updateMatrixWorld(); const pos = new THREE.Vector3(); pos.setFromMatrixPosition(obj.matrixWorld); center.add(pos); }); center.multiplyScalar(1 / selectedObjects.length);
-		selectedObjects.forEach(obj=>{ scene.remove(obj); const idx=objects.indexOf(obj); if(idx>-1) objects.splice(idx,1); });
-		const group=new THREE.Group(); group.position.copy(center);
-		selectedObjects.forEach(obj=>{ obj.updateMatrixWorld(); const worldPos = new THREE.Vector3(); worldPos.setFromMatrixPosition(obj.matrixWorld); obj.position.copy(worldPos.sub(center)); group.add(obj); });
-		group.name='Group '+(objects.filter(o=>o.type==='Group').length+1);
-	scene.add(group); objects.push(group); selectedObjects=[group]; attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
+		if (selectedObjects.length < 2) return;
+		const center = new THREE.Vector3();
+		selectedObjects.forEach(obj => {
+			obj.updateMatrixWorld();
+			const pos = new THREE.Vector3();
+			pos.setFromMatrixPosition(obj.matrixWorld);
+			center.add(pos);
+		});
+		center.multiplyScalar(1 / selectedObjects.length);
+		// Detach originals from scene list
+		selectedObjects.forEach(obj => { scene.remove(obj); const idx = objects.indexOf(obj); if (idx > -1) objects.splice(idx, 1); });
+		const group = new THREE.Group(); group.position.copy(center);
+		// Re-parent while keeping visual placement
+		selectedObjects.forEach(obj => { obj.updateMatrixWorld(); const worldPos = new THREE.Vector3(); worldPos.setFromMatrixPosition(obj.matrixWorld); obj.position.copy(worldPos.sub(center)); group.add(obj); });
+		group.name = 'Group ' + (objects.filter(o => o.type === 'Group').length + 1);
+		scene.add(group); objects.push(group);
+		selectedObjects = [group];
+		attachTransformForSelection(); rebuildSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 	}
 
-	// Draw-create preview and two-click placement live update
-	renderer.domElement.addEventListener('pointermove',e=>{
+	/**
+	 * Pointer move handler (edit canvas)
+	 * Responsibilities (branching by active mode/state):
+	 * 1. Two-click placement (floor/wall) live preview sizing.
+	 * 2. Custom handle drag for single-object scaling/translation (with soft snapping).
+	 * 3. Primitive draw tool live box/sphere/cylinder/cone preview & outline while dragging.
+	 * Notes:
+	 * - Teleport hover logic removed (legacy comment pruned).
+	 * - Preview meshes/outlines are disposed promptly to avoid GPU resource leaks.
+	 */
+	renderer.domElement.addEventListener('pointermove', e => {
 	if (firstPerson && firstPerson.isActive && firstPerson.isActive()) { return; }
-		// Update live preview for two-click placement
-		if (placingTool && placingStage===1){ getPointer(e); raycaster.setFromCamera(pointer,camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt, { shift: !!e.shiftKey }); }
-		// (Teleport discs removed: no hover highlight)
-		// Handle dragging
+		// (1) Two-click placement preview
+		if (placingTool && placingStage === 1) { getPointer(e); raycaster.setFromCamera(pointer, camera); const pt = intersectGround(); if (pt) updatePlacingPreview(pt, { shift: !!e.shiftKey }); }
+		// (2) Custom handle drag (single selection) for scaling / moving with pivot preservation
 		if (handleDrag){
 			getPointer(e); raycaster.setFromCamera(pointer,camera);
 			const ptW = new THREE.Vector3(); if (!raycaster.ray.intersectPlane(handleDrag.dragPlane, ptW)) return;
@@ -4764,31 +4962,34 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				rebuildSelectionOutlines();
 			return;
 		}
-		if(!isDragging||!activeDrawTool) return; getPointer(e); raycaster.setFromCamera(pointer,camera);
-		const pt=intersectGround(); if(!pt) return;
-		// Footprint on base plane
-		const dx=pt.x-startPt.x, dz=pt.z-startPt.z; const sx=Math.max(0.1,Math.abs(dx)), sz=Math.max(0.1,Math.abs(dz));
-		const minX = Math.min(startPt.x, pt.x); const maxX = Math.max(startPt.x, pt.x);
-		const minZ = Math.min(startPt.z, pt.z); const maxZ = Math.max(startPt.z, pt.z);
-		const r=Math.max(sx,sz)/2;
-		// Height from vertical drag in screen space (up increases height)
+		// (3) Primitive draw tool live preview path
+		if (!isDragging || !activeDrawTool) return; 
+		getPointer(e); raycaster.setFromCamera(pointer, camera);
+		const pt = intersectGround(); if(!pt) return;
+		// Compute footprint extents & derived dimensions
+		const dx = pt.x - startPt.x, dz = pt.z - startPt.z; const sx = Math.max(0.1, Math.abs(dx)), sz = Math.max(0.1, Math.abs(dz));
+		const minX = Math.min(startPt.x, pt.x), maxX = Math.max(startPt.x, pt.x);
+		const minZ = Math.min(startPt.z, pt.z), maxZ = Math.max(startPt.z, pt.z);
+		const r = Math.max(sx, sz) / 2; // uniform radius for sphere/cylinder/cone
+		// Height from vertical cursor drag (screen Y delta -> world height, camera-distance scaled)
 		const dyPx = (dragStartScreenY - e.clientY);
 		const camDist = camera.position.distanceTo(controls.target || new THREE.Vector3());
-		const pxToWorld = Math.max(0.002, camDist / 600); // sensitivity scaling
+		const pxToWorld = Math.max(0.002, camDist / 600);
 		let h = Math.max(0.1, Math.abs(dyPx) * pxToWorld);
-		// When Plan View Lock is active, default new objects to 3ft tall minimum
-		if (planViewLocked) h = Math.max(h, 3);
-		const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
-		const cyBox = startPt.y + h/2; // center Y for extruded shapes resting on base
-		const cySphere = startPt.y + r; // sphere rests on base
-		if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; }
-		if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; }
+		if (planViewLocked) h = Math.max(h, 3); // enforce minimum perceived depth in plan mode
+		const cx = (minX + maxX)/2, cz = (minZ + maxZ)/2;
+		const cyBox = startPt.y + h/2; // extruded primitives centered vertically
+		const cySphere = startPt.y + r; // sphere sits on base plane
+		// Dispose old preview assets
+		if (previewMesh) { scene.remove(previewMesh); previewMesh.geometry?.dispose?.(); previewMesh.material?.dispose?.(); previewMesh = null; }
+		if (previewOutline) { scene.remove(previewOutline); previewOutline.geometry?.dispose?.(); previewOutline.material?.dispose?.(); previewOutline = null; }
+		// Material selection (mirrors addObjectToScene default style pipeline)
 		const activeMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
-		if(activeDrawTool==='box'){ previewMesh=new THREE.Mesh(new THREE.BoxGeometry(sx,h,sz), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
-		else if(activeDrawTool==='sphere'){ previewMesh=new THREE.Mesh(new THREE.SphereGeometry(r,24,16), activeMat); if(previewMesh) previewMesh.position.set(cx,cySphere,cz); }
-		else if(activeDrawTool==='cylinder'){ previewMesh=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
-		else if(activeDrawTool==='cone'){ previewMesh=new THREE.Mesh(new THREE.ConeGeometry(r,h,24), activeMat); if(previewMesh) previewMesh.position.set(cx,cyBox,cz); }
-		// Base rectangle outline (helps intuition: corner -> opposite corner)
+		if (activeDrawTool === 'box') { previewMesh = new THREE.Mesh(new THREE.BoxGeometry(sx, h, sz), activeMat); previewMesh.position.set(cx, cyBox, cz); }
+		else if (activeDrawTool === 'sphere') { previewMesh = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16), activeMat); previewMesh.position.set(cx, cySphere, cz); }
+		else if (activeDrawTool === 'cylinder') { previewMesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 24), activeMat); previewMesh.position.set(cx, cyBox, cz); }
+		else if (activeDrawTool === 'cone') { previewMesh = new THREE.Mesh(new THREE.ConeGeometry(r, h, 24), activeMat); previewMesh.position.set(cx, cyBox, cz); }
+		// Footprint outline (visualizes drag rectangle from start corner to current)
 		try {
 			const pos = new Float32Array([
 				minX, startPt.y + SURFACE_EPS, minZ,
@@ -4801,10 +5002,12 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			previewOutline = new THREE.Line(new THREE.LineBasicMaterial({ color: 0x222222 }), g);
 			scene.add(previewOutline);
 		} catch {}
-		if(previewMesh){ scene.add(previewMesh); }
+		if (previewMesh) scene.add(previewMesh);
 	});
-	window.addEventListener('pointerup',e=>{ if(e.button!==0) return; if(!isDragging||!activeDrawTool) return; isDragging=false; controls.enabled=true; if(previewMesh){ const placed=previewMesh; previewMesh=null; placed.name=`${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length+1}`; addObjectToScene(placed,{ select:true }); } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } activeDrawTool=null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); saveSessionDraftNow(); });
-	window.addEventListener('keydown',e=>{ if(e.key==='Escape' && activeDrawTool){ activeDrawTool=null; if(isDragging){ isDragging=false; controls.enabled=true; } if(previewMesh){ scene.remove(previewMesh); if(previewMesh.geometry) previewMesh.geometry.dispose(); if(previewMesh.material&&previewMesh.material.dispose) previewMesh.material.dispose(); previewMesh=null; } if(previewOutline){ scene.remove(previewOutline); if(previewOutline.geometry) previewOutline.geometry.dispose(); if(previewOutline.material&&previewOutline.material.dispose) previewOutline.material.dispose(); previewOutline=null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn=>{ if(btn) btn.setAttribute('aria-pressed','false'); }); } });
+	/** Finalize primitive draw tool placement on pointer up (left button only). */
+	window.addEventListener('pointerup', e => { if (e.button !== 0) return; if (!isDragging || !activeDrawTool) return; isDragging = false; controls.enabled = true; if (previewMesh) { const placed = previewMesh; previewMesh = null; placed.name = `${activeDrawTool[0].toUpperCase()}${activeDrawTool.slice(1)} ${objects.length + 1}`; addObjectToScene(placed, { select: true }); } if (previewOutline) { scene.remove(previewOutline); previewOutline.geometry?.dispose?.(); previewOutline.material?.dispose?.(); previewOutline = null; } activeDrawTool = null; [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn => { if (btn) btn.setAttribute('aria-pressed', 'false'); }); saveSessionDraftNow(); });
+	/** Cancel primitive draw tool (Escape): disposes preview assets and resets buttons. */
+	window.addEventListener('keydown', e => { if (e.key === 'Escape' && activeDrawTool) { activeDrawTool = null; if (isDragging) { isDragging = false; controls.enabled = true; } if (previewMesh) { scene.remove(previewMesh); previewMesh.geometry?.dispose?.(); previewMesh.material?.dispose?.(); previewMesh = null; } if (previewOutline) { scene.remove(previewOutline); previewOutline.geometry?.dispose?.(); previewOutline.material?.dispose?.(); previewOutline = null; } [dcBoxBtn, dcSphereBtn, dcCylinderBtn, dcConeBtn].forEach(btn => { if (btn) btn.setAttribute('aria-pressed', 'false'); }); } });
 
 	// ESC should also cancel two-click placing tools (floor/wall)
 	window.addEventListener('keydown', e => { if (e.key === 'Escape' && placingTool){ cancelPlacing(); } });
@@ -4825,72 +5028,53 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	if(addScaleFigureBtn) addScaleFigureBtn.addEventListener('click', ()=>{ const grp = new THREE.Group(); const mat = material.clone(); const legH=2.5, legR=0.25, legX=0.35; const torsoH=2.5, torsoRTop=0.5, torsoRBot=0.6; const headR=0.5; const legGeo = new THREE.CylinderGeometry(legR, legR, legH, 16); const leftLeg = new THREE.Mesh(legGeo, mat.clone()); leftLeg.position.set(-legX, legH/2, 0); const rightLeg = new THREE.Mesh(legGeo.clone(), mat.clone()); rightLeg.position.set(legX, legH/2, 0); grp.add(leftLeg, rightLeg); const torsoGeo = new THREE.CylinderGeometry(torsoRTop, torsoRBot, torsoH, 16); const torso = new THREE.Mesh(torsoGeo, mat.clone()); torso.position.set(0, legH + torsoH/2, 0); grp.add(torso); const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 16, 12), mat.clone()); head.position.set(0, legH + torsoH + headR*1.1, 0); grp.add(head); grp.traverse(o=>{ o.castShadow=true; }); grp.scale.setScalar(6/ (legH+torsoH+headR*2)); grp.name=`Scale Figure ${objects.filter(o=>o.name.startsWith('Scale Figure')).length+1}`; addObjectToScene(grp,{ select:true }); });
 	if(faceAlignToolBtn) faceAlignToolBtn.addEventListener('click', ()=>{ startFaceAlignMode(); });
 
+	// ================= [ FACE ALIGN TOOL ] =================
+	/**
+	 * Face Align Tool
+	 * Two-stage workflow to align one object's face to another's.
+	 * 1) User activates tool and picks a baseline (stationary) face.
+	 * 2) User picks a target face on another object; target object is rotated and/or translated
+	 *    so the target face coincides with the baseline face plane.
+	 *
+	 * Implementation notes:
+	 * - We raycast meshes only (skip helpers) and capture centroid + world normal.
+	 * - If faces are nearly opposite (dot < -0.95) we translate along target normal so planes meet.
+	 * - If faces are parallel same direction (dot > 0.95) we apply pure translation of centroids.
+	 * - Otherwise we compute shortest rotation from targetNormal to baselineNormal about the
+	 *   target face centroid, apply it, then translate centroids.
+	 * - Temporary sphere indicator marks the baseline face; cleared on completion or cancel.
+	 * - All transforms are applied at object root (no per-vertex editing here).
+	 */
 	// Face Align Tool state & logic
 	let faceAlignState = null; // { stage:1|2, source:{object, faceIndex, normal, centroid}, indicator:Mesh }
+	/** Begin face align mode (or cancel if already active). Stage 1 waits for baseline face pick. */
 	function startFaceAlignMode(){ if(faceAlignState){ cancelFaceAlignMode(); return; } faceAlignState={ stage:1 }; setStatusTemp('Select baseline face'); }
+	/** Cancel face align mode and remove any indicator sphere + status text. */
 	function cancelFaceAlignMode(){ cleanupFaceAlignIndicators(); faceAlignState=null; setStatusTemp(''); }
+	/** Remove indicator mesh if present (safe try/catch disposal). */
 	function cleanupFaceAlignIndicators(){ if(faceAlignState && faceAlignState.indicator){ scene.remove(faceAlignState.indicator); faceAlignState.indicator.geometry.dispose(); faceAlignState.indicator.material.dispose(); faceAlignState.indicator=null; } }
+	/** Update ephemeral HUD status message used by Face Align tool. Pass empty string to hide. */
 	function setStatusTemp(msg){ const hud=document.getElementById('snipStatus'); if(!hud) return; if(!msg){ hud.style.display='none'; return; } hud.style.display='block'; hud.textContent=msg; }
 
-	// Raycast helper for face picking
+	// Raycast helper for face picking (returns first triangle hit or null)
 	const _faRaycaster = new THREE.Raycaster();
 	function pickFace(ev){ const rect=renderer.domElement.getBoundingClientRect(); const x=(ev.clientX-rect.left)/rect.width*2-1; const y=-(ev.clientY-rect.top)/rect.height*2+1; _faRaycaster.setFromCamera({x,y}, camera); const meshes = objects.filter(o=>o.isMesh && o.geometry && o.geometry.isBufferGeometry); const hits=_faRaycaster.intersectObjects(meshes,false); if(!hits.length) return null; return hits[0]; }
 
-	window.addEventListener('pointerdown', e=>{ if(!faceAlignState) return; if(e.button!==0) return; const hit=pickFace(e); if(!hit) return; const { object, face } = hit; const geom=object.geometry; const posAttr=geom.getAttribute('position'); let a,b,c; if(face && face.a!==undefined){ a=face.a; b=face.b; c=face.c; } else { // Fallback derive from faceIndex
-		const idx = hit.faceIndex*3; a=idx; b=idx+1; c=idx+2; }
-	const va=new THREE.Vector3().fromBufferAttribute(posAttr,a).applyMatrix4(object.matrixWorld);
-	const vb=new THREE.Vector3().fromBufferAttribute(posAttr,b).applyMatrix4(object.matrixWorld);
-	const vc=new THREE.Vector3().fromBufferAttribute(posAttr,c).applyMatrix4(object.matrixWorld);
-	const centroid=new THREE.Vector3().addVectors(va,vb).add(vc).multiplyScalar(1/3);
-	const normal=hit.face ? hit.face.normal.clone().transformDirection(object.matrixWorld) : new THREE.Vector3();
-	if(faceAlignState.stage===1){ // store baseline (stationary)
-		cleanupFaceAlignIndicators(); faceAlignState.source={ object, faceIndex: hit.faceIndex, normal, centroid };
-		const sph=new THREE.Mesh(new THREE.SphereGeometry(0.3,12,8), new THREE.MeshBasicMaterial({color:0x44aa44})); sph.position.copy(centroid); scene.add(sph); faceAlignState.indicator=sph; faceAlignState.stage=2; setStatusTemp('Select face to move');
-	} else if(faceAlignState.stage===2){ // align target (second) to baseline (first)
-		if(object===faceAlignState.source.object && hit.faceIndex===faceAlignState.source.faceIndex){ setStatusTemp('Pick a different face'); return; }
-		const baselineNormal = faceAlignState.source.normal.clone();
-		const baselineCentroid = faceAlignState.source.centroid.clone();
-		const targetNormal = normal.clone();
-		const targetCentroid = centroid.clone();
-		const moverObj = object; // second selection moves
-		const nBase = baselineNormal.clone().normalize();
-		const nTarget = targetNormal.clone().normalize();
-		const dot = nBase.dot(nTarget);
-		const OPP_THRESHOLD = -0.95; // faces toward each other
-		const SAME_THRESHOLD = 0.95;  // parallel same direction
-		if (dot < OPP_THRESHOLD) {
-			// Inside faces (facing each other): slide target along its normal so planes coincide
-			const planeDelta = baselineCentroid.clone().sub(targetCentroid).dot(nTarget);
-			moverObj.position.add(nTarget.clone().multiplyScalar(planeDelta));
-			moverObj.updateMatrixWorld(true);
-			setStatusTemp('Slid into baseline');
-		} else if (dot > SAME_THRESHOLD) {
-			// Already parallel same direction; translate centroids
-			const fullDelta = baselineCentroid.clone().sub(targetCentroid);
-			moverObj.position.add(fullDelta); moverObj.updateMatrixWorld(true);
-			setStatusTemp('Aligned (translation)');
-		} else {
-			// Need rotation of target about its face centroid to match baseline normal, then translation
-			const q = new THREE.Quaternion().setFromUnitVectors(nTarget, nBase);
-			const worldBefore = new THREE.Matrix4().copy(moverObj.matrixWorld);
-			const T1 = new THREE.Matrix4().makeTranslation(-targetCentroid.x, -targetCentroid.y, -targetCentroid.z);
-			const R = new THREE.Matrix4().makeRotationFromQuaternion(q);
-			const T2 = new THREE.Matrix4().makeTranslation(targetCentroid.x, targetCentroid.y, targetCentroid.z);
-			const M = new THREE.Matrix4().multiplyMatrices(T2, new THREE.Matrix4().multiplyMatrices(R, T1));
-			const newWorld = new THREE.Matrix4().multiplyMatrices(M, worldBefore);
-			setWorldMatrix(moverObj, newWorld);
-			// After rotation, translate centroid to baseline centroid
-			const delta = baselineCentroid.clone().sub(targetCentroid);
-			moverObj.position.add(delta); moverObj.updateMatrixWorld(true);
-			setStatusTemp('Rotated & aligned');
-		}
-		rebuildSelectionOutlines(); saveSessionDraftSoon();
-		setTimeout(()=>{ cancelFaceAlignMode(); }, 900);
-	}
-	});
+	/**
+	 * Main pointer handler while Face Align mode is active.
+	 * Stage 1: store baseline face (green marker).
+	 * Stage 2: pick target face -> compute relationship and transform target object.
+	 */
+	window.addEventListener('pointerdown', e=>{ if(!faceAlignState) return; if(e.button!==0) return; const hit=pickFace(e); if(!hit) return; const { object, face } = hit; const geom=object.geometry; const posAttr=geom.getAttribute('position'); let a,b,c; if(face && face.a!==undefined){ a=face.a; b=face.b; c=face.c; } else { const idx = hit.faceIndex*3; a=idx; b=idx+1; c=idx+2; } const va=new THREE.Vector3().fromBufferAttribute(posAttr,a).applyMatrix4(object.matrixWorld); const vb=new THREE.Vector3().fromBufferAttribute(posAttr,b).applyMatrix4(object.matrixWorld); const vc=new THREE.Vector3().fromBufferAttribute(posAttr,c).applyMatrix4(object.matrixWorld); const centroid=new THREE.Vector3().addVectors(va,vb).add(vc).multiplyScalar(1/3); const normal=hit.face ? hit.face.normal.clone().transformDirection(object.matrixWorld) : new THREE.Vector3(); if(faceAlignState.stage===1){ cleanupFaceAlignIndicators(); faceAlignState.source={ object, faceIndex: hit.faceIndex, normal, centroid }; const sph=new THREE.Mesh(new THREE.SphereGeometry(0.3,12,8), new THREE.MeshBasicMaterial({color:0x44aa44})); sph.position.copy(centroid); scene.add(sph); faceAlignState.indicator=sph; faceAlignState.stage=2; setStatusTemp('Select face to move'); } else if(faceAlignState.stage===2){ if(object===faceAlignState.source.object && hit.faceIndex===faceAlignState.source.faceIndex){ setStatusTemp('Pick a different face'); return; } const baselineNormal = faceAlignState.source.normal.clone(); const baselineCentroid = faceAlignState.source.centroid.clone(); const targetNormal = normal.clone(); const targetCentroid = centroid.clone(); const moverObj = object; const nBase = baselineNormal.clone().normalize(); const nTarget = targetNormal.clone().normalize(); const dot = nBase.dot(nTarget); const OPP_THRESHOLD = -0.95; const SAME_THRESHOLD = 0.95; if (dot < OPP_THRESHOLD) { const planeDelta = baselineCentroid.clone().sub(targetCentroid).dot(nTarget); moverObj.position.add(nTarget.clone().multiplyScalar(planeDelta)); moverObj.updateMatrixWorld(true); setStatusTemp('Slid into baseline'); } else if (dot > SAME_THRESHOLD) { const fullDelta = baselineCentroid.clone().sub(targetCentroid); moverObj.position.add(fullDelta); moverObj.updateMatrixWorld(true); setStatusTemp('Aligned (translation)'); } else { const q = new THREE.Quaternion().setFromUnitVectors(nTarget, nBase); const worldBefore = new THREE.Matrix4().copy(moverObj.matrixWorld); const T1 = new THREE.Matrix4().makeTranslation(-targetCentroid.x, -targetCentroid.y, -targetCentroid.z); const R = new THREE.Matrix4().makeRotationFromQuaternion(q); const T2 = new THREE.Matrix4().makeTranslation(targetCentroid.x, targetCentroid.y, targetCentroid.z); const M = new THREE.Matrix4().multiplyMatrices(T2, new THREE.Matrix4().multiplyMatrices(R, T1)); const newWorld = new THREE.Matrix4().multiplyMatrices(M, worldBefore); setWorldMatrix(moverObj, newWorld); const delta = baselineCentroid.clone().sub(targetCentroid); moverObj.position.add(delta); moverObj.updateMatrixWorld(true); setStatusTemp('Rotated & aligned'); } rebuildSelectionOutlines(); saveSessionDraftSoon(); setTimeout(()=>{ cancelFaceAlignMode(); }, 900); } });
 	window.addEventListener('keydown', e=>{ if(!faceAlignState) return; if(e.key==='Escape'){ cancelFaceAlignMode(); } });
 
 	// Return to Floor logic for toolbox button
+	// ================= [ POSITION UTILITIES ] =================
+	/**
+	 * handleReturnToFloor
+	 * Repositions selection so its lowest bounding box point rests on y=0.
+	 * Multi-select: computes aggregate minY across all; single: adjusts object.
+	 */
 	function handleReturnToFloor() {
 		if(selectedObjects.length >= 2){
 			let minY = Infinity;
@@ -4962,6 +5146,17 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	transformControlsRotate.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
 
 	// Animation
+	/**
+	 * resizeRenderer
+	 * Responsive resize handler supporting both standard window metrics and VisualViewport (mobile zoom).
+	 * Updates:
+	 *  - Perspective camera aspect + projection matrix.
+	 *  - Ortho camera frustum (recomputes a bounds-based size so content framing stays reasonable).
+	 *  - Renderer size.
+	 * Notes:
+	 *  - Uses a conservative aspect clamp to avoid division-by-zero.
+	 *  - Ortho sizing scans current objects; lightweight for typical scene sizes. Could cache if needed.
+	 */
 	function resizeRenderer() {
 		const vv = (window.visualViewport && typeof window.visualViewport.width === 'number') ? window.visualViewport : null;
 		const w = vv ? Math.round(vv.width) : window.innerWidth;
@@ -5005,9 +5200,23 @@ const viewAxonBtn = document.getElementById('viewAxon');
 							__exitFirstPersonSideEffects();
 						}
 				}
-				// XR controller menu button polling to toggle AR UI
+				// ================= [ XR POLLING & INPUT STATE MACHINE ] =================
+				/*
+					Per-frame XR interaction polling cluster. Structure:
+					1. handleXRMenuTogglePoll(frame) - checks controller menu buttons to show/hide AR UI.
+					2. xrAlignTileMovePoll() - left controller trigger: raycast toward ground; positions alignment tile.
+					3. xrAlignTileTwoHandRotatePoll() - simultaneous squeeze: two-hand yaw rotation & reposition of tile.
+					4. xrTeleportPoll() - shared trigger/pinch logic for teleport and primitive creation state machine.
+					   - Embedded primitive creation workflow (window.__xrPrim):
+					     attached -> scaling -> locked -> finalize (hand pinch gestures drive transitions).
+					Design Notes:
+					- Each poll is isolated in an IIFE to constrain temp variables & minimize outer scope clutter.
+					- WeakMaps track button/pinch previous state (rising edge detection) without leaking across sessions.
+					- Primitive creation supersedes teleport & HUD hover to avoid conflicting inputs.
+				*/
+				// 1) Menu toggle poll
 				handleXRMenuTogglePoll(frame);
-				// XR left-controller move for alignment tile: aim at ground and press trigger to place
+				// 2) Alignment tile move (left trigger)
 				(function xrAlignTileMovePoll(){
 					try {
 						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
@@ -5043,7 +5252,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						}
 					} catch{}
 				})();
-				// XR two-hand (squeeze) pinch to rotate alignment tile while keeping it flat
+				// 3) Two-hand squeeze for tile rotation
 				(function xrAlignTileTwoHandRotatePoll(){
 					try {
 						const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
@@ -5075,7 +5284,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						try { if (collab && collab.isActive && collab.isActive() && collab.onTransform && (!collab.isApplyingRemote || !collab.isApplyingRemote())) collab.onTransform(xrAlignTile); } catch{}
 					} catch{}
 				})();
-				// XR controller trigger teleport (rising edge)
+				// 4) Teleport + primitive creation + pinch teleport
 				(function xrTeleportPoll(){
 					try {
 							const session = renderer.xr && renderer.xr.getSession ? renderer.xr.getSession() : null; if (!session || !frame) return;
@@ -5653,6 +5862,11 @@ const viewAxonBtn = document.getElementById('viewAxon');
 				// Silently handle camera sync errors to avoid disrupting rendering
 			}
 			
+			/**
+			 * Collaboration camera sync (10Hz):
+			 * Sends either desktop camera or XR camera (plus controllers) pose to collaborators.
+			 * Lightweight throttle using performance.now(); avoids flooding network.
+			 */
 			// Update HUD status about depth availability (XR only)
 			try {
 				const xrCam = renderer.xr && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
@@ -5759,6 +5973,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const massSystem = createMassSystem({ THREE, scene });
 	
 	// Room System Setup
+	// ================= [ ROOM & BLOCKING SYSTEMS ] =================
+	// Spatial room metadata, blocking/stacking, mass system & designation UI initialization.
 	const roomSystem = createRoomSystem({ THREE, scene });
 	const roomManager = createRoomManager({ THREE, scene, roomSystem, persistence });
 	const roomDesignationUI = createRoomDesignationUI({ roomSystem, roomManager });

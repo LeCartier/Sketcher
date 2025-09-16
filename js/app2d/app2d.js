@@ -1,4 +1,51 @@
-// Sketcher 2D: lightweight, pointer-friendly 2D drawing canvas
+// ============================================================================
+// Sketcher 2D (app2d.js)
+// Lightweight pointer‑friendly 2D drafting canvas used alongside the 3D scene.
+// Core goals:
+//   - Immediate, low‑latency drawing (paths, primitives, arcs, text)
+//   - Precision transforms (move / scale / rotate) + modify tools (offset, fillet, chamfer)
+//   - Erase workflows (object + pixel mask) and lasso “snip” extraction for 3D handoff
+//   - Underlay import (PDF / DXF) with architectural scale handling
+//   - Autosave + broadcast to 3D via BroadcastChannel for live overlay sync
+//   - Mobile & pen friendly (pinch zoom, space/middle/right pan, hardware‑keyboard detection)
+// No runtime logic altered in this documentation pass – comments & banners only.
+// ----------------------------------------------------------------------------
+// TABLE OF CONTENTS
+//   [01] Imports & Module Adapters
+//   [02] Core State & View Model
+//   [03] Snip / Temp Snip Edit (Lasso Extraction & Editing)
+//   [04] Geometry & Selection Helpers (BBox, Poly, Intersections)
+//   [05] Procedural Shape Generators (Regular Poly, Star, Arcs, Bezier)
+//   [06] Modify Geometry (Offset / Fillet / Chamfer Algorithms)
+//   [07] Rendering Pipeline (Draw Grid / Objects / Mask / Overlays)
+//   [08] Erase System (Object + Pixel Mask Rebuild)
+//   [09] Tool & Style UI Wiring (Buttons, Color, Thickness)
+//   [10] Resize / DPR Handling & Coordinate Mapping
+//   [11] Undo / Redo / Clear
+//   [12] Export (PNG / PDF)
+//   [13] Serialization / Autosave / Broadcast
+//   [14] Temp Snip Edit Setup (Subset Editing)
+//   [15] Restore Flow (Session / SketchId)
+//   [16] Import (PDF / DXF) & Scale Modal
+//   [17] Underlay Persistence (Serialize / Restore)
+//   [18] DXF Parser (Minimal)
+//   [19] Pointer Input State Machine (Down / Move / Up)
+//   [20] Wheel Zoom & Pan (Desktop Heuristics)
+//   [21] Keyboard Shortcuts & Interaction Modes
+//   [22] Mobile Delete Bar & Keyboard Detection
+//   [23] Snip Activation & Nav / Save Flows
+//   [24] Toolbox Collapsibles
+// ----------------------------------------------------------------------------
+// Guiding Comment Style:
+//   - Section banners announce responsibility clusters.
+//   - Function doc notes only where intent or side‑effects are non‑obvious.
+//   - Redundant inline narration removed when covered by a banner.
+// ============================================================================
+// [01] IMPORTS & MODULE ADAPTERS
+// External feature modules provide geometry ops, selection transforms, erase and export.
+// Thin wrappers below adapt them to current canvas/view state.
+// ----------------------------------------------------------------------------
+// (Original header replaced by structured banner above)
 // Supports mouse, touch, and stylus (including Apple Pencil) via Pointer Events.
 import { smartInterpretPath } from './features/smart-draw.js';
 import { getObjectBBox, getBBoxCenter, pointInBBox, deepCopyObject } from './features/geometry-2d.js';
@@ -24,6 +71,18 @@ function subPixelRound(value) {
   return Math.round(value * 4) / 4;
 }
 
+// ============================================================================
+// [02] CORE STATE & VIEW MODEL
+// Central mutable session state for the 2D drafting surface:
+//   - Active tool + drawing style (stroke/fill/thickness)
+//   - View transform (pan/zoom + pxPerFt world mapping)
+//   - Selection transform state (index, transform mode, original snapshot)
+//   - Undo/Redo stacks (JSON snapshots) & gesture helpers (space pan, pinch)
+// Notes:
+//   * view.scale limited to [0.2, 6] for stability.
+//   * pxPerFt influences hit testing granularity via setHitTestWorldPerPx.
+//   * All tools operate in world feet; rendering maps to CSS pixels via worldToScreen.
+// ----------------------------------------------------------------------------
 // State
 let tool = 'pan'; // select | pan | pen | smart | polyline | polygon | regpoly | roundrect | star | arc3 | arccenter | bezier | line | rect | ellipse | text | erase-object | erase-pixel | offset | fillet | chamfer | trim | mirror | array | dimension | measure | hatch
 let stroke = '#111111';
@@ -46,11 +105,28 @@ const undoStack = []; const redoStack = []; const undoLimit = 100;
 let spacePanActive = false; // hold Space to pan temporarily
 let pinch = { active:false, startDist:0, startScale:1, startCenterWorld:{x:0,y:0} };
 
+// ============================================================================
+// [03] SNIP / TEMP SNIP EDIT MODES
+// Lasso-based subset extraction (Snip) for 3D handoff and temporary subset editing.
+//   Snip Mode (snip2D): User draws polygon lasso; selected objects serialized to session for 3D.
+//   Temp Snip Edit (tempSnipEdit): Re-enters 2D with a subset payload enabling focused edits.
+// Key flows:
+//   - snip2D.active toggled via URL (?snip=1) or intent flag in sessionStorage.
+//   - finalizeSnip2D(apply) writes selection + centers (docCenter, subsetCenter) then navigates.
+//   - enterTempSnipEdit() hydrates objects, suppresses autosave/broadcast until completion.
+// Side-effects: navigation to index.html on completion/cancel; session keys cleared afterward.
+// ----------------------------------------------------------------------------
 // Temp Snip Edit mode state
 let tempSnipEdit = { active:false, id:null };
 
 // 2D Snip mode (lasso selection) for handing subset back to 3D
 const snip2D = { active: false, lasso: [], hover: null };
+// ============================================================================
+// [04] GEOMETRY & SELECTION HELPERS (LASSO + BBOX)
+// Pure functions aiding selection, lasso containment, intersection tests, centering & fit.
+// Includes robust polygon point/edge tests (no loose bbox heuristics) to ensure precise
+// subset extraction for Snip and accurate selection decisions.
+// ----------------------------------------------------------------------------
 function pointInPoly2D(pt, poly){
   let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
     const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
@@ -330,6 +406,12 @@ function placeMobileDeleteBar2D(){
   } catch {}
 }
 
+// ============================================================================
+// [10] RESIZE / DPR HANDLING & WORLD MAPPING
+// Adjusts canvas & offscreens to current viewport with adaptive DPR (2x–4x), preserving
+// the world-space center to avoid perceptual jumps. Also rebuilds erase mask and re-docks
+// mobile delete bar. Coordinate converters (worldToScreen/screenToWorld) rely on updated W/H.
+// ----------------------------------------------------------------------------
 function resize(){
   // Enhanced DPR for smoother lines (2x minimum, up to 4x on high DPR displays)
   dpr = Math.max(2, Math.min(4, (window.devicePixelRatio || 1) * 2));
@@ -541,6 +623,14 @@ function drawObject(o, g = ctx){
 }
 function radToDeg(a){ return a*180/Math.PI; }
 
+// ============================================================================
+// [05] PROCEDURAL SHAPE GENERATORS (REG POLY / STAR / ARCS / QUADRATIC)
+// Build preview (and final) point arrays for interactive primitive tools:
+//   - Regular polygons & stars (center + cursor radius, optional snapped rotation)
+//   - 3-point arc & center-based arc (circle solve + adaptive sampling)
+//   - Quadratic Bezier sampling for smooth curves
+// Sampling density scales with angular sweep for visual fidelity while remaining lightweight.
+// ----------------------------------------------------------------------------
 // Helpers to generate procedural points in world space
 function genRegularPolygon(c, r, n, rot){
   const pts=[]; for(let i=0;i<n;i++){ const a = rot + i*(2*Math.PI/n); pts.push({ x:c.x + r*Math.cos(a), y:c.y + r*Math.sin(a) }); } return pts;
@@ -588,7 +678,15 @@ function buildQuadraticPreview(pts){
   const steps=48; const out=[]; for(let i=0;i<=steps;i++){ const t=i/steps; const u=1-t; const x=u*u*P0.x + 2*u*t*P1.x + t*t*P2.x; const y=u*u*P0.y + 2*u*t*P1.y + t*t*P2.y; out.push({x,y}); } return out;
 }
 
-// --- Modify geometry helpers ---
+// ============================================================================
+// [06] MODIFY GEOMETRY ALGORITHMS (OFFSET / FILLET / CHAMFER)
+// Low-level vector helpers + higher-level polyline modification routines:
+//   - offsetOpenPath: miter/round/bevel joins with miter limit, open & closed paths
+//   - filletCorner / chamferCorner (and Closed variants): replace a vertex with arc/edge
+// Geometric robustness notes:
+//   * Intersection + normal blending fallback when miter fails.
+//   * Rounding uses adaptive arc sampling (steps proportional to sweep).
+// ----------------------------------------------------------------------------
 function dot(a,b){ return a.x*b.x + a.y*b.y; }
 function sub(a,b){ return { x:a.x-b.x, y:a.y-b.y }; }
 function add(a,b){ return { x:a.x+b.x, y:a.y+b.y }; }
@@ -751,6 +849,11 @@ function chamferCornerClosed(pts, i, L){
 }
 
 // --- hit-test/selection/draw/erase now come from modules ---
+// ============================================================================
+// [07] RENDERING PIPELINE
+// Underlay → Grid → Objects (offscreen) → Pixel Erase Mask (dest-out) → Composite → Overlays
+// Offscreen canvas isolates expensive erase compositing and keeps main canvas passes minimal.
+// ----------------------------------------------------------------------------
 
 function draw(){
   // Main canvas prep: clear in device pixels, then draw in CSS pixels
@@ -831,6 +934,11 @@ function draw(){
   if(snip2D.active){ drawSnipLasso(); }
 }
 
+// ============================================================================
+// [08] ERASE SYSTEM
+// Pixel erase builds a high-DPI alpha mask from stroke dabs; object erase removes whole items.
+// Mask redraw is cheap relative to path redrawing; recomputed each frame only if strokes active.
+// ----------------------------------------------------------------------------
 function rebuildEraseMask(){
   if(!eraseMaskCtx) return;
   // Clear mask
@@ -857,6 +965,10 @@ function rebuildEraseMask(){
 }
 
 // UI wiring
+// ============================================================================
+// [09] TOOL & STYLE UI WIRING
+// Handles tool activation (buttons & aria states), modify HUD show/hide, and stroke/fill/thickness inputs.
+// ----------------------------------------------------------------------------
 function setTool(id){
   tool = id;
   if(id==='polyline') setStatus('Polyline: click to add points, Enter to finish, Backspace undo, Shift snaps 45°');
@@ -893,6 +1005,12 @@ if(fillNoneBtn) fillNoneBtn.addEventListener('click', ()=>{
 });
 if(thickEl) thickEl.addEventListener('input', ()=>{ thickness = parseInt(thickEl.value||'2',10); if(thickVal) thickVal.textContent = `${thickness} px`; });
 
+// ============================================================================
+// [11] UNDO / REDO / CLEAR
+// Lightweight snapshot stack: stores JSON string of { objects, eraseStrokes }.
+// pushUndo() taken at mutating entry points (tool begin, selection transform commit, etc.).
+// clearAll() also broadcasts so 3D overlay can reset. Redo invalidated on new push.
+// ----------------------------------------------------------------------------
 // Undo/Redo helpers
 function pushUndo(){
   try {
@@ -947,6 +1065,11 @@ const undoBtn = document.getElementById('undo'); if(undoBtn) undoBtn.addEventLis
 const redoBtn = document.getElementById('redo'); if(redoBtn) redoBtn.addEventListener('click', redo);
 const clearBtn = document.getElementById('clear'); if(clearBtn) clearBtn.addEventListener('click', clearAll);
 
+// ============================================================================
+// [12] EXPORT (PNG / PDF)
+// Thin wrappers calling feature module functions (imported at top) against current canvas.
+// Buttons: exportPNG / exportPDF
+// ----------------------------------------------------------------------------
 // Export (PNG/PDF) now provided by features/export-2d
 const exportPNG = () => exportPNGMod(canvas, W, H, dpr);
 const exportPDF = () => exportPDFMod(canvas, W, H, dpr);
@@ -954,6 +1077,12 @@ const exportPDF = () => exportPDFMod(canvas, W, H, dpr);
 const exportPNGBtn = document.getElementById('exportPNG'); if(exportPNGBtn) exportPNGBtn.addEventListener('click', exportPNG);
 const exportPDFBtn = document.getElementById('exportPDF'); if(exportPDFBtn) exportPDFBtn.addEventListener('click', exportPDF);
 
+// ============================================================================
+// [13] SERIALIZATION / AUTOSAVE / BROADCAST
+// toJSON(): canonical shape for session/local storage & BroadcastChannel -> 3D overlay.
+// scheduleSave(): debounced 200ms; disabled while temp snip edit active to avoid overwrites.
+// saveToSession(): persists & broadcasts unless in temp snip edit.
+// ----------------------------------------------------------------------------
 // JSON serialize for projection
 function toJSON(){
   // Preserve createdAt if present; always bump updatedAt
@@ -983,6 +1112,12 @@ function scheduleSave(){
   saveTimer = setTimeout(saveToSession, 200);
 }
 
+// ============================================================================
+// [14] TEMP SNIP EDIT SETUP (IIFE)
+// Entered via ?editSnip=1 with session payload (sketcher:2d:snipEdit).
+// Replaces canvas with subset, suppresses autosave/broadcast, injects Finish/Cancel UI.
+// Finish produces snipEditResult for 3D to merge; Cancel discards.
+// ----------------------------------------------------------------------------
 // Temp Snip Edit Mode: if invoked with ?editSnip=1 and session payload, load subset, tweak theme, and show Finish/Cancel
 (function setupTempSnipEdit(){
   try {
@@ -1050,6 +1185,12 @@ function scheduleSave(){
 const to3D = document.getElementById('to3D');
 if(to3D){ to3D.addEventListener('click', (e)=>{ e.preventDefault(); saveToSession(); try { document.body.classList.add('page-leave'); } catch{} const url = new URL('./index.html', location.href); setTimeout(()=>{ window.location.href = url.toString(); }, 170); }); }
 
+// ============================================================================
+// [15] RESTORE FLOW
+// On load (non snip-edit): optional sketchId lookup (IndexedDB via local-store), else session/local restore.
+// Restores objects, view, scale, underlay, erase strokes (rebuilding mask), then re-broadcasts.
+// Skipped if snip edit requested/active to avoid clobbering subset.
+// ----------------------------------------------------------------------------
 // Restore if any prior 2D exists
 (function restore2D(){
   try {
@@ -1098,6 +1239,13 @@ if(to3D){ to3D.addEventListener('click', (e)=>{ e.preventDefault(); saveToSessio
   } catch {}
 })();
 
+// ============================================================================
+// [16] IMPORT (PDF / DXF) & SCALE MODAL
+// Unified modal (openImportModal) handles scale presets, custom feet-per-inch, PDF page thumbs, opacity.
+// PDF: lazy-load pdf.js; render chosen page to underlay at architectural scale.
+// DXF: minimal entity parser (LINE / (LW)POLYLINE / CIRCLE) -> objects[].
+// askScaleFeetPerInch(): parses common architectural notations (1/4"=1', 1:48, numeric).
+// ----------------------------------------------------------------------------
 // ----- Import: PDF and DXF/DWG (DXF only) -----
 const importPDFBtn = document.getElementById('importPDF2D');
 const importDXFBtn = document.getElementById('importDXF2D');
@@ -1381,6 +1529,12 @@ function pickFile(acceptExt){
   });
 }
 
+// ============================================================================
+// [17] UNDERLAY PERSISTENCE (Serialize / Restore)
+// serializeUnderlay(): downscales image (<=2048 max side) to PNG data URL, stores worldRect & opacity.
+// restoreUnderlay(): async image load then triggers redraw.
+// Supports PDF page bitmap or other raster imported sources.
+// ----------------------------------------------------------------------------
 function serializeUnderlay(){
   if(!underlay.image || !underlay.worldRect) return null;
   // Downscale to a reasonable data URL to persist (avoid massive storage). Max side ~2048.
@@ -1400,6 +1554,11 @@ function restoreUnderlay(data){
   } catch{}
 }
 
+// ============================================================================
+// [18] DXF PARSER (Minimal)
+// Supports: LINE, (LW)POLYLINE (closed flag), CIRCLE. POLYLINE + VERTEX + SEQEND stitched into LWPOLYLINE.
+// Ignores unsupported entities silently. Returns simple entity list consumed by importDXFFlow.
+// ----------------------------------------------------------------------------
 // Basic DXF parser (very limited)
 function parseDXF(text){
   const lines = text.split(/\r?\n/);
@@ -1452,7 +1611,12 @@ function parseDXF(text){
   return out;
 }
 
-// Pointer handling
+// ============================================================================
+// [19] POINTER INPUT STATE MACHINE
+// Unified pointer handlers: capture lasso (snip), drawing tools, selection transforms, pinch zoom, panning, erase modes.
+// Maintains pointersDown map for multi-touch; pinch keeps focal world point stable during scale.
+// ----------------------------------------------------------------------------
+// (pointer handling banner above supersedes prior simple label)
 let pointersDown = new Map();
 function onPointerDown(e){
   if(snip2D.active){
@@ -1934,7 +2098,13 @@ canvas.addEventListener('dblclick', (e)=>{
   }
 });
 
-// Wheel zoom (desktop)
+// ============================================================================
+// [20] WHEEL ZOOM & PAN (Desktop)
+// handleWheelEvent(): distinguishes zoom vs pan using ctrlKey or trackpad pinch heuristic (large dy, tiny dx).
+// Zoom centers on pointer, clamped scale; also updates hit-test tolerance.
+// Document-level listener suppresses browser page zoom within canvas bounds.
+// ----------------------------------------------------------------------------
+// (wheel zoom label consolidated into [20] section banner)
 function handleWheelEvent(e){
   const rect = canvas.getBoundingClientRect();
   // Normalize deltas
@@ -1981,7 +2151,13 @@ document.addEventListener('wheel', (e) => {
   } catch {}
 }, { passive: false });
 
-// Keyboard shortcuts
+// ============================================================================
+// [21] KEYBOARD SHORTCUTS
+// Handles tool switching, undo/redo, shape commit (Enter), backspace vertex removal, transform cancel (Esc),
+// numeric distance prompts for modify tools, eraser size +/- shortcuts, selection toggle (V), and snip finalize.
+// Modifier-aware (Ctrl/Cmd + Z / Shift+Z). Skips when focus is in editable fields.
+// ----------------------------------------------------------------------------
+// (keyboard shortcuts label superseded by [21] banner)
 window.addEventListener('keydown', e => {
   if(e.target && (e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA' || e.target.isContentEditable)) return;
   const k = e.key.toLowerCase();
@@ -2073,6 +2249,11 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { if(e.key===' ') { spacePanActive = false; if(!isPanning) setStatus('Ready'); } });
 
+// ============================================================================
+// [22] MOBILE DELETE BAR & HARDWARE KEYBOARD DETECTION
+// Deletes rely on Backspace/Delete; on touch/mobile without hardware keyboard we surface a floating delete bar.
+// Key press (non-modifier) flags presence of hardware keyboard and hides the bar.
+// ----------------------------------------------------------------------------
 // If any key is pressed, assume hardware keyboard is present; hide the 2D delete bar thereafter
 window.addEventListener('keydown', e => {
   // Ignore modifier-only keys (Shift, Control, Alt, Meta) to reduce false positives
@@ -2102,6 +2283,11 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 setStatus('Ready');
 
+// ============================================================================
+// [23] SNIP ACTIVATION & NAV / SAVE FLOWS
+// URL param ?snip=1 or session intent enables lasso snip capture; select toggle button wiring; save2D (thumb + json) to store.
+// Navigation buttons: to Columbarium (gallery) & to AR/3D (autoAR flag), plus beforeunload unsaved prompt.
+// ----------------------------------------------------------------------------
 // Activate 2D snip mode if requested via URL parameter (?snip=1) or session intent
 try {
   const params = new URLSearchParams(location.search);
@@ -2149,6 +2335,11 @@ window.addEventListener('beforeunload', (e)=>{
 });
 
 // 2D toolbox collapsibles (match 3D pattern)
+// ============================================================================
+// [24] TOOLBOX COLLAPSIBLES
+// Collapsible groups mirror 3D UI: drawing, shapes, text, style, erase, edit/export, modify.
+// Closing a group deactivates tools in that group (returns to pan) and repositions mobile delete bar.
+// ----------------------------------------------------------------------------
 function wireCollapse(toggleId, groupId){
   const toggle = document.getElementById(toggleId);
   const group = document.getElementById(groupId);
