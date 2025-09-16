@@ -48,10 +48,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     }
     return bones;
   })();
-  // Finger poke/depress interaction — tighter thresholds for crisp feel
-  const PRESS_START_M = Math.max(0.0015, 0.22 * BUTTON_H);   // ~4mm
-  const PRESS_RELEASE_M = Math.max(0.0008, 0.12 * BUTTON_H); // ~2mm
-  const PRESS_MAX_M = Math.max(0.003, 0.35 * BUTTON_H);
+  // Finger poke/depress interaction — increased thresholds to prevent accidental activation
+  const PRESS_START_M = Math.max(0.003, 0.35 * BUTTON_H);   // ~8mm (increased from ~4mm)
+  const PRESS_RELEASE_M = Math.max(0.0015, 0.20 * BUTTON_H); // ~4mm (increased from ~2mm) 
+  const PRESS_MAX_M = Math.max(0.005, 0.50 * BUTTON_H);     // increased max depth
   const PRESS_SMOOTH = 0.25;     // faster visual response
   let fingerHover = null;        // hovered mesh by fingertip
   // Visibility suppression when left hand not open or grabbing occurs
@@ -1714,7 +1714,7 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               if (crossingDistance < 0.15) {
                 if (!handCrossingDetected) {
                   handCrossingDetected = true;
-                  handCrossingCooldownUntil = nowCrossing + 200; // 200ms stabilization period
+                  handCrossingCooldownUntil = nowCrossing + 500; // Increased from 200ms to 500ms stabilization period
                 }
               } else if (crossingDistance > 0.25) {
                 handCrossingDetected = false;
@@ -1774,10 +1774,10 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             let targetDepth = 0; let within = false; let pressedNow = st.pressed;
             if (best && best.m === m){
               targetDepth = best.depth; within = true;
-              // stability frames: require 2 frames above threshold before firing
+              // stability frames: require 4 frames above threshold before firing (increased from 2 for more stability)
               st._stable = (st._stable || 0) + (best.depth >= PRESS_START_M ? 1 : 0);
               const cooldown = st._cooldownUntil && now < st._cooldownUntil;
-              if (!st.pressed && st._stable >= 2 && !cooldown) { pressedNow = true; }
+              if (!st.pressed && st._stable >= 4 && !cooldown) { pressedNow = true; }
               if (st.pressed && best.depth <= PRESS_RELEASE_M) { pressedNow = false; st._stable = 0; }
             } else {
               st._stable = 0;
@@ -1903,7 +1903,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     
     // Add stabilization delay to prevent rapid menu switching
     const now = performance.now();
-    handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 150);
+    handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 200);
+    globalClickCooldownUntil = Math.max(globalClickCooldownUntil, now + 300); // Additional global cooldown
     
     drawSubmenuActive = true;
     

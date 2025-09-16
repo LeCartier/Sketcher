@@ -336,9 +336,34 @@
           <text x="12" y="22" text-anchor="middle" font-size="9" fill="#222" font-family="Arial" font-weight="normal">MAP</text>
         </svg>
       </button>
+      <button id="blockingStacking" class="icon-btn" title="Blocking & Stacking (Excel)" aria-label="Blocking & Stacking (Excel)">
+        <span class="sr-only">Blocking & Stacking (Excel)</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Stacked blocks icon representing architectural massing -->
+          <rect x="3" y="14" width="8" height="6" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+          <rect x="13" y="10" width="8" height="10" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+          <rect x="8" y="6" width="6" height="8" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+          <text x="12" y="23" text-anchor="middle" font-size="8" fill="#222" font-family="Arial" font-weight="normal">XLS</text>
+        </svg>
+      </button>
     </div>
 
-    <!-- 9) Settings -->
+    <!-- 6) Room Manager -->
+    <button id="roomManager" class="icon-btn" title="Room Management" aria-label="Room Management">
+      <span class="sr-only">Room Management</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <!-- Room management icon: floor plan with room labels -->
+        <rect x="3" y="4" width="8" height="6" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+        <rect x="13" y="4" width="8" height="6" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+        <rect x="3" y="12" width="18" height="8" rx="1" fill="none" stroke="#222" stroke-width="1.6"/>
+        <circle cx="7" cy="7" r="1" fill="#222"/>
+        <circle cx="17" cy="7" r="1" fill="#222"/>
+        <circle cx="12" cy="16" r="1.5" fill="#222"/>
+        <text x="12" y="23" text-anchor="middle" font-size="8" fill="#222" font-family="Arial" font-weight="normal">RM</text>
+      </svg>
+    </button>
+
+    <!-- 7) Settings -->
     <button id="toggleSettings" class="icon-btn toggle-btn" title="Settings" aria-label="Settings" aria-pressed="false">
       <span class="sr-only">Settings</span>
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -352,9 +377,11 @@
     <div id="settingsGroup" class="collapse" aria-hidden="true">
   <label style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">Back Color
         <input id="bgColorPicker" type="color" value="#1e1e1e" style="margin-left:8px;">
+        <div id="bgColorHelp" style="display:none; font-size:10px; color:#666; margin-top:2px;">Double-tap to cycle colors</div>
       </label>
   <label style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">Grid Color
         <input id="gridColorPicker" type="color" value="#ffffff" style="margin-left:8px;">
+        <div id="gridColorHelp" style="display:none; font-size:10px; color:#666; margin-top:2px;">Double-tap to cycle colors</div>
       </label>
   <div style="display:block; margin-bottom:8px; font-size:13px; color:#222; text-align:center;">
         <div style="margin-bottom:6px;">Mat</div>

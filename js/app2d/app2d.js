@@ -14,8 +14,15 @@ import { exportPNG as exportPNGMod, exportPDF as exportPDFMod } from './features
 
 const canvas = document.getElementById('grid2d');
 const ctx = canvas.getContext('2d');
-let dpr = Math.max(1, window.devicePixelRatio || 1);
+// Enhanced resolution multiplier for smoother lines (2x device pixel ratio)
+let dpr = Math.max(2, (window.devicePixelRatio || 1) * 2);
 let W = 0, H = 0;
+
+// Enhanced coordinate precision for smoother lines
+function subPixelRound(value) {
+  // Round to 0.25 pixel precision for smoother appearance
+  return Math.round(value * 4) / 4;
+}
 
 // State
 let tool = 'pan'; // select | pan | pen | smart | polyline | polygon | regpoly | roundrect | star | arc3 | arccenter | bezier | line | rect | ellipse | text | erase-object | erase-pixel | offset | fillet | chamfer | trim | mirror | array | dimension | measure | hatch
@@ -324,8 +331,9 @@ function placeMobileDeleteBar2D(){
 }
 
 function resize(){
-  // Refresh DPR in case browser/page zoom changed (trackpad pinch, display scale)
-  dpr = Math.max(1, window.devicePixelRatio || 1);
+  // Enhanced DPR for smoother lines (2x minimum, up to 4x on high DPR displays)
+  dpr = Math.max(2, Math.min(4, (window.devicePixelRatio || 1) * 2));
+  
   // Preserve the world point at the screen center during resize
   const r = canvas.getBoundingClientRect();
   const centerBefore = { x: r.width/2, y: r.height/2 };
@@ -333,11 +341,27 @@ function resize(){
   W = Math.max(1, Math.round(r.width * dpr));
   H = Math.max(1, Math.round(r.height * dpr));
   canvas.width = W; canvas.height = H;
+  
+  // Configure high-quality rendering for main canvas
+  ctx.imageSmoothingEnabled = true;
+  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  
   // Resize offscreens
   if(!objectsLayer){ objectsLayer = document.createElement('canvas'); }
   if(!eraseMask){ eraseMask = document.createElement('canvas'); }
   objectsLayer.width = W; objectsLayer.height = H; objectsCtx = objectsLayer.getContext('2d');
   eraseMask.width = W; eraseMask.height = H; eraseMaskCtx = eraseMask.getContext('2d');
+  
+  // Configure high-quality rendering for offscreen canvases
+  if (objectsCtx) {
+    objectsCtx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in objectsCtx) objectsCtx.imageSmoothingQuality = 'high';
+    objectsCtx.lineCap = 'round';
+    objectsCtx.lineJoin = 'round';
+  }
+  
   // Rebuild mask after resize
   rebuildEraseMask();
   // Adjust view to keep the same world point at the new screen center
@@ -412,7 +436,10 @@ function drawGrid(){
 
 function worldToScreen(pt){
   const s = view.scale * view.pxPerFt;
-  return { x: (pt.x - view.x) * s, y: (pt.y - view.y) * s };
+  return { 
+    x: subPixelRound((pt.x - view.x) * s), 
+    y: subPixelRound((pt.y - view.y) * s) 
+  };
 }
 function screenToWorld(pt){
   const s = view.scale * view.pxPerFt;
@@ -434,7 +461,12 @@ function drawObjects(){
 }
 function drawObject(o, g = ctx){
   g.save();
-  g.lineJoin = 'round'; g.lineCap = 'round';
+  // Enhanced line quality settings
+  g.lineJoin = 'round'; 
+  g.lineCap = 'round';
+  g.imageSmoothingEnabled = true;
+  if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+  
   // Keep line width in screen pixels (do not multiply by view.scale) so geometry stays visually pinned to the grid
   const sw = (typeof o.thickness === 'number' && isFinite(o.thickness)) ? o.thickness : 1;
   if(o.thickness == null || !isFinite(o.thickness)) { try { o.thickness = sw; } catch{} }

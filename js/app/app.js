@@ -6,7 +6,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { downscaleLargeTextures, createMaterialSystem }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { downscaleLargeTextures, createMaterialSystem }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }, { createExcelParser }, { createBlockingStacking }, { createMassSystem }, { createBlockingUI }, { createRoomSystem }, { createRoomManager }, { createRoomDesignationUI }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -33,7 +33,14 @@ export async function init() {
 			import('./services/collab.js'),
 			import('./features/alignment-tile.js'),
 			import('./services/fp-quality.js'),
-			import('./services/obj-library.js')
+			import('./services/obj-library.js'),
+			import('./services/excel-parser.js'),
+			import('./services/blocking-stacking.js'),
+			import('./services/mass-creation.js'),
+			import('./services/blocking-ui.js'),
+			import('./services/room-system.js'),
+			import('./services/room-manager.js'),
+			import('./services/room-designation-ui.js')
 		]);
 
 	// Version badge
@@ -1045,13 +1052,13 @@ export async function init() {
 					try { 
 						const nowTs = performance.now();
 						// Ignore activations occurring too soon after creation (likely unintended hover/pinch during session start)
-						if (nowTs - __drawBtnCreatedAt < 1200) { // Increased from 600ms to 1200ms
-							console.log('🎨 Ignoring early Draw button activation (startup debounce)'); 
+						if (nowTs - __drawBtnCreatedAt < 2500) { // Increased from 1200ms to 2500ms for more robust startup protection
+							console.log('🎨 Ignoring early Draw button activation (startup debounce)', nowTs - __drawBtnCreatedAt, 'ms'); 
 							return; 
 						}
-						// Prevent rapid re-triggering within 800ms
-						if (nowTs - __lastDrawBtnActivation < 800) {
-							console.log('🎨 Ignoring rapid Draw button re-activation (cooldown)');
+						// Prevent rapid re-triggering within 1200ms (increased from 800ms)
+						if (nowTs - __lastDrawBtnActivation < 1200) {
+							console.log('🎨 Ignoring rapid Draw button re-activation (cooldown)', nowTs - __lastDrawBtnActivation, 'ms');
 							return;
 						}
 						__lastDrawBtnActivation = nowTs;
@@ -2209,6 +2216,8 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const mapUseFlatBtn = document.getElementById('mapUseFlat');
 	const mapUseTopoBtn = document.getElementById('mapUseTopo');
 	const mapImportBtn = document.getElementById('mapImport');
+	const blockingStackingBtn = document.getElementById('blockingStacking');
+	const roomManagerBtn = document.getElementById('roomManager');
 	// Plan View Lock parent button
 	const planLockBtn = document.getElementById('planLock');
 	// Scenes UI
@@ -3107,14 +3116,127 @@ const viewAxonBtn = document.getElementById('viewAxon');
 		rebuildGrid();
 		/* overlay vignette no longer used; shader fade is always active */
 	} catch {}
-	// Live update handlers
+	// Live update handlers with Meta Quest browser compatibility
 	if (bgColorPicker){
-		bgColorPicker.addEventListener('input',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} ensureGridContrastWithBackground(); });
-		bgColorPicker.addEventListener('change',()=>{ renderer.setClearColor(bgColorPicker.value); try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} ensureGridContrastWithBackground(); });
+		const updateBgColor = () => {
+			console.log('[Color] Background color updated:', bgColorPicker.value);
+			renderer.setClearColor(bgColorPicker.value); 
+			try { localStorage.setItem('sketcher.bgColor', bgColorPicker.value); } catch {} 
+			ensureGridContrastWithBackground(); 
+		};
+		
+		// Check if we're on a VR browser that might have color picker issues
+		const isVRBrowser = navigator.userAgent.includes('OculusBrowser') || 
+		                   navigator.userAgent.includes('Quest') ||
+		                   navigator.userAgent.includes('VR');
+		
+		if (isVRBrowser) {
+			console.log('[Color] VR browser detected, adding enhanced color picker support');
+			
+			// Show help text for VR users
+			const helpText = document.getElementById('bgColorHelp');
+			if (helpText) helpText.style.display = 'block';
+			
+			// For VR browsers, also create click-to-cycle fallback
+			let colorIndex = 0;
+			const commonColors = ['#1e1e1e', '#000000', '#ffffff', '#333333', '#666666', '#0066cc', '#006600', '#cc0000'];
+			
+			const cycleBgColor = () => {
+				colorIndex = (colorIndex + 1) % commonColors.length;
+				const newColor = commonColors[colorIndex];
+				bgColorPicker.value = newColor;
+				updateBgColor();
+			};
+			
+			// Add double-tap to cycle colors as fallback
+			let tapTimeout;
+			bgColorPicker.addEventListener('click', (e) => {
+				if (tapTimeout) {
+					clearTimeout(tapTimeout);
+					tapTimeout = null;
+					cycleBgColor();
+					e.preventDefault();
+				} else {
+					tapTimeout = setTimeout(() => {
+						tapTimeout = null;
+					}, 300);
+				}
+			});
+		}
+		
+		// Standard events
+		bgColorPicker.addEventListener('input', updateBgColor);
+		bgColorPicker.addEventListener('change', updateBgColor);
+		
+		// Additional events for better Meta Quest compatibility
+		bgColorPicker.addEventListener('blur', updateBgColor);
+		bgColorPicker.addEventListener('touchend', () => {
+			setTimeout(updateBgColor, 100); // Delay for value to update
+		});
+		
+		// Debug: Log when color picker is interacted with
+		bgColorPicker.addEventListener('click', () => {
+			console.log('[Color] Background picker clicked - value:', bgColorPicker.value);
+		});
 	}
 	if (gridColorPicker){
-		gridColorPicker.addEventListener('input',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
-		gridColorPicker.addEventListener('change',()=>{ setGridColor(gridColorPicker.value); try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} });
+		const updateGridColor = () => {
+			console.log('[Color] Grid color updated:', gridColorPicker.value);
+			setGridColor(gridColorPicker.value); 
+			try { localStorage.setItem('sketcher.gridColor', gridColorPicker.value); } catch {} 
+		};
+		
+		// Check if we're on a VR browser that might have color picker issues
+		const isVRBrowser = navigator.userAgent.includes('OculusBrowser') || 
+		                   navigator.userAgent.includes('Quest') ||
+		                   navigator.userAgent.includes('VR');
+		
+		if (isVRBrowser) {
+			// Show help text for VR users
+			const helpText = document.getElementById('gridColorHelp');
+			if (helpText) helpText.style.display = 'block';
+			
+			// For VR browsers, also create click-to-cycle fallback
+			let colorIndex = 0;
+			const commonColors = ['#ffffff', '#cccccc', '#888888', '#444444', '#000000', '#ff0000', '#00ff00', '#0000ff'];
+			
+			const cycleGridColor = () => {
+				colorIndex = (colorIndex + 1) % commonColors.length;
+				const newColor = commonColors[colorIndex];
+				gridColorPicker.value = newColor;
+				updateGridColor();
+			};
+			
+			// Add double-tap to cycle colors as fallback
+			let tapTimeout;
+			gridColorPicker.addEventListener('click', (e) => {
+				if (tapTimeout) {
+					clearTimeout(tapTimeout);
+					tapTimeout = null;
+					cycleGridColor();
+					e.preventDefault();
+				} else {
+					tapTimeout = setTimeout(() => {
+						tapTimeout = null;
+					}, 300);
+				}
+			});
+		}
+		
+		// Standard events
+		gridColorPicker.addEventListener('input', updateGridColor);
+		gridColorPicker.addEventListener('change', updateGridColor);
+		
+		// Additional events for better Meta Quest compatibility
+		gridColorPicker.addEventListener('blur', updateGridColor);
+		gridColorPicker.addEventListener('touchend', () => {
+			setTimeout(updateGridColor, 100); // Delay for value to update
+		});
+		
+		// Debug: Log when color picker is interacted with
+		gridColorPicker.addEventListener('click', () => {
+			console.log('[Color] Grid picker clicked - value:', gridColorPicker.value);
+		});
 	}
 	if (gridSizeInput){
 		const onSize = ()=>{
@@ -4804,6 +4926,36 @@ const viewAxonBtn = document.getElementById('viewAxon');
 			selectedObjects = []; transformControls.detach(); clearSelectionOutlines(); updateVisibilityUI(); updateCameraClipping(); saveSessionDraftNow();
 		}
 	});
+	
+	// Room designation shortcut (R key)
+	window.addEventListener('keydown', e => {
+		if (mode === 'edit' && (e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+			// Check if any modals are open
+			const hasModalsOpen = document.getElementById('roomDesignationModal')?.style.display !== 'none' ||
+							     document.getElementById('roomPropertiesPanel')?.style.display !== 'none';
+			
+			if (hasModalsOpen) return; // Don't interfere with open room UI
+			
+			// Try to designate selected object as room
+			const selectedObject = selectedObjects.length ? selectedObjects[0] : 
+								  (transformControls.object ? transformControls.object : null);
+			
+			if (selectedObject && selectedObject.isMesh && !__isOverlayOrChild(selectedObject)) {
+				e.preventDefault();
+				
+				// Check if already a room
+				const existingRoom = roomSystem.getRoomFromObject(selectedObject);
+				if (existingRoom) {
+					roomDesignationUI.showRoomPropertiesPanel(existingRoom);
+				} else {
+					roomDesignationUI.showRoomDesignationModal(selectedObject);
+				}
+			} else {
+				// Show instruction if no valid object selected
+				console.log('Select a 3D object first, then press R to designate it as a room');
+			}
+		}
+	});
 
 	// Keep outlines syncing
 	transformControls.addEventListener('objectChange', () => { rebuildSelectionOutlines(); });
@@ -5601,6 +5753,48 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Map Import wiring
 	setupMapImport({ THREE, renderer, fallbackMaterial: material, addObjectToScene, elements: { backdrop: mapBackdrop, container: mapContainer, searchInput: mapSearchInput, searchBtn: mapSearchBtn, closeBtn: mapCloseBtn, useFlatBtn: mapUseFlatBtn, useTopoBtn: mapUseTopoBtn, drawToggleBtn: mapDrawToggle, importBtn: mapImportBtn } });
 
+	// Blocking & Stacking System Setup
+	const excelParser = createExcelParser();
+	const blockingStacking = createBlockingStacking();
+	const massSystem = createMassSystem({ THREE, scene });
+	
+	// Room System Setup
+	const roomSystem = createRoomSystem({ THREE, scene });
+	const roomManager = createRoomManager({ THREE, scene, roomSystem, persistence });
+	const roomDesignationUI = createRoomDesignationUI({ roomSystem, roomManager });
+	
+	// Initialize room system
+	roomManager.initialize();
+	roomDesignationUI.initialize();
+	
+	const blockingUI = createBlockingUI({ 
+		excelParser, 
+		blockingStacking, 
+		massSystem, 
+		scene,
+		roomSystem,
+		roomManager
+	});
+	
+	// Wire Blocking & Stacking button
+	if (blockingStackingBtn) {
+		blockingStackingBtn.addEventListener('click', () => {
+			blockingUI.showBlockingWorkflow();
+		});
+	}
+	
+	// Wire Room Manager button
+	if (roomManagerBtn) {
+		console.log('Room Manager button found, adding click handler');
+		roomManagerBtn.addEventListener('click', () => {
+			console.log('Room Manager button clicked');
+			// Show room manager panel
+			roomDesignationUI.toggleRoomManagerPanel();
+		});
+	} else {
+		console.log('Room Manager button not found!');
+	}
+	
 	// Preserve current editor scene when navigating to Columbarium (session draft)
 	(() => {
 		try {
