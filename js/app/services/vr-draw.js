@@ -116,6 +116,30 @@
 				// Show visual feedback in VR
 				if (enabled) {
 					updateStatusText('VR DRAW: ON', '#00ff00');
+					// Force-create a test tube to verify the system works
+					console.log('🎨 CREATING TEST TUBE TO VERIFY VR DRAW WORKS');
+					const testPoints = [
+						new THREE.Vector3(0, 1.5, -0.5),
+						new THREE.Vector3(0.1, 1.5, -0.5),
+						new THREE.Vector3(0.2, 1.6, -0.5),
+						new THREE.Vector3(0.3, 1.5, -0.5)
+					];
+					try {
+						const curve = new THREE.CatmullRomCurve3(testPoints);
+						const tubeGeom = new THREE.TubeGeometry(curve, Math.max(2, testPoints.length * 2), lineWidth * 0.001, 8, false);
+						const tubeMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: false });
+						const testTube = new THREE.Mesh(tubeGeom, tubeMat);
+						testTube.name = 'TestVRDrawTube';
+						testTube.userData.__helper = false; // Make it permanent for testing
+						drawGroup.add(testTube);
+						console.log('🎨 TEST TUBE CREATED and added to drawGroup. DrawGroup children:', drawGroup.children.length);
+						console.log('🎨 Test tube position:', testTube.position);
+						console.log('🎨 DrawGroup parent:', drawGroup.parent?.type);
+						console.log('🎨 DrawGroup visible:', drawGroup.visible);
+						console.log('🎨 Test tube visible:', testTube.visible);
+					} catch(e) {
+						console.error('🎨 Failed to create test tube:', e);
+					}
 				} else {
 					updateStatusText('VR DRAW: OFF', '#ff0000');
 				}
@@ -577,6 +601,28 @@
 				triggerPrev.set(src, stablePinching);
 			}
 		}
+		
+		// Expose test function globally for debugging
+		window.testVRDraw = function() {
+			console.log('🎨 TESTING VR DRAW FROM CONSOLE');
+			console.log('🎨 VR Draw enabled:', enabled);
+			console.log('🎨 DrawGroup children:', drawGroup.children.length);
+			console.log('🎨 Scene contains drawGroup:', scene.children.includes(drawGroup));
+			
+			// Force enable if not already enabled
+			if (!enabled) {
+				console.log('🎨 Force enabling VR draw for test...');
+				setEnabled(true);
+			}
+			
+			return {
+				enabled,
+				drawGroupChildren: drawGroup.children.length,
+				drawGroupParent: drawGroup.parent?.type,
+				drawGroupInScene: scene.children.includes(drawGroup)
+			};
+		};
+		
 		return { 
 			group: drawGroup, 
 			setEnabled, 

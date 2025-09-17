@@ -1132,6 +1132,28 @@ export async function init() {
 				if (vrDraw && vrDraw.setCollaborationService && collab) vrDraw.setCollaborationService(collab);
 				// Make vrDraw globally accessible for XR HUD fingertip color management
 				window.vrDraw = vrDraw;
+				
+				// Add global test function for VR drawing
+				window.enableVRDraw = function() {
+					if (vrDraw && vrDraw.setEnabled) {
+						console.log('🎨 Force enabling VR Draw from console...');
+						vrDraw.setEnabled(true);
+						console.log('🎨 VR Draw enabled:', vrDraw.isActive && vrDraw.isActive());
+						return vrDraw.isActive && vrDraw.isActive();
+					} else {
+						console.error('🎨 VR Draw not available');
+						return false;
+					}
+				};
+				
+				window.disableVRDraw = function() {
+					if (vrDraw && vrDraw.setEnabled) {
+						console.log('🎨 Disabling VR Draw from console...');
+						vrDraw.setEnabled(false);
+						return true;
+					}
+					return false;
+				};
 				// Extended debounce window for automatic presses (e.g., initial hand pose overlapping button) to avoid auto-opening draw menu
 				const __drawBtnCreatedAt = performance.now();
 				let __lastDrawBtnActivation = 0; // Prevent rapid re-triggering
@@ -5614,88 +5636,162 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												}
 											}
 										}
-										// IMPROVED: Start editing when BOTH hands are pinching AND are reasonably close to the primitive
-										// Instead of requiring hands INSIDE the bounds, allow hands near the primitive for easier interaction
+										// REDESIGNED: Make primitive editing work like regular object grabbing
+										// Instead of requiring both hands to pinch simultaneously, allow single-hand grab to start editing
+										// Then use both hands for scaling if available
 										
-										// Enhanced debugging for pinch state
-										if (!prim.__pinchDebounce || (now - prim.__pinchDebounce > 2000)) {
-											console.log('🔧 Pinch State Check:', {
-												hasPreview: !!prim.preview,
-												leftHand: !!prim.leftHand,
-												rightHand: !!prim.rightHand,
-												leftPinching: prim.leftPinching,
-												rightPinching: prim.rightPinching,
-												bothPinching: prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching
-											});
-											prim.__pinchDebounce = now;
-										}
+										// Check if either hand is pinching and close to the primitive (like grabbing any other object)
+										const leftHandReady = prim.leftHand && prim.leftPinching;
+										const rightHandReady = prim.rightHand && prim.rightPinching;
 										
-										if (prim.preview && prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
-											// Get primitive center and size
+										if ((leftHandReady || rightHandReady) && prim.preview) {
+											// Get primitive center and size for grab detection
 											const bbox = new THREE.Box3().setFromObject(prim.preview);
 											const center = bbox.getCenter(new THREE.Vector3());
 											const size = bbox.getSize(new THREE.Vector3());
 											const maxDim = Math.max(size.x, size.y, size.z);
 											
-											// Check if hands are within interaction distance (5x the primitive size, minimum 30cm for easier interaction)
-											const interactionDistance = Math.max(0.3, maxDim * 5);
-											const leftDist = prim.leftHand.pos.distanceTo(center);
-											const rightDist = prim.rightHand.pos.distanceTo(center);
+											// More generous grab distance (like other objects)
+											const grabDistance = Math.max(0.15, maxDim * 2); // 15cm minimum, or 2x object size
 											
-											console.log(`🔧 BOTH HANDS PINCHING! Checking editing start: left dist=${leftDist.toFixed(3)}m, right dist=${rightDist.toFixed(3)}m, max allowed=${interactionDistance.toFixed(3)}m`);
-											console.log(`🔧 Primitive center: (${center.x.toFixed(3)}, ${center.y.toFixed(3)}, ${center.z.toFixed(3)})`);
-											console.log(`🔧 Left hand pos: (${prim.leftHand.pos.x.toFixed(3)}, ${prim.leftHand.pos.y.toFixed(3)}, ${prim.leftHand.pos.z.toFixed(3)})`);
-											console.log(`🔧 Right hand pos: (${prim.rightHand.pos.x.toFixed(3)}, ${prim.rightHand.pos.y.toFixed(3)}, ${prim.rightHand.pos.z.toFixed(3)})`);
-											console.log(`🔧 Primitive size: ${maxDim.toFixed(3)}m, primitive at: (${prim.preview.position.x.toFixed(3)}, ${prim.preview.position.y.toFixed(3)}, ${prim.preview.position.z.toFixed(3)})`);
+											// Check which hands can grab the primitive
+											let canLeftGrab = false, canRightGrab = false;
+											let leftDist = Infinity, rightDist = Infinity;
 											
-											// Both hands within interaction distance = start editing
-											if (leftDist <= interactionDistance && rightDist <= interactionDistance) {
+											if (prim.leftHand) {
+												leftDist = prim.leftHand.pos.distanceTo(center);
+												canLeftGrab = leftDist <= grabDistance;
+											}
+											if (prim.rightHand) {
+												rightDist = prim.rightHand.pos.distanceTo(center);
+												canRightGrab = rightDist <= grabDistance;
+											}
+											
+											// Debug logging (less frequent)
+											if (!prim.__grabDebounce || (now - prim.__grabDebounce > 2000)) {
+												console.log('🔧 Primitive Grab Check:', {
+													leftPinch: leftHandReady, leftDist: leftDist.toFixed(3), canLeftGrab,
+													rightPinch: rightHandReady, rightDist: rightDist.toFixed(3), canRightGrab,
+													grabDistance: grabDistance.toFixed(3)
+												});
+												prim.__grabDebounce = now;
+											}
+											
+											// Start editing if any hand can grab it
+											if ((leftHandReady && canLeftGrab) || (rightHandReady && canRightGrab)) {
 												prim.stage = 'editing';
-												prim.editStartDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+												
+												// If both hands are available and pinching, use two-hand scaling
+												if (leftHandReady && rightHandReady && canLeftGrab && canRightGrab) {
+													prim.editMode = 'two-hand-scale';
+													prim.editStartDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+													console.log('✋✋ Two-hand scaling started!');
+												} else {
+													// Single hand manipulation (move only, no scale)
+													prim.editMode = 'single-hand-move';
+													prim.editHand = (leftHandReady && canLeftGrab) ? 'left' : 'right';
+													console.log(`✋ Single-hand editing started (${prim.editHand} hand)`);
+												}
+												
 												prim.editStartScale = prim.preview.scale.clone();
-												// Reset release counter when actively editing
 												prim.releaseCount = 0;
 												prim.firstReleaseTime = null;
-												console.log('✋✋ PRIMITIVE EDITING STARTED! (two-hand pinch near object)');
-												console.log(`📐 Initial hand distance: ${prim.editStartDistance.toFixed(3)}m`);
-											} else {
-												// Debug why editing didn't start
-												console.log('🚫 BOTH HANDS PINCHING BUT editing not starting - hands too far from primitive center');
-												console.log(`   Left hand: ${leftDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m) - ${leftDist <= interactionDistance ? 'WITHIN' : 'TOO FAR'}`);
-												console.log(`   Right hand: ${rightDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m) - ${rightDist <= interactionDistance ? 'WITHIN' : 'TOO FAR'}`);
+												
+												console.log('🎯 Primitive editing started - works like grabbing any other object!');
 											}
 										}
 									}
 									else if (prim.stage === 'editing') {
-										// While both are still pinching: update scale + position
-										if (prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
-											const d = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
-											const scaleFactor = d / (prim.editStartDistance || d);
-											const s = Math.max(0.02, Math.min(20, scaleFactor));
-											const center = new THREE.Vector3().addVectors(prim.leftHand.pos, prim.rightHand.pos).multiplyScalar(0.5);
-											if (prim.preview) {
-												prim.preview.position.copy(center);
-												prim.preview.scale.set(
-													prim.editStartScale.x * s,
-													prim.editStartScale.y * s,
-													prim.editStartScale.z * s
-												);
-												// --- VR Soft Snapping (magnet faces) ---
+										// Handle different edit modes: single-hand move vs two-hand scale
+										if (prim.editMode === 'two-hand-scale') {
+											// Two-hand scaling mode (both hands pinching)
+											if (prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
+												const d = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+												const scaleFactor = d / (prim.editStartDistance || d);
+												const s = Math.max(0.02, Math.min(20, scaleFactor));
+												const center = new THREE.Vector3().addVectors(prim.leftHand.pos, prim.rightHand.pos).multiplyScalar(0.5);
+												if (prim.preview) {
+													prim.preview.position.copy(center);
+													prim.preview.scale.set(
+														prim.editStartScale.x * s,
+														prim.editStartScale.y * s,
+														prim.editStartScale.z * s
+													);
+													
+													// Apply snapping
+													try {
+														if (typeof SNAP_ENABLED === 'undefined' || SNAP_ENABLED) {
+															const movingBox = new THREE.Box3().setFromObject(prim.preview);
+															const exclude = new Set([prim.preview]);
+															const snap = computeSnapDelta(movingBox, exclude);
+															if (snap.axis) {
+																const parent = prim.preview.parent || scene;
+																const worldPos = prim.preview.getWorldPosition(new THREE.Vector3()).add(snap.delta);
+																const localPos = parent.worldToLocal(worldPos.clone());
+																prim.preview.position.copy(localPos);
+																prim.preview.updateMatrixWorld(true);
+																try { snapVisuals.showAt(movingBox, snap, prim.preview, snap.other); } catch{}
+																prim.__lastSnap = { delta: snap.delta.clone(), axis: snap.axis, other: snap.other };
+															} else {
+																prim.__lastSnap = null; snapVisuals.hide();
+															}
+														}
+													} catch(e) { /* non-fatal snapping error */ }
+												}
+											} else {
+												// Check if we can switch to single-hand mode
+												const leftStillGrabbing = prim.leftHand && prim.leftPinching;
+												const rightStillGrabbing = prim.rightHand && prim.rightPinching;
+												
+												if (leftStillGrabbing || rightStillGrabbing) {
+													// Switch to single-hand mode
+													prim.editMode = 'single-hand-move';
+													prim.editHand = leftStillGrabbing ? 'left' : 'right';
+													console.log(`🔧 Switched to single-hand mode (${prim.editHand})`);
+												} else {
+													// Both released - go back to preview
+													console.log('🔧 Both hands released - returning to preview mode');
+													prim.stage = 'preview';
+													snapVisuals.hide();
+													
+													// Track consecutive pinch releases to detect finalization intent
+													prim.releaseCount = (prim.releaseCount || 0) + 1;
+													prim.lastReleaseTime = performance.now();
+												}
+											}
+										} else if (prim.editMode === 'single-hand-move') {
+											// Single-hand movement mode
+											const activeHand = prim[`${prim.editHand}Hand`];
+											const stillPinching = prim[`${prim.editHand}Pinching`];
+											
+											if (activeHand && stillPinching && prim.preview) {
+												// Move the primitive to follow the hand
+												prim.preview.position.lerp(activeHand.pos, 0.8);
+												
+												// Check if second hand joined for scaling
+												const otherHand = prim.editHand === 'left' ? 'right' : 'left';
+												const otherHandObj = prim[`${otherHand}Hand`];
+												const otherHandPinching = prim[`${otherHand}Pinching`];
+												
+												if (otherHandObj && otherHandPinching) {
+													// Switch to two-hand scaling mode
+													prim.editMode = 'two-hand-scale';
+													prim.editStartDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+													console.log('🔧 Second hand joined - switching to two-hand scaling!');
+												}
+												
+												// Apply snapping for single-hand movement
 												try {
 													if (typeof SNAP_ENABLED === 'undefined' || SNAP_ENABLED) {
-														// Compute world box after scale/position update
 														const movingBox = new THREE.Box3().setFromObject(prim.preview);
-														// Build exclude set (ignore preview & helpers)
 														const exclude = new Set([prim.preview]);
 														const snap = computeSnapDelta(movingBox, exclude);
 														if (snap.axis) {
-															// Apply delta directly to preview position in world, converting to local if parented
 															const parent = prim.preview.parent || scene;
 															const worldPos = prim.preview.getWorldPosition(new THREE.Vector3()).add(snap.delta);
 															const localPos = parent.worldToLocal(worldPos.clone());
 															prim.preview.position.copy(localPos);
 															prim.preview.updateMatrixWorld(true);
-															// Show outline highlight for both objects
 															try { snapVisuals.showAt(movingBox, snap, prim.preview, snap.other); } catch{}
 															prim.__lastSnap = { delta: snap.delta.clone(), axis: snap.axis, other: snap.other };
 														} else {
@@ -5703,16 +5799,20 @@ const viewAxonBtn = document.getElementById('viewAxon');
 														}
 													}
 												} catch(e) { /* non-fatal snapping error */ }
+											} else {
+												// Hand released - go back to preview
+												console.log('🔧 Single hand released - returning to preview mode');
+												prim.stage = 'preview';
+												snapVisuals.hide();
+												
+												// Track consecutive pinch releases to detect finalization intent
+												prim.releaseCount = (prim.releaseCount || 0) + 1;
+												prim.lastReleaseTime = performance.now();
 											}
-										} else {
-											// One or both pinches released -> go back to preview mode (don't auto-finalize)
-											console.log('🔧 Pinch released - returning to preview mode (primitive stays active)');
-											prim.stage = 'preview';
-											snapVisuals.hide();
-											
-											// Track consecutive pinch releases to detect finalization intent
-											prim.releaseCount = (prim.releaseCount || 0) + 1;
-											prim.lastReleaseTime = performance.now();
+										}
+										
+										// Check for auto-finalization after releases
+										if (prim.stage === 'preview' && prim.releaseCount) {
 											
 											// Auto-finalize after 3 consecutive pinch releases within 5 seconds (user intent to finish)
 											if (prim.releaseCount >= 3 && (performance.now() - (prim.firstReleaseTime || 0)) < 5000) {
@@ -5729,7 +5829,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 														final.geometry.applyMatrix4(new THREE.Matrix4().makeScale(final.scale.x, final.scale.y, final.scale.z));
 														final.scale.set(1,1,1);
 														final.name = nameBase + ' ' + (objects.length + 1);
-														addObjectToScene(final, { select: false });
+														addObjectToScene(final, { select: true }); // Auto-select new primitive for immediate manipulation
 														if (saveSessionDraftSoon) saveSessionDraftSoon();
 														console.log('✅ Primitive finalized:', final.name);
 														if (prim.__lastSnap && prim.__lastSnap.axis) { console.log('🧲 Final snap applied on finalize:', prim.__lastSnap.axis); }
