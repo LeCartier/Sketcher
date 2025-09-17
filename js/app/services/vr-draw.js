@@ -169,10 +169,11 @@
 				{ position: nextPt, pressure: pressure }
 			];
 			
-			// Create tube geometry with pressure-influenced radius
-			const baseTubeRadius = (lineWidth || 6) * 0.001; // Base radius in meters
-			const tubeRadius = baseTubeRadius * (0.5 + 0.5 * pressure); // Pressure influences radius (50%-100% of base)
-			console.log('🎨 VR Draw: Creating pressure-sensitive tube with radius:', tubeRadius, 'meters (pressure:', pressure, ')');
+			// Create tube geometry with pressure-influenced radius - MADE MUCH LARGER FOR VISIBILITY
+			const baseTubeRadius = (lineWidth || 6) * 0.002; // Doubled from 0.001 to 0.002 (now 12mm for lineWidth=6)
+			const tubeRadius = baseTubeRadius * (0.8 + 0.4 * pressure); // Range 80%-120% of base (was 50%-100%)
+			console.log('🎨 VR Draw: Creating EXTRA LARGE pressure-sensitive tube with radius:', tubeRadius, 'meters (pressure:', pressure, ')');
+			console.log('🎨 VR Draw: This should be', (tubeRadius * 1000).toFixed(1), 'mm in diameter');
 			
 			try {
 				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
@@ -207,8 +208,16 @@
 			console.log('🎨 VR Draw: DrawGroup children after:', drawGroup.children.length);
 			console.log('🎨 VR Draw: Tube added to scene successfully');
 			console.log('🎨 VR Draw: Tube visible:', currentStroke.visible);
+			console.log('🎨 VR Draw: DrawGroup visible:', drawGroup.visible);
+			console.log('🎨 VR Draw: DrawGroup parent:', drawGroup.parent?.constructor?.name);
 			console.log('🎨 VR Draw: Tube world position:', currentStroke.getWorldPosition(new THREE.Vector3()));
 			console.log('🎨 VR Draw: Tube bounding sphere:', currentStroke.geometry.boundingSphere);
+			
+			// FORCE VISIBILITY - Make sure everything is visible
+			currentStroke.visible = true;
+			drawGroup.visible = true;
+			if (drawGroup.parent) drawGroup.parent.visible = true;
+			
 			console.log('🎨 VR Draw: Tube material properties:', {
 				color: mat.color.getHex().toString(16),
 				opacity: mat.opacity,
@@ -265,8 +274,8 @@
 				
 				// Calculate average pressure for this segment
 				const avgPressure = points.reduce((sum, p) => sum + p.pressure, 0) / points.length;
-				const baseTubeRadius = (lineWidth || 6) * 0.001;
-				const tubeRadius = baseTubeRadius * (0.5 + 0.5 * avgPressure); // Pressure-influenced radius
+				const baseTubeRadius = (lineWidth || 6) * 0.002; // Doubled for visibility 
+				const tubeRadius = baseTubeRadius * (0.8 + 0.4 * avgPressure); // Pressure-influenced radius
 				
 				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
 				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
@@ -476,14 +485,20 @@
 					gestureInfo.stabilityCount = Math.max(0, gestureInfo.stabilityCount - 1);
 				}
 				
-				// Enhanced pinch detection: require both proximity and stability
-				const stablePinching = pinching && (gestureInfo.stabilityCount >= 3); // Need 3 stable frames
+				// RELAXED pinch detection for better user experience
+				// Instead of requiring stability, use a slightly larger threshold with immediate response
+				const RELAXED_PINCH_DIST = 0.045; // Increased from 3.5cm to 4.5cm
+				const relaxedPinching = dist < RELAXED_PINCH_DIST;
 				
-				// Debug logging for enhanced pinch detection
+				// For now, let's bypass the stability requirement for testing
+				const stablePinching = relaxedPinching; // Direct mapping - no stability delay
+				
+				// Debug logging for pinch detection
 				if (enabled && (stablePinching !== prev)) {
-					console.log(`🎨 VR Draw: Hand ${src.handedness} stable pinch ${stablePinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, pressure: ${pressure.toFixed(2)}, speed: ${speed.toFixed(2)}m/s, stability: ${gestureInfo.stabilityCount})`);
+					console.log(`🎨 VR Draw: Hand ${src.handedness} pinch ${stablePinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, pressure: ${pressure.toFixed(2)})`);
 					console.log(`🎨 VR Draw: Index pos:`, ip, 'Thumb pos:', tp);
 					console.log(`🎨 VR Draw: Draw position:`, drawPos);
+					console.log(`🎨 VR Draw: Scene contains draw group:`, scene.children.includes(drawGroup));
 				}
 				
 				// Additional debug for when enabled but no drawing occurs
@@ -543,16 +558,20 @@
 					hidePreview(); // Hide preview when draw mode is off
 				}
 				if (stablePinching && !prev){ 
-					console.log('🎨 VR Draw: Starting stroke at', drawPos, 'with pressure', pressure.toFixed(2)); 
+					console.log('🎨 VR Draw: *** STARTING STROKE ***'); 
+					console.log('🎨 VR Draw: Position:', drawPos); 
 					console.log('🎨 VR Draw: Forward direction:', forwardDir);
-					startStroke(drawPos, forwardDir, pressure); 
+					console.log('🎨 VR Draw: Draw group children before:', drawGroup.children.length);
+					console.log('🎨 VR Draw: Scene children before:', scene.children.length);
+					startStroke(drawPos, forwardDir, pressure);
+					console.log('🎨 VR Draw: Draw group children after:', drawGroup.children.length);
 				}
 				else if (stablePinching && currentStroke){ 
 					console.log('🎨 VR Draw: Adding point to existing stroke:', drawPos, 'pressure:', pressure.toFixed(2));
 					addPoint(drawPos, pressure); 
 				}
 				else if (!stablePinching && prev){ 
-					console.log('🎨 VR Draw: Ending stroke'); 
+					console.log('🎨 VR Draw: *** ENDING STROKE ***'); 
 					endStroke(); 
 				}
 				triggerPrev.set(src, stablePinching);
