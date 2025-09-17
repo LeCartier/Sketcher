@@ -5530,6 +5530,40 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										prim.__lastDebug = now;
 									}
 									
+									// Add visual hand markers to help users see hand positions
+									['left', 'right'].forEach(side => {
+										const hand = prim[`${side}Hand`];
+										const pinching = prim[`${side}Pinching`];
+										let marker = scene.getObjectByName(`PrimitiveHandMarker_${side}`);
+										
+										if (hand && hand.pos) {
+											if (!marker) {
+												// Create hand marker
+												marker = new THREE.Mesh(
+													new THREE.SphereGeometry(0.02, 12, 12),
+													new THREE.MeshBasicMaterial({ 
+														color: side === 'left' ? 0x0099ff : 0xff9900,
+														transparent: true,
+														opacity: 0.7,
+														depthTest: false
+													})
+												);
+												marker.name = `PrimitiveHandMarker_${side}`;
+												marker.userData.__helper = true;
+												marker.renderOrder = 9998;
+												scene.add(marker);
+											}
+											
+											// Update marker position and appearance
+											marker.position.copy(hand.pos);
+											marker.material.color.setHex(pinching ? 0xff0000 : (side === 'left' ? 0x0099ff : 0xff9900));
+											marker.scale.setScalar(pinching ? 1.5 : 1.0);
+											marker.visible = true;
+										} else if (marker) {
+											marker.visible = false;
+										}
+									});
+									
 									// Simple timeout (60s) to auto-cancel
 									if (!prim.__createdAt) prim.__createdAt = now;
 									if (now - prim.__createdAt > 60000) {
@@ -5562,19 +5596,58 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										}
 										if (prim.preview && followHand) {
 											prim.preview.position.lerp(followHand.pos, 0.7);
+											
+											// Visual feedback: change color when both hands are pinching (ready to edit)
+											if (prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
+												// Both hands pinching - show "ready to edit" feedback
+												if (!prim.preview.material.emissive) {
+													prim.preview.material.emissive = new THREE.Color(0x00ff00);
+													prim.preview.material.emissiveIntensity = 0.3;
+													prim.preview.material.needsUpdate = true;
+												}
+											} else {
+												// Reset visual feedback
+												if (prim.preview.material.emissive && prim.preview.material.emissive.r > 0) {
+													prim.preview.material.emissive.setRGB(0, 0, 0);
+													prim.preview.material.emissiveIntensity = 0;
+													prim.preview.material.needsUpdate = true;
+												}
+											}
 										}
-										// Start editing only when BOTH hands are pinching AND both hand centers are within the primitive bounds (intersection intent)
+										// IMPROVED: Start editing when BOTH hands are pinching AND are reasonably close to the primitive
+										// Instead of requiring hands INSIDE the bounds, allow hands near the primitive for easier interaction
 										if (prim.preview && prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
-											// Simple bounds check (use bounding box in world space)
+											// Get primitive center and size
 											const bbox = new THREE.Box3().setFromObject(prim.preview);
-											if (bbox.containsPoint(prim.leftHand.pos) && bbox.containsPoint(prim.rightHand.pos)) {
+											const center = bbox.getCenter(new THREE.Vector3());
+											const size = bbox.getSize(new THREE.Vector3());
+											const maxDim = Math.max(size.x, size.y, size.z);
+											
+											// Check if hands are within interaction distance (3x the primitive size, minimum 20cm)
+											const interactionDistance = Math.max(0.2, maxDim * 3);
+											const leftDist = prim.leftHand.pos.distanceTo(center);
+											const rightDist = prim.rightHand.pos.distanceTo(center);
+											
+											console.log(`🔧 Checking editing start: left dist=${leftDist.toFixed(3)}m, right dist=${rightDist.toFixed(3)}m, max allowed=${interactionDistance.toFixed(3)}m`);
+											
+											// Both hands within interaction distance = start editing
+											if (leftDist <= interactionDistance && rightDist <= interactionDistance) {
 												prim.stage = 'editing';
 												prim.editStartDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 												prim.editStartScale = prim.preview.scale.clone();
 												// Reset release counter when actively editing
 												prim.releaseCount = 0;
 												prim.firstReleaseTime = null;
-												console.log('✋✋ Primitive editing started (two-hand pinch inside object)');
+												console.log('✋✋ Primitive editing started (two-hand pinch near object)');
+												console.log(`📐 Initial hand distance: ${prim.editStartDistance.toFixed(3)}m`);
+											} else {
+												// Debug why editing didn't start
+												if (!prim.__editFailDebounce || (now - prim.__editFailDebounce > 1000)) {
+													console.log('🚫 Editing not starting - hands too far from primitive center');
+													console.log(`   Left hand: ${leftDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m)`);
+													console.log(`   Right hand: ${rightDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m)`);
+													prim.__editFailDebounce = now;
+												}
 											}
 										}
 									}
