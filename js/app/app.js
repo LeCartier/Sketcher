@@ -5571,6 +5571,9 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												prim.stage = 'editing';
 												prim.editStartDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 												prim.editStartScale = prim.preview.scale.clone();
+												// Reset release counter when actively editing
+												prim.releaseCount = 0;
+												prim.firstReleaseTime = null;
 												console.log('✋✋ Primitive editing started (two-hand pinch inside object)');
 											}
 										}
@@ -5614,30 +5617,46 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												} catch(e) { /* non-fatal snapping error */ }
 											}
 										} else {
-											// One or both pinches released -> finalize
-											if (prim.preview) {
-												try {
-													const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
-													const finalMat = prim.__mat || material;
-													const finalGeom = prim.preview.geometry.clone();
-													const final = new THREE.Mesh(finalGeom, finalMat);
-													final.position.copy(prim.preview.position);
-													final.scale.copy(prim.preview.scale);
-													// Bake scale
-													final.geometry.applyMatrix4(new THREE.Matrix4().makeScale(final.scale.x, final.scale.y, final.scale.z));
-													final.scale.set(1,1,1);
-													final.name = nameBase + ' ' + (objects.length + 1);
-													addObjectToScene(final, { select: false });
-													if (saveSessionDraftSoon) saveSessionDraftSoon();
-													console.log('✅ Primitive finalized:', final.name);
+											// One or both pinches released -> go back to preview mode (don't auto-finalize)
+											console.log('🔧 Pinch released - returning to preview mode (primitive stays active)');
+											prim.stage = 'preview';
+											snapVisuals.hide();
+											
+											// Track consecutive pinch releases to detect finalization intent
+											prim.releaseCount = (prim.releaseCount || 0) + 1;
+											prim.lastReleaseTime = performance.now();
+											
+											// Auto-finalize after 3 consecutive pinch releases within 5 seconds (user intent to finish)
+											if (prim.releaseCount >= 3 && (performance.now() - (prim.firstReleaseTime || 0)) < 5000) {
+												console.log('🎯 Three pinch releases detected - auto-finalizing primitive');
+												if (prim.preview) {
+													try {
+														const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
+														const finalMat = prim.__mat || material;
+														const finalGeom = prim.preview.geometry.clone();
+														const final = new THREE.Mesh(finalGeom, finalMat);
+														final.position.copy(prim.preview.position);
+														final.scale.copy(prim.preview.scale);
+														// Bake scale
+														final.geometry.applyMatrix4(new THREE.Matrix4().makeScale(final.scale.x, final.scale.y, final.scale.z));
+														final.scale.set(1,1,1);
+														final.name = nameBase + ' ' + (objects.length + 1);
+														addObjectToScene(final, { select: false });
+														if (saveSessionDraftSoon) saveSessionDraftSoon();
+														console.log('✅ Primitive finalized:', final.name);
 														if (prim.__lastSnap && prim.__lastSnap.axis) { console.log('🧲 Final snap applied on finalize:', prim.__lastSnap.axis); }
-												} catch(e) { console.error('❌ Finalize failed:', e); }
-												try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{}
-												try { prim.preview.geometry?.dispose?.(); prim.preview.material?.dispose?.(); } catch{}
+													} catch(e) { console.error('❌ Finalize failed:', e); }
+													try { if (prim.preview.parent) prim.preview.parent.remove(prim.preview); } catch{}
+													try { prim.preview.geometry?.dispose?.(); prim.preview.material?.dispose?.(); } catch{}
+												}
+												window.__xrPrim = null;
+												console.log('🧹 Primitive workflow complete');
+											} else {
+												// Set first release time for tracking
+												if (prim.releaseCount === 1) {
+													prim.firstReleaseTime = performance.now();
+												}
 											}
-											window.__xrPrim = null;
-												snapVisuals.hide();
-											console.log('🧹 Primitive workflow complete');
 										}
 									}
 								}

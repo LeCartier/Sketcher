@@ -1825,17 +1825,34 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
           let best = null; // { m, st, depth, dist }
           const ACTIVE_SHRINK_X = 0.85, ACTIVE_SHRINK_Y = 0.85; // shrink hit box to reduce boundary triggers
+          // Much stricter hit detection for Draw button specifically to prevent accidental pinch activation
+          const DRAW_SHRINK_X = 0.4, DRAW_SHRINK_Y = 0.4; // Draw button needs much more precise targeting
+          const DRAW_MIN_DEPTH = 0.008; // Draw button requires deeper penetration (8mm) to prevent accidental activation
           const toLocal = (p, m)=> m.worldToLocal(new THREE.Vector3(p.x, p.y, p.z));
           if (idxPos){
             for (const m of hudTargets){
               if (!m) continue; const st = ensurePressState(m);
               const lp = toLocal(idxPos, m);
               const halfW = BUTTON_W/2, halfH = BUTTON_H/2;
-              const inX = Math.abs(lp.x) <= halfW * ACTIVE_SHRINK_X;
-              const inY = Math.abs(lp.y) <= halfH * ACTIVE_SHRINK_Y;
+              
+              // Apply stricter hit detection for Draw button to prevent accidental activation
+              const btnLabel = m.userData?.__hudButton?.label || 'unknown';
+              const isDrawButton = btnLabel === 'Draw';
+              const shrinkX = isDrawButton ? DRAW_SHRINK_X : ACTIVE_SHRINK_X;
+              const shrinkY = isDrawButton ? DRAW_SHRINK_Y : ACTIVE_SHRINK_Y;
+              
+              const inX = Math.abs(lp.x) <= halfW * shrinkX;
+              const inY = Math.abs(lp.y) <= halfH * shrinkY;
               if (!inX || !inY) continue;
+              
               const pen = penetrationAlongNormal(m, idxPos);
-              const depth = THREE.MathUtils.clamp(-pen, 0, PRESS_MAX_M);
+              let depth = THREE.MathUtils.clamp(-pen, 0, PRESS_MAX_M);
+              
+              // Draw button requires much deeper penetration to activate
+              if (isDrawButton && depth < DRAW_MIN_DEPTH) {
+                continue; // Skip Draw button if penetration is too shallow
+              }
+              
               if (depth <= 0) continue;
               const dist = Math.hypot(lp.x, lp.y);
               
@@ -1843,21 +1860,24 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               const buttonLabel = m.userData?.__hudButton?.label || 'unknown';
               
               // Only log for Draw button to avoid spam
-              if (buttonLabel === 'Draw') {
+              if (btnLabel === 'Draw') {
                 console.log('🎯 Draw Button candidate:', {
-                  label: buttonLabel,
+                  label: btnLabel,
                   depth: depth,
                   dist: dist,
                   inBounds: { inX, inY },
                   localPos: { x: lp.x.toFixed(3), y: lp.y.toFixed(3), z: lp.z.toFixed(3) },
                   penetration: pen,
-                  fingerWorldPos: idxPos ? `(${idxPos.x.toFixed(3)}, ${idxPos.y.toFixed(3)}, ${idxPos.z.toFixed(3)})` : 'none'
+                  fingerWorldPos: idxPos ? `(${idxPos.x.toFixed(3)}, ${idxPos.y.toFixed(3)}, ${idxPos.z.toFixed(3)})` : 'none',
+                  shrinkFactors: { shrinkX, shrinkY },
+                  minDepthRequired: DRAW_MIN_DEPTH,
+                  depthMeetsThreshold: depth >= DRAW_MIN_DEPTH
                 });
               }
               
               if (!best || depth > best.depth + 1e-6 || (Math.abs(depth - best.depth) < 1e-6 && dist < best.dist)){
                 best = { m, st, depth, dist };
-                console.log('🎯 New best button candidate:', buttonLabel, 'depth:', depth, 'dist:', dist);
+                console.log('🎯 New best button candidate:', btnLabel, 'depth:', depth, 'dist:', dist);
               }
             }
             

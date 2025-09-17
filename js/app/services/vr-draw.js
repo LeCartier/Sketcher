@@ -29,8 +29,11 @@
 		let enabled = false;
 		let currentStroke = null;
 		let currentGeom = null;
+		let previewStroke = null; // Preview line while pinching but not stable
 		let points = [];
 		const triggerPrev = new WeakMap();
+		// Enhanced gesture tracking
+		const gestureData = new WeakMap(); // Store per-hand gesture history
 		let color = 0x00ff00; // bright green for Quest Pro visibility
 		let lineWidth = 6; // thicker lines for VR visibility
 		let minSegmentDist = 0.01; // 1 cm
@@ -127,6 +130,9 @@
 					collaborationService.onVRDrawClear();
 				}
 				
+				// Hide preview
+				hidePreview();
+				
 				// Clear all VR draw tubes from the scene
 				while(drawGroup.children.length){ 
 					const c = drawGroup.children.pop(); 
@@ -141,8 +147,8 @@
 		function getLineWidth(){ return lineWidth; }
 		function setOnLineCreated(fn){ onLineCreated = fn; }
 		function setCollaborationService(service){ collaborationService = service; }
-		function startStroke(pt, dir){
-			console.log('🎨 VR Draw: Starting stroke at position:', pt);
+		function startStroke(pt, dir, pressure = 1.0){
+			console.log('🎨 VR Draw: Starting stroke at position:', pt, 'with pressure:', pressure);
 			console.log('🎨 VR Draw: Scene children before:', scene.children.length);
 			console.log('🎨 VR Draw: DrawGroup children before:', drawGroup.children.length);
 			console.log('🎨 VR Draw: DrawGroup parent:', drawGroup.parent?.type || 'none');
@@ -158,15 +164,18 @@
 			// Create tiny forward stub (1.5mm) so a tube is visible immediately but can be replaced by first real movement
 			const startPt = pt.clone();
 			const nextPt = pt.clone().add(direction.multiplyScalar(0.0015));
-			points = [startPt, nextPt];
+			points = [
+				{ position: startPt, pressure: pressure },
+				{ position: nextPt, pressure: pressure }
+			];
 			
-			// Create tube geometry instead of line geometry
-			// Convert lineWidth to tube radius (in meters) - make it quite thin for VR drawing
-			const tubeRadius = (lineWidth || 6) * 0.001; // 1mm for lineWidth=1, 6mm for lineWidth=6 - much thicker for Quest Pro
-			console.log('🎨 VR Draw: Creating tube with radius:', tubeRadius, 'meters');
+			// Create tube geometry with pressure-influenced radius
+			const baseTubeRadius = (lineWidth || 6) * 0.001; // Base radius in meters
+			const tubeRadius = baseTubeRadius * (0.5 + 0.5 * pressure); // Pressure influences radius (50%-100% of base)
+			console.log('🎨 VR Draw: Creating pressure-sensitive tube with radius:', tubeRadius, 'meters (pressure:', pressure, ')');
 			
 			try {
-				const curve = new THREE.CatmullRomCurve3(points);
+				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
 				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
 				console.log('🎨 VR Draw: Tube geometry created successfully');
 			} catch(error) {
@@ -215,36 +224,51 @@
 			// Notify callback of new line creation
 			if (onLineCreated) try { onLineCreated(currentStroke); } catch(e) { console.warn('onLineCreated callback error:', e); }
 		}
-		function addPoint(pt){
+		function addPoint(pt, pressure = 1.0){
 			if (!currentGeom || !points.length) {
 				console.warn('🎨 VR Draw: Cannot add point - no current geometry or points');
 				return;
 			}
 			const last = points[points.length-1];
-			if (last.distanceToSquared(pt) < minSegmentDist*minSegmentDist) return;
+			if (last.position.distanceToSquared(pt) < minSegmentDist*minSegmentDist) return;
 			
-			// Replace the initial dummy point with real drawing point
-			if (points.length === 2 && points[0].distanceTo(points[1]) < 0.002) {
-				points[1] = pt.clone(); // Replace dummy point with actual drawing point
-			} else {
-				points.push(pt.clone());
+			// Apply smoothing filter for better stroke quality
+			let smoothedPoint = pt.clone();
+			if (points.length >= 2) {
+				// Use a simple weighted average with the last two points for smoothing
+				const secondLast = points[points.length-2];
+				// Weight: 60% new point, 30% last point, 10% second-to-last
+				smoothedPoint = new THREE.Vector3()
+					.addScaledVector(pt, 0.6)
+					.addScaledVector(last.position, 0.3)
+					.addScaledVector(secondLast.position, 0.1);
 			}
 			
-			console.log(`🎨 VR Draw: Added point ${points.length}:`, pt);
+			// Replace the initial dummy point with real drawing point
+			if (points.length === 2 && points[0].position.distanceTo(points[1].position) < 0.002) {
+				points[1] = { position: smoothedPoint, pressure: pressure }; // Replace dummy point with actual drawing point
+			} else {
+				points.push({ position: smoothedPoint, pressure: pressure });
+			}
+			
+			console.log(`🎨 VR Draw: Added point ${points.length} with pressure ${pressure.toFixed(2)}:`, pt);
 			if (points.length > maxPointsPerStroke) { 
 				console.log('🎨 VR Draw: Max points reached, ending stroke');
 				endStroke(); 
 				return; 
 			}
 			
-			// Rebuild tube geometry with updated points
+			// Rebuild tube geometry with variable radius based on pressure
 			if (points.length >= 2 && currentStroke) {
 				// Dispose old geometry to prevent memory leaks
 				if (currentGeom) currentGeom.dispose();
 				
-				// Create new tube geometry with all current points
-				const tubeRadius = (lineWidth || 6) * 0.001; // Same radius calculation as in startStroke - thicker for Quest Pro
-				const curve = new THREE.CatmullRomCurve3(points);
+				// Calculate average pressure for this segment
+				const avgPressure = points.reduce((sum, p) => sum + p.pressure, 0) / points.length;
+				const baseTubeRadius = (lineWidth || 6) * 0.001;
+				const tubeRadius = baseTubeRadius * (0.5 + 0.5 * avgPressure); // Pressure-influenced radius
+				
+				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
 				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
 				
 				// Update the mesh geometry
@@ -252,9 +276,9 @@
 				currentStroke.geometry.computeBoundingSphere();
 			}
 			
-			// Send collaboration event for new point
+			// Send collaboration event for new point (include pressure)
 			if (collaborationService && collaborationService.onVRDrawPoint && currentStrokeId) {
-				collaborationService.onVRDrawPoint(currentStrokeId, pt);
+				collaborationService.onVRDrawPoint(currentStrokeId, pt, pressure);
 			}
 		}
 		function endStroke(){
@@ -267,6 +291,50 @@
 			currentGeom = null; 
 			points = [];
 			currentStrokeId = null;
+		}
+		
+		function showPreview(position, direction) {
+			// Create or update preview stroke
+			if (!previewStroke) {
+				const previewRadius = (lineWidth || 6) * 0.0005; // Half thickness for preview
+				const previewLength = 0.02; // 2cm preview line
+				
+				let previewDirection = (direction && direction.length() > 0) ? direction.clone().normalize() : new THREE.Vector3(1,0,0);
+				const startPt = position.clone();
+				const endPt = position.clone().add(previewDirection.multiplyScalar(previewLength));
+				
+				const previewPoints = [startPt, endPt];
+				const curve = new THREE.CatmullRomCurve3(previewPoints);
+				const geom = new THREE.TubeGeometry(curve, 1, previewRadius, 8, false);
+				
+				const mat = new THREE.MeshBasicMaterial({ 
+					color, 
+					transparent: true,
+					opacity: 0.5, // Semi-transparent preview
+					side: THREE.DoubleSide
+				});
+				
+				previewStroke = new THREE.Mesh(geom, mat);
+				previewStroke.frustumCulled = false;
+				previewStroke.renderOrder = 999; // Render before actual strokes
+				previewStroke.name = 'VRDrawPreview';
+				drawGroup.add(previewStroke);
+			} else {
+				// Update existing preview position
+				previewStroke.position.copy(position);
+				if (direction && direction.length() > 0) {
+					previewStroke.lookAt(position.clone().add(direction));
+				}
+			}
+		}
+		
+		function hidePreview() {
+			if (previewStroke) {
+				drawGroup.remove(previewStroke);
+				previewStroke.geometry?.dispose?.();
+				previewStroke.material?.dispose?.();
+				previewStroke = null;
+			}
 		}
 		function update(frame, session, referenceSpace){
 			if (!session || !frame) {
@@ -365,17 +433,64 @@
 				const pinching = dist < PINCH_DIST;
 				const prev = triggerPrev.get(src) === true;
 				
-				// Debug logging for pinch detection
-				if (enabled && (pinching !== prev)) {
-					console.log(`🎨 VR Draw: Hand ${src.handedness} pinch ${pinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, threshold: ${(PINCH_DIST*100).toFixed(1)}cm)`);
+				// Calculate pressure from pinch tightness (inverted distance)
+				const maxPinchDist = PINCH_DIST; // 3.5cm
+				const minPinchDist = 0.010; // 1cm (tightest practical pinch)
+				const normalizedDist = Math.max(0, Math.min(1, (dist - minPinchDist) / (maxPinchDist - minPinchDist)));
+				const pressure = pinching ? (1.0 - normalizedDist) : 0; // Inverted: tighter pinch = higher pressure
+				
+				// Enhanced gesture tracking with velocity
+				let gestureInfo = gestureData.get(src);
+				if (!gestureInfo) {
+					gestureInfo = {
+						lastPosition: new THREE.Vector3(ip.x, ip.y, ip.z),
+						lastTime: performance.now(),
+						velocity: new THREE.Vector3(),
+						stabilityCount: 0
+					};
+					gestureData.set(src, gestureInfo);
+				}
+				
+				// Calculate velocity for more intelligent gesture recognition
+				const currentTime = performance.now();
+				const currentPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+				const deltaTime = (currentTime - gestureInfo.lastTime) / 1000; // Convert to seconds
+				
+				if (deltaTime > 0.001) { // Avoid division by zero
+					const deltaPos = currentPos.clone().sub(gestureInfo.lastPosition);
+					const currentVelocity = deltaPos.divideScalar(deltaTime);
+					
+					// Smooth velocity with exponential moving average
+					gestureInfo.velocity.lerp(currentVelocity, 0.3);
+					gestureInfo.lastPosition.copy(currentPos);
+					gestureInfo.lastTime = currentTime;
+				}
+				
+				// Check for drawing stability (low velocity indicates intentional drawing)
+				const speed = gestureInfo.velocity.length();
+				const isStable = speed < 0.5; // 50cm/s threshold for stable drawing
+				
+				if (isStable) {
+					gestureInfo.stabilityCount++;
+				} else {
+					gestureInfo.stabilityCount = Math.max(0, gestureInfo.stabilityCount - 1);
+				}
+				
+				// Enhanced pinch detection: require both proximity and stability
+				const stablePinching = pinching && (gestureInfo.stabilityCount >= 3); // Need 3 stable frames
+				
+				// Debug logging for enhanced pinch detection
+				if (enabled && (stablePinching !== prev)) {
+					console.log(`🎨 VR Draw: Hand ${src.handedness} stable pinch ${stablePinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, pressure: ${pressure.toFixed(2)}, speed: ${speed.toFixed(2)}m/s, stability: ${gestureInfo.stabilityCount})`);
 					console.log(`🎨 VR Draw: Index pos:`, ip, 'Thumb pos:', tp);
 					console.log(`🎨 VR Draw: Draw position:`, drawPos);
 				}
 				
 				// Additional debug for when enabled but no drawing occurs
-				if (enabled && pinching && !currentStroke && !prev) {
+				if (enabled && stablePinching && !currentStroke && !prev) {
 					console.log('🎨 VR Draw: About to start stroke at position:', drawPos);
 					console.log('🎨 VR Draw: Forward direction available:', !!forwardDir);
+					console.log('🎨 VR Draw: Velocity:', gestureInfo.velocity.length().toFixed(3), 'm/s');
 				}
 				// Drawing point originates slightly forward from index tip along local finger direction if orientation available
 				let drawPos = new THREE.Vector3(ip.x, ip.y, ip.z);
@@ -404,35 +519,43 @@
 				}
 				marker.visible = enabled; // Always visible when draw mode is enabled
 				marker.position.set(ip.x, ip.y, ip.z);
-				// Update marker color and size based on draw state and pinching
+				// Update marker color and size based on draw state and stable pinching
 				if (enabled) {
 					// Use bright colors for Quest Pro visibility
-					if (pinching) {
-						marker.material.color.setHex(0xff0000); // Bright red when pinching/drawing
+					if (stablePinching) {
+						marker.material.color.setHex(0xff0000); // Bright red when stable pinching/drawing
 						marker.scale.setScalar(1.5); // Bigger when actively drawing
 						marker.material.opacity = 1.0;
+						hidePreview(); // Hide preview when actively drawing
+					} else if (pinching) {
+						marker.material.color.setHex(0xffaa00); // Orange when pinching but not stable
+						marker.scale.setScalar(1.2); // Medium size when pinching
+						marker.material.opacity = 0.9;
+						showPreview(drawPos, forwardDir); // Show preview while pinching
 					} else {
 						marker.material.color.setHex(0x00ff00); // Bright green when ready to draw
 						marker.scale.setScalar(1.0); // Normal size when ready
 						marker.material.opacity = 0.8;
+						hidePreview(); // Hide preview when not pinching
 					}
 				} else {
 					marker.visible = false; // Hide markers when draw mode is off
+					hidePreview(); // Hide preview when draw mode is off
 				}
-				if (pinching && !prev){ 
-					console.log('🎨 VR Draw: Starting stroke at', drawPos); 
+				if (stablePinching && !prev){ 
+					console.log('🎨 VR Draw: Starting stroke at', drawPos, 'with pressure', pressure.toFixed(2)); 
 					console.log('🎨 VR Draw: Forward direction:', forwardDir);
-					startStroke(drawPos, forwardDir); 
+					startStroke(drawPos, forwardDir, pressure); 
 				}
-				else if (pinching && currentStroke){ 
-					console.log('🎨 VR Draw: Adding point to existing stroke:', drawPos);
-					addPoint(drawPos); 
+				else if (stablePinching && currentStroke){ 
+					console.log('🎨 VR Draw: Adding point to existing stroke:', drawPos, 'pressure:', pressure.toFixed(2));
+					addPoint(drawPos, pressure); 
 				}
-				else if (!pinching && prev){ 
+				else if (!stablePinching && prev){ 
 					console.log('🎨 VR Draw: Ending stroke'); 
 					endStroke(); 
 				}
-				triggerPrev.set(src, pinching);
+				triggerPrev.set(src, stablePinching);
 			}
 		}
 		return { 
