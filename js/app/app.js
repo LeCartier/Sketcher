@@ -846,24 +846,24 @@ export async function init() {
 										__cancelVRPrimitiveDraft();
 									}
 									
-									// Arm primitive creation state (pinch-to-scale workflow)
+									// Arm primitive creation state (simplified workflow)
 									window.__xrPrim = { 
 										tool: d.tool, 
-										stage: 'attached', // 'attached' -> 'scaling' -> 'locked' -> 'complete'
+										stage: 'preview', // 'preview' -> 'editing' -> finalize on release
 										preview: null, 
 										initialPos: null,
 										baseScale: 0.1, // Starting size in meters
-										lockedScale: null, // Scale locked when one hand releases
-										lockedPosition: null, // Position locked when scaling completes
+										editStartDistance: null, // Distance between hands when editing starts
+										editStartScale: null, // Scale when editing starts
 										leftHand: null,
 										rightHand: null,
 										leftPinching: false,
 										rightPinching: false,
-										createdAt: Date.now(), // For timeout tracking
+										createdAt: performance.now(), // For timeout tracking (using performance.now())
 										__debugLogged: false // Reset debug flag
 									};
 									console.log(`Primitive creation mode activated: ${d.tool}`);
-									console.log('Instructions: Move to position with one hand, then pinch with BOTH hands to scale');
+									console.log('Instructions: Object will follow your hand, then pinch with BOTH hands INSIDE the object to start editing');
 									// Close primitives menu to avoid interference
 									toggleVRPrimitivesMenu(false);
 								} catch{}
@@ -1156,17 +1156,26 @@ export async function init() {
 							console.warn('vrDraw not available when Draw button clicked');
 							return;
 						}
-						// Open the draw submenu without changing draw enablement state.
-						// Start/Stop is controlled from inside the submenu via its explicit toggle.
-						console.log('🎨 About to show draw submenu...');
-						xrHud.showDrawSubmenu(vrDraw);
-						// Keep Draw button highlight in sync with current active state
-						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
-						// Ensure AR edit coordination happens immediately when draw menu is opened
-						const drawActive = vrDraw.isActive && vrDraw.isActive();
-						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!drawActive); } catch {}
-						// Also make arEdit globally available for draw submenu coordination
-						try { window.arEdit = arEdit; } catch {}
+						
+						// SIMPLIFIED: Toggle VR Draw directly instead of opening submenu
+						const currentlyActive = vrDraw.isActive && vrDraw.isActive();
+						const newState = !currentlyActive;
+						
+						// Enable/disable VR Draw immediately
+						vrDraw.setEnabled(newState);
+						
+						// Update button visual state
+						try { setHudButtonActiveByLabel('Draw', newState); } catch {}
+						
+						// Coordinate with AR edit
+						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!newState); } catch {}
+						
+						// Visual feedback in VR - change fingertip marker colors
+						if (newState) {
+							// Set to bright color when drawing is active
+							vrDraw.setColor(0x00ff00); // Bright green for visibility
+							vrDraw.setLineWidth(4); // Thicker lines for Quest Pro visibility
+						}
 					} catch(e) { 
 						console.error('Draw button click error:', e);
 					} 
@@ -1501,22 +1510,23 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
-							// Default to main menu on open unless draw is already active
+							// Always default to main menu on open (no automatic draw submenu)
 							try {
-								if (nextShown) {
-									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
-									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
-									
-									// Clear primitive creation mode when HUD opens to prevent interference
-									if (window.__xrPrim) {
-										console.log('🔧 Clearing primitive creation mode on HUD open (controller menu)');
-										try { 
-											if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
-											window.__xrPrim.preview?.geometry?.dispose?.();
-											window.__xrPrim.preview?.material?.dispose?.();
-										} catch {}
-										window.__xrPrim = null;
-									}
+								if (nextShown && typeof xrHud.hideDrawSubmenu === 'function') {
+									xrHud.hideDrawSubmenu();
+								}
+								
+								// Clear primitive creation if it might interfere with HUD interactions
+								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 2000)) {
+									console.log('🔧 Clearing primitive creation mode on HUD open (controller menu) - likely accidental');
+									try { 
+										if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
+										window.__xrPrim.preview?.geometry?.dispose?.();
+										window.__xrPrim.preview?.material?.dispose?.();
+									} catch {}
+									window.__xrPrim = null;
+								} else if (nextShown && window.__xrPrim) {
+									console.log('🔧 Keeping primitive creation mode active (user likely intentional)');
 								}
 							} catch {}
 											// Temporarily force Ray mode while the HUD is shown, but only if a controller is present.
@@ -1588,22 +1598,23 @@ export async function init() {
 							xrHud3D.userData.__menuShown = nextShown;
 							xrHud3D.userData.__autoHidden = false;
 							xrHud3D.visible = nextShown;
-							// Default to main menu on open unless draw is already active
+							// Always default to main menu on open (no automatic draw submenu)
 							try {
-								if (nextShown) {
-									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
-									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
-									
-									// Clear primitive creation mode when HUD opens to prevent interference
-									if (window.__xrPrim) {
-										console.log('🔧 Clearing primitive creation mode on HUD open (hand gesture)');
-										try { 
-											if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
-											window.__xrPrim.preview?.geometry?.dispose?.();
-											window.__xrPrim.preview?.material?.dispose?.();
-										} catch {}
-										window.__xrPrim = null;
-									}
+								if (nextShown && typeof xrHud.hideDrawSubmenu === 'function') {
+									xrHud.hideDrawSubmenu();
+								}
+								
+								// Clear primitive creation if it might interfere with HUD interactions
+								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 2000)) {
+									console.log('🔧 Clearing primitive creation mode on HUD open (hand gesture) - likely accidental');
+									try { 
+										if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
+										window.__xrPrim.preview?.geometry?.dispose?.();
+										window.__xrPrim.preview?.material?.dispose?.();
+									} catch {}
+									window.__xrPrim = null;
+								} else if (nextShown && window.__xrPrim) {
+									console.log('🔧 Keeping primitive creation mode active (user likely intentional)');
 								}
 							} catch {}
 							if (nextShown){
@@ -5511,6 +5522,19 @@ const viewAxonBtn = document.getElementById('viewAxon');
 								if (window.__xrPrim) {
 									const prim = window.__xrPrim;
 									const now = performance.now();
+									
+									// Debug logging every few seconds
+									if (!prim.__lastDebug || (now - prim.__lastDebug > 3000)) {
+										console.log('🔧 Primitive creation active:', {
+											tool: prim.tool,
+											stage: prim.stage,
+											hasPreview: !!prim.preview,
+											leftHand: prim.leftHand ? `pos(${prim.leftHand.pos.x.toFixed(2)}, ${prim.leftHand.pos.y.toFixed(2)}, ${prim.leftHand.pos.z.toFixed(2)}) pinch:${prim.leftPinching}` : 'none',
+											rightHand: prim.rightHand ? `pos(${prim.rightHand.pos.x.toFixed(2)}, ${prim.rightHand.pos.y.toFixed(2)}, ${prim.rightHand.pos.z.toFixed(2)}) pinch:${prim.rightPinching}` : 'none'
+										});
+										prim.__lastDebug = now;
+									}
+									
 									// Simple timeout (60s) to auto-cancel
 									if (!prim.__createdAt) prim.__createdAt = now;
 									if (now - prim.__createdAt > 60000) {

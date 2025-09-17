@@ -18,27 +18,103 @@
 			drawGroup.name = 'VRDrawLines';
 			// Don't mark as helper - we want these tubes to be part of the scene
 			scene.add(drawGroup);
+			console.log('🎨 VR Draw: Created new drawGroup and added to scene');
+		} else {
+			console.log('🎨 VR Draw: Found existing drawGroup in scene');
 		}
+		console.log('🎨 VR Draw: DrawGroup parent after setup:', drawGroup.parent?.type || 'none');
+		console.log('🎨 VR Draw: DrawGroup visible:', drawGroup.visible);
+		console.log('🎨 VR Draw: Scene contains drawGroup:', scene.children.includes(drawGroup));
 		
 		let enabled = false;
 		let currentStroke = null;
 		let currentGeom = null;
 		let points = [];
 		const triggerPrev = new WeakMap();
-		let color = 0xff0000; // red linework
-		let lineWidth = 2; // line thickness
+		let color = 0x00ff00; // bright green for Quest Pro visibility
+		let lineWidth = 6; // thicker lines for VR visibility
 		let minSegmentDist = 0.01; // 1 cm
 		let maxPointsPerStroke = 5000;
 		let onLineCreated = null; // callback when new line is added
 		let currentStrokeId = null; // unique ID for current stroke
 		let collaborationService = null; // reference to collaboration service
-		// fingertip markers
+		// fingertip markers and status text
 		const tipMarkers = new Map(); // src -> mesh
+		let statusText = null; // floating text indicator in VR
+		
+		function createStatusText() {
+			if (!statusText) {
+				// Create a canvas for text rendering
+				const canvas = document.createElement('canvas');
+				canvas.width = 512;
+				canvas.height = 128;
+				const ctx = canvas.getContext('2d');
+				
+				// Create texture from canvas
+				const texture = new THREE.CanvasTexture(canvas);
+				
+				// Create text material
+				const textMaterial = new THREE.MeshBasicMaterial({ 
+					map: texture, 
+					transparent: true,
+					depthTest: false
+				});
+				
+				// Create text mesh
+				const textGeometry = new THREE.PlaneGeometry(0.3, 0.075); // 30cm x 7.5cm in VR
+				statusText = new THREE.Mesh(textGeometry, textMaterial);
+				statusText.renderOrder = 10000; // Render on top
+				statusText.userData.__helper = true;
+				scene.add(statusText);
+			}
+			return statusText;
+		}
+		
+		function updateStatusText(message, color = '#00ff00') {
+			const text = createStatusText();
+			const canvas = text.material.map.image;
+			const ctx = canvas.getContext('2d');
+			
+			// Clear canvas
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			
+			// Draw background
+			ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			
+			// Draw text
+			ctx.fillStyle = color;
+			ctx.font = 'bold 48px Arial';
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			ctx.fillText(message, canvas.width/2, canvas.height/2);
+			
+			// Update texture
+			text.material.map.needsUpdate = true;
+			text.visible = true;
+			
+			// Position text in front of user (approximate)
+			text.position.set(0, 1.6, -0.8); // 1.6m high, 80cm in front
+			
+			// Auto-hide after 3 seconds
+			setTimeout(() => {
+				if (text) text.visible = false;
+			}, 3000);
+		}
 		function setEnabled(v){
 			const wasEnabled = enabled;
 			enabled = !!v;
 			if (wasEnabled !== enabled) {
-				console.log('VR Draw mode:', enabled ? 'ENABLED' : 'DISABLED');
+				console.log('🎨 VR Draw mode:', enabled ? 'ENABLED' : 'DISABLED');
+				console.log('🎨 VR Draw state change timestamp:', performance.now());
+				console.log('🎨 VR Draw drawGroup children count:', drawGroup?.children?.length || 0);
+				
+				// Show visual feedback in VR
+				if (enabled) {
+					updateStatusText('VR DRAW: ON', '#00ff00');
+				} else {
+					updateStatusText('VR DRAW: OFF', '#ff0000');
+				}
 			}
 			if (!enabled) endStroke();
 		}
@@ -68,6 +144,10 @@
 			console.log('🎨 VR Draw: Starting stroke at position:', pt);
 			console.log('🎨 VR Draw: Scene children before:', scene.children.length);
 			console.log('🎨 VR Draw: DrawGroup children before:', drawGroup.children.length);
+			console.log('🎨 VR Draw: DrawGroup parent:', drawGroup.parent?.type || 'none');
+			console.log('🎨 VR Draw: DrawGroup visible:', drawGroup.visible);
+			console.log('🎨 VR Draw: Current color:', color.toString(16));
+			console.log('🎨 VR Draw: Current line width:', lineWidth);
 			
 			// Generate unique stroke ID for collaboration
 			currentStrokeId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -81,28 +161,50 @@
 			
 			// Create tube geometry instead of line geometry
 			// Convert lineWidth to tube radius (in meters) - make it quite thin for VR drawing
-			const tubeRadius = (lineWidth || 2) * 0.0005; // 0.5mm for lineWidth=1, 1mm for lineWidth=2, etc.
-			const curve = new THREE.CatmullRomCurve3(points);
-			currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
+			const tubeRadius = (lineWidth || 6) * 0.001; // 1mm for lineWidth=1, 6mm for lineWidth=6 - much thicker for Quest Pro
+			console.log('🎨 VR Draw: Creating tube with radius:', tubeRadius, 'meters');
 			
-			// Use MeshBasicMaterial for better performance and consistent appearance
+			try {
+				const curve = new THREE.CatmullRomCurve3(points);
+				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
+				console.log('🎨 VR Draw: Tube geometry created successfully');
+			} catch(error) {
+				console.error('🎨 VR Draw: Failed to create tube geometry:', error);
+				return;
+			}
+			
+			// Use MeshBasicMaterial with emissive properties for better VR visibility
 			const mat = new THREE.MeshBasicMaterial({ 
 				color, 
-				transparent: true,
-				opacity: 0.9,
+				transparent: false,
+				opacity: 1.0,
 				side: THREE.DoubleSide
 			});
+			// Add emissive glow for VR visibility
+			mat.emissive = new THREE.Color(color);
+			mat.emissiveIntensity = 0.3; // Subtle glow
+			console.log('🎨 VR Draw: Created material with color:', mat.color.getHex().toString(16));
+			
 			currentStroke = new THREE.Mesh(currentGeom, mat);
 			currentStroke.frustumCulled = false;
 			currentStroke.renderOrder = 1000; // Ensure tubes render on top
 			// Don't mark as helper - these tubes are part of the scene
 			currentStroke.name = `VRDrawTube_${currentStrokeId}`;
+			console.log('🎨 VR Draw: About to add mesh to drawGroup...');
 			drawGroup.add(currentStroke);
 			
 			console.log('🎨 VR Draw: Created tube mesh:', currentStroke.name);
 			console.log('🎨 VR Draw: DrawGroup children after:', drawGroup.children.length);
 			console.log('🎨 VR Draw: Tube added to scene successfully');
-			console.log('🎨 VR Draw: Tube radius:', (lineWidth || 2) * 0.0005, 'meters');
+			console.log('🎨 VR Draw: Tube visible:', currentStroke.visible);
+			console.log('🎨 VR Draw: Tube world position:', currentStroke.getWorldPosition(new THREE.Vector3()));
+			console.log('🎨 VR Draw: Tube bounding sphere:', currentStroke.geometry.boundingSphere);
+			console.log('🎨 VR Draw: Tube material properties:', {
+				color: mat.color.getHex().toString(16),
+				opacity: mat.opacity,
+				transparent: mat.transparent,
+				visible: mat.visible
+			});
 			
 			// Send collaboration event for stroke start
 			if (collaborationService && collaborationService.onVRDrawStart) {
@@ -140,7 +242,7 @@
 				if (currentGeom) currentGeom.dispose();
 				
 				// Create new tube geometry with all current points
-				const tubeRadius = (lineWidth || 2) * 0.0005; // Same radius calculation as in startStroke
+				const tubeRadius = (lineWidth || 6) * 0.001; // Same radius calculation as in startStroke - thicker for Quest Pro
 				const curve = new THREE.CatmullRomCurve3(points);
 				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
 				
@@ -167,16 +269,25 @@
 		}
 		function update(frame, session, referenceSpace){
 			if (!session || !frame) {
-				if (enabled) console.log('VR Draw: Update called but missing session/frame');
+				if (enabled) console.log('🎨 VR Draw: Update called but missing session/frame');
 				return;
 			}
-			
+
 			if (!enabled) {
 				// Still process update for marker management but don't draw
+				// Debug: Log every 3 seconds when disabled to confirm update is running
+				if (!update.__disabledLastLog || (performance.now() - update.__disabledLastLog > 3000)) {
+					console.log('🎨 VR Draw: Update running but DISABLED - call setEnabled(true) to activate');
+					update.__disabledLastLog = performance.now();
+				}
 				return;
 			}
-			
-			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { 
+
+			// Debug: Log when enabled and running
+			if (!update.__enabledLastLog || (performance.now() - update.__enabledLastLog > 2000)) {
+				console.log('🎨 VR Draw: Update running and ENABLED - detecting pinch gestures...');
+				update.__enabledLastLog = performance.now();
+			}			if (opts && typeof opts.shouldDraw === 'function' && !opts.shouldDraw()) { 
 				console.log('VR Draw: Blocked by shouldDraw() function');
 				endStroke(); 
 				return; 
@@ -257,11 +368,13 @@
 				if (enabled && (pinching !== prev)) {
 					console.log(`🎨 VR Draw: Hand ${src.handedness} pinch ${pinching ? 'START' : 'END'} (dist: ${(dist*100).toFixed(1)}cm, threshold: ${(PINCH_DIST*100).toFixed(1)}cm)`);
 					console.log(`🎨 VR Draw: Index pos:`, ip, 'Thumb pos:', tp);
+					console.log(`🎨 VR Draw: Draw position:`, drawPos);
 				}
 				
 				// Additional debug for when enabled but no drawing occurs
 				if (enabled && pinching && !currentStroke && !prev) {
-					console.log('🎨 VR Draw: About to start stroke...');
+					console.log('🎨 VR Draw: About to start stroke at position:', drawPos);
+					console.log('🎨 VR Draw: Forward direction available:', !!forwardDir);
 				}
 				// Drawing point originates slightly forward from index tip along local finger direction if orientation available
 				let drawPos = new THREE.Vector3(ip.x, ip.y, ip.z);
@@ -275,12 +388,12 @@
 				let marker = tipMarkers.get(src);
 				if (!marker){
 					marker = new THREE.Mesh(
-						new THREE.SphereGeometry(0.01, 12, 8), // Slightly larger for better visibility
+						new THREE.SphereGeometry(0.015, 16, 12), // Larger sphere for Quest Pro visibility
 						new THREE.MeshBasicMaterial({ 
 							color: color, 
 							depthTest: false,
 							transparent: true,
-							opacity: 0.8
+							opacity: 0.9
 						})
 					);
 					marker.userData.__helper = true;
@@ -290,22 +403,32 @@
 				}
 				marker.visible = enabled; // Always visible when draw mode is enabled
 				marker.position.set(ip.x, ip.y, ip.z);
-				// Update marker color based on draw state and pinching
+				// Update marker color and size based on draw state and pinching
 				if (enabled) {
-					// Use current drawing color when pinching, slightly dimmed when not pinching
-					const currentColor = pinching ? color : (color & 0x888888); // Dim when not actively drawing
-					marker.material.color.setHex(currentColor);
-					marker.material.opacity = pinching ? 1.0 : 0.6; // More opaque when pinching
+					// Use bright colors for Quest Pro visibility
+					if (pinching) {
+						marker.material.color.setHex(0xff0000); // Bright red when pinching/drawing
+						marker.scale.setScalar(1.5); // Bigger when actively drawing
+						marker.material.opacity = 1.0;
+					} else {
+						marker.material.color.setHex(0x00ff00); // Bright green when ready to draw
+						marker.scale.setScalar(1.0); // Normal size when ready
+						marker.material.opacity = 0.8;
+					}
 				} else {
 					marker.visible = false; // Hide markers when draw mode is off
 				}
 				if (pinching && !prev){ 
-					console.log('VR Draw: Starting stroke at', drawPos); 
+					console.log('🎨 VR Draw: Starting stroke at', drawPos); 
+					console.log('🎨 VR Draw: Forward direction:', forwardDir);
 					startStroke(drawPos, forwardDir); 
 				}
-				else if (pinching && currentStroke){ addPoint(drawPos); }
+				else if (pinching && currentStroke){ 
+					console.log('🎨 VR Draw: Adding point to existing stroke:', drawPos);
+					addPoint(drawPos); 
+				}
 				else if (!pinching && prev){ 
-					console.log('VR Draw: Ending stroke'); 
+					console.log('🎨 VR Draw: Ending stroke'); 
 					endStroke(); 
 				}
 				triggerPrev.set(src, pinching);
