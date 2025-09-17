@@ -1841,14 +1841,19 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               
               // Debug logging for button targeting
               const buttonLabel = m.userData?.__hudButton?.label || 'unknown';
-              console.log('🎯 Button candidate:', {
-                label: buttonLabel,
-                depth: depth,
-                dist: dist,
-                inBounds: { inX, inY },
-                localPos: { x: lp.x, y: lp.y },
-                penetration: pen
-              });
+              
+              // Only log for Draw button to avoid spam
+              if (buttonLabel === 'Draw') {
+                console.log('🎯 Draw Button candidate:', {
+                  label: buttonLabel,
+                  depth: depth,
+                  dist: dist,
+                  inBounds: { inX, inY },
+                  localPos: { x: lp.x.toFixed(3), y: lp.y.toFixed(3), z: lp.z.toFixed(3) },
+                  penetration: pen,
+                  fingerWorldPos: idxPos ? `(${idxPos.x.toFixed(3)}, ${idxPos.y.toFixed(3)}, ${idxPos.z.toFixed(3)})` : 'none'
+                });
+              }
               
               if (!best || depth > best.depth + 1e-6 || (Math.abs(depth - best.depth) < 1e-6 && dist < best.dist)){
                 best = { m, st, depth, dist };
@@ -1909,7 +1914,8 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
                       timestamp: globalNow,
                       globalCooldownPassed: globalNow >= globalClickCooldownUntil,
                       crossingCheckPassed: crossingCheck,
-                      armed: true
+                      armed: true,
+                      rightHandPos: idxPos ? `(${idxPos.x.toFixed(3)}, ${idxPos.y.toFixed(3)}, ${idxPos.z.toFixed(3)})` : 'none'
                     });
                     if (typeof handler === 'function') { 
                       try { 

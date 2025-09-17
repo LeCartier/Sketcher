@@ -108,6 +108,7 @@
 				console.log('🎨 VR Draw mode:', enabled ? 'ENABLED' : 'DISABLED');
 				console.log('🎨 VR Draw state change timestamp:', performance.now());
 				console.log('🎨 VR Draw drawGroup children count:', drawGroup?.children?.length || 0);
+				console.log('🎨 VR Draw setEnabled called from:', new Error().stack?.split('\n')[2]?.trim() || 'unknown');
 				
 				// Show visual feedback in VR
 				if (enabled) {

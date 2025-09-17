@@ -1151,31 +1151,26 @@ export async function init() {
 						__lastDrawBtnActivation = nowTs;
 						console.log('🎨 Draw button clicked! vrDraw:', !!vrDraw, 'isActive:', vrDraw?.isActive?.());
 						console.log('🎨 Draw button click timestamp:', nowTs);
-						console.log('🎨 Draw button click stack trace:', new Error().stack?.split('\n').slice(1, 5));
+						console.log('🎨 Draw button call stack:', new Error().stack?.split('\n').slice(1, 8));
+						console.log('🎨 Draw button trigger context - this should ONLY happen via HUD button press!');
 						if (!vrDraw) {
 							console.warn('vrDraw not available when Draw button clicked');
 							return;
 						}
 						
-						// SIMPLIFIED: Toggle VR Draw directly instead of opening submenu
-						const currentlyActive = vrDraw.isActive && vrDraw.isActive();
-						const newState = !currentlyActive;
+						// Open the draw submenu - user must click Start to enable drawing
+						console.log('🎨 About to show draw submenu...');
+						xrHud.showDrawSubmenu(vrDraw);
 						
-						// Enable/disable VR Draw immediately
-						vrDraw.setEnabled(newState);
+						// Keep Draw button highlight in sync with current active state
+						try { setHudButtonActiveByLabel('Draw', vrDraw.isActive && vrDraw.isActive()); } catch {}
 						
-						// Update button visual state
-						try { setHudButtonActiveByLabel('Draw', newState); } catch {}
+						// Ensure AR edit coordination happens immediately when draw menu is opened
+						const drawActive = vrDraw.isActive && vrDraw.isActive();
+						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!drawActive); } catch {}
 						
-						// Coordinate with AR edit
-						try { if (arEdit && arEdit.setEnabled) arEdit.setEnabled(!newState); } catch {}
-						
-						// Visual feedback in VR - change fingertip marker colors
-						if (newState) {
-							// Set to bright color when drawing is active
-							vrDraw.setColor(0x00ff00); // Bright green for visibility
-							vrDraw.setLineWidth(4); // Thicker lines for Quest Pro visibility
-						}
+						// Also make arEdit globally available for draw submenu coordination
+						try { window.arEdit = arEdit; } catch {}
 					} catch(e) { 
 						console.error('Draw button click error:', e);
 					} 
