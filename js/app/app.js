@@ -1506,6 +1506,17 @@ export async function init() {
 								if (nextShown) {
 									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
 									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
+									
+									// Clear primitive creation mode when HUD opens to prevent interference
+									if (window.__xrPrim) {
+										console.log('🔧 Clearing primitive creation mode on HUD open (controller menu)');
+										try { 
+											if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
+											window.__xrPrim.preview?.geometry?.dispose?.();
+											window.__xrPrim.preview?.material?.dispose?.();
+										} catch {}
+										window.__xrPrim = null;
+									}
 								}
 							} catch {}
 											// Temporarily force Ray mode while the HUD is shown, but only if a controller is present.
@@ -1582,6 +1593,17 @@ export async function init() {
 								if (nextShown) {
 									const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
 									if (!drawActive && typeof xrHud.hideDrawSubmenu === 'function') xrHud.hideDrawSubmenu();
+									
+									// Clear primitive creation mode when HUD opens to prevent interference
+									if (window.__xrPrim) {
+										console.log('🔧 Clearing primitive creation mode on HUD open (hand gesture)');
+										try { 
+											if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
+											window.__xrPrim.preview?.geometry?.dispose?.();
+											window.__xrPrim.preview?.material?.dispose?.();
+										} catch {}
+										window.__xrPrim = null;
+									}
 								}
 							} catch {}
 							if (nextShown){

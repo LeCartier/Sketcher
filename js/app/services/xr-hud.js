@@ -1784,10 +1784,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
           const ref = (typeof getLocalSpace === 'function' ? getLocalSpace() : null) || null;
           let idxPos = null;
           
-          // Skip finger interaction completely if primitive creation mode is active
+          // Block Draw button clicks during primitive creation, but allow other buttons
+          let blockDrawButton = false;
           if (typeof window !== 'undefined' && window.__xrPrim) {
-            fingerHover = null;
-            return; // Skip all finger interaction processing
+            blockDrawButton = true;
+            console.log('🔧 Primitive creation active - blocking Draw button interactions only');
           }
           
           // Detect hand crossing to prevent state confusion
@@ -1896,24 +1897,31 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
                 if (armed) {
                   const buttonData = m.userData?.__hudButton;
                   const handler = buttonData?.onClick;
-                  console.log('🎯 Button clicked:', {
-                    label: buttonData?.label,
-                    handlerType: typeof handler,
-                    timestamp: globalNow,
-                    globalCooldownPassed: globalNow >= globalClickCooldownUntil,
-                    crossingCheckPassed: crossingCheck,
-                    armed: true
-                  });
-                  if (typeof handler === 'function') { 
-                    try { 
-                      handler(); 
-                    } catch(e) {
-                      console.error('🎯 Button click handler error:', e);
-                    } 
+                  
+                  // Block Draw button specifically during primitive creation
+                  if (blockDrawButton && buttonData?.label === 'Draw') {
+                    console.log('🚫 Draw button click blocked - primitive creation active');
+                    st._cooldownUntil = globalNow + 1000; // Longer cooldown to prevent retry spam
+                  } else {
+                    console.log('🎯 Button clicked:', {
+                      label: buttonData?.label,
+                      handlerType: typeof handler,
+                      timestamp: globalNow,
+                      globalCooldownPassed: globalNow >= globalClickCooldownUntil,
+                      crossingCheckPassed: crossingCheck,
+                      armed: true
+                    });
+                    if (typeof handler === 'function') { 
+                      try { 
+                        handler(); 
+                      } catch(e) {
+                        console.error('🎯 Button click handler error:', e);
+                      } 
+                    }
+                    st._cooldownUntil = now + 180; // ms
+                    // Trigger flash overlay
+                    try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
                   }
-                  st._cooldownUntil = now + 180; // ms
-                  // Trigger flash overlay
-                  try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
                 } else {
                   // If a press attempt occurs before arming, postpone arming further slightly
                   hudArmEligibleAt = Math.max(hudArmEligibleAt, globalNow + 250);
@@ -2033,6 +2041,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     
     if (drawSubmenuActive) {
       console.log('🎨 Draw submenu already active, skipping...');
+      return;
+    }
+
+    // Block draw submenu during primitive creation
+    if (typeof window !== 'undefined' && window.__xrPrim) {
+      console.log('🚫 Draw submenu blocked - primitive creation active');
       return;
     }
 
