@@ -979,47 +979,51 @@ export async function init() {
 							
 							const btn = xrHud.createOBJ3DButton(preview, displayName, ()=>{
 								try {
-									// Place object in VR when clicked
-									const handPositions = [];
+									// Enhanced equipment placement workflow similar to primitives
+									console.log(`📦 Starting equipment placement for: ${objData.filename}`);
 									
-									// Try to get hand positions for placement
-									const frame = renderer?.xr?.getFrame?.();
-									const session = renderer?.xr?.getSession?.();
-									if (frame && session) {
-										const localSpace = xrLocalSpace;
-										if (localSpace) {
-											for (const source of session.inputSources) {
-												if (source.hand) {
-													const pose = frame.getPose(source.targetRaySpace, localSpace);
-													if (pose) {
-														handPositions.push(new THREE.Vector3().setFromMatrixPosition(pose.transform.matrix));
-													}
-												}
+									// Cancel any active primitive creation
+									if (window.__xrPrim) {
+										console.log('Cancelling primitive creation to start equipment placement');
+										try {
+											if (window.__xrPrim.preview && window.__xrPrim.preview.parent) {
+												window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
+												window.__xrPrim.preview.geometry?.dispose?.();
+												window.__xrPrim.preview.material?.dispose?.();
 											}
-										}
+										} catch {}
+										window.__xrPrim = null;
 									}
 									
-									// Determine placement position
-									let placementPos = new THREE.Vector3(0, 0, -1); // Default 1m in front
+									// Arm equipment placement state
+									window.__xrEquip = {
+										objData: objData,
+										filename: objData.filename,
+										stage: 'attached', // 'attached' -> 'scaling' -> 'locked' -> 'complete'  
+										preview: null,
+										originalPreview: preview, // Keep reference to button preview
+										initialPos: null,
+										baseScale: 1.0, // Equipment starts at full scale
+										currentScale: 1.0,
+										lockedScale: null,
+										lockedPosition: null,
+										leftHand: null,
+										rightHand: null,
+										leftPinching: false,
+										rightPinching: false,
+										createdAt: Date.now(),
+										lastActivityTime: Date.now(),
+										scalingMode: null, // 'two-handed' or 'single-handed'
+										__debugLogged: false
+									};
 									
-									if (handPositions.length > 0) {
-										// Use average hand position if available
-										placementPos = handPositions.reduce((sum, pos) => sum.add(pos), new THREE.Vector3())
-											.divideScalar(handPositions.length);
-										// Move slightly away from hands
-										placementPos.add(new THREE.Vector3(0, -0.2, 0.3));
-									}
+									console.log(`Equipment placement mode activated: ${objData.filename}`);
+									console.log('📋 Instructions: Move to position, then pinch with hands to scale');
 									
-									// Place the object in the scene
-									const placedObject = objLibrary.placeObjectInScene(objData, placementPos);
-									if (placedObject) {
-										console.log(`Placed ${objData.filename} at:`, placementPos);
-									}
-									
-									// Close equip menu
+									// Close equip menu to avoid interference  
 									toggleVREquipMenu(false);
 								} catch(error) {
-									console.error(`Failed to place object ${objData.filename}:`, error);
+									console.error(`Failed to start equipment placement for ${objData.filename}:`, error);
 								}
 							});
 							
@@ -5360,14 +5364,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 						if (!window.__xrPinchPrev) window.__xrPinchPrev = new WeakMap();
 						const sources = session.inputSources ? Array.from(session.inputSources) : [];
 						for (const src of sources){
-							// NEW: Two-handed pinch-to-scale primitive creation system
+							// Enhanced VR Primitive creation with robust hand tracking and pinch-to-scale
 							if (window.__xrPrim && (src.handedness === 'left' || src.handedness === 'right')) {
 								const prim = window.__xrPrim;
 								
-								// Get hand tracking data for this hand
+								// Get hand tracking data for this hand with improved robustness
 								let handPos = null;
 								let isPinching = false;
+								let hasHandTracking = false;
 								
+								// Try hand tracking first (preferred method)
 								if (src.hand) {
 									try {
 										const idxJ = src.hand.get && src.hand.get('index-finger-tip');
@@ -5377,29 +5383,39 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										if (!ref) {
 											try { ref = renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace(); } catch{}
 										}
-										// Skip async requestReferenceSpace to avoid await in sync update; rely on earlier fallbacks
 										
-										if (idxJ && frame.getJointPose) {
+										if (idxJ && thJ && frame.getJointPose) {
 											const idxPose = frame.getJointPose(idxJ, ref);
-											if (idxPose && idxPose.transform && idxPose.transform.position) {
-												const ip = idxPose.transform.position;
-												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+											const thumbPose = frame.getJointPose(thJ, ref);
+											
+											if (idxPose && thumbPose && idxPose.transform && thumbPose.transform && 
+												idxPose.transform.position && thumbPose.transform.position) {
 												
-												// Check for pinch gesture with more lenient threshold for primitive mode
-												if (thJ) {
-													const thumbPose = frame.getJointPose(thJ, ref);
-													if (thumbPose && thumbPose.transform && thumbPose.transform.position) {
-														const tp = thumbPose.transform.position;
-														const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
-														isPinching = dist < 0.045; // More lenient 4.5cm for primitive creation
-													}
+												const ip = idxPose.transform.position;
+												const tp = thumbPose.transform.position;
+												
+												// Use index fingertip as hand position
+												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+												hasHandTracking = true;
+												
+												// Improved pinch detection with hysteresis to prevent flicker
+												const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
+												const wasAlreadyPinching = prim[`${src.handedness}Pinching`] || false;
+												
+												// Use different thresholds for start/stop to prevent bouncing
+												if (wasAlreadyPinching) {
+													isPinching = dist < 0.055; // Release at 5.5cm
+												} else {
+													isPinching = dist < 0.040; // Start at 4.0cm
 												}
 											}
 										}
-									} catch(e) {}
+									} catch(e) {
+										console.warn(`Hand tracking failed for ${src.handedness}:`, e);
+									}
 								}
 								
-								// Fallback to controller if hand tracking not available
+								// Fallback to controller if hand tracking not available or failed
 								if (!handPos && src.gamepad) {
 									try {
 										const raySpace = src.targetRaySpace || src.gripSpace;
@@ -5409,8 +5425,20 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											if (pose && pose.transform && pose.transform.position) {
 												const p = pose.transform.position;
 												handPos = new THREE.Vector3(p.x, p.y, p.z);
-												// For controllers, use trigger as pinch
-												isPinching = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+												hasHandTracking = false;
+												
+												// For controllers, use trigger as pinch with debouncing
+												const triggerPressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+												const prevTrigger = prim.__triggerPrev && prim.__triggerPrev.get(src);
+												
+												// Only change pinch state on trigger edge changes
+												if (triggerPressed !== prevTrigger) {
+													isPinching = triggerPressed;
+													if (!prim.__triggerPrev) prim.__triggerPrev = new WeakMap();
+													prim.__triggerPrev.set(src, triggerPressed);
+												} else {
+													isPinching = prim[`${src.handedness}Pinching`] || false;
+												}
 											}
 										}
 									} catch(e) {
@@ -5418,49 +5446,80 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									}
 								}
 								
-								// Debug: Log when we detect a hand/controller
-								if (handPos && !prim[`${src.handedness}Hand`]) {
-									console.log(`Primitive mode: Detected ${src.handedness} ${src.hand ? 'hand' : 'controller'} at`, handPos);
-								}
-								
-								// Store hand data with debug logging
+								// Store hand data if we got a valid position
 								if (handPos) {
-									const handData = { pos: handPos, pinching: isPinching };
+									const handData = { 
+										pos: handPos, 
+										pinching: isPinching,
+										hasHandTracking: hasHandTracking,
+										timestamp: performance.now()
+									};
+									
 									if (src.handedness === 'left') {
 										prim.leftHand = handData;
 									} else if (src.handedness === 'right') {
 										prim.rightHand = handData;
 									}
 									
-									// Debug: Log hand detection for debugging only when state changes
-									const handKey = `${src.handedness}Pinching`;
-									if (!prim[handKey] && isPinching) {
-										console.log(`${src.handedness} hand pinching START in primitive creation mode`);
-									} else if (prim[handKey] && !isPinching) {
-										console.log(`${src.handedness} hand pinching END in primitive creation mode`);
+									// Debug logging for pinch state changes
+									const prevPinching = prim[`${src.handedness}Pinching`] || false;
+									if (prevPinching !== isPinching) {
+										console.log(`🔷 ${src.handedness} ${hasHandTracking ? 'hand' : 'controller'} pinch ${isPinching ? 'START' : 'END'} in primitive mode`);
 									}
-									prim[handKey] = isPinching;
+									prim[`${src.handedness}Pinching`] = isPinching;
 								}
 							}
 							
-							// Process primitive creation workflow after collecting hand data
+							// Enhanced primitive creation workflow processing
 							if (window.__xrPrim) {
 								const prim = window.__xrPrim;
 								
 								// Block all other VR interactions during primitive creation
 								if (typeof window.__xrHudHover !== 'undefined') window.__xrHudHover = false;
 								
-								// Debug: Log current state
-								if (!prim.__debugLogged || (performance.now() - prim.__lastLog > 2000)) {
+								// Timeout safety - auto-cancel primitive creation after 60 seconds of inactivity
+								const TIMEOUT_MS = 60000;
+								if (!prim.lastActivityTime) prim.lastActivityTime = performance.now();
+								
+								const now = performance.now();
+								if (now - prim.lastActivityTime > TIMEOUT_MS) {
+									console.log('🕐 Primitive creation timed out after 60 seconds - auto-cancelling');
+									try {
+										if (prim.preview && prim.preview.parent) {
+											prim.preview.parent.remove(prim.preview);
+											prim.preview.geometry?.dispose?.();
+											prim.preview.material?.dispose?.();
+										}
+									} catch {}
+									window.__xrPrim = null;
+									continue;
+								}
+								
+								// Update activity time when hands are detected
+								if (prim.leftHand || prim.rightHand) {
+									prim.lastActivityTime = now;
+								}
+								
+								// Debug logging with less spam
+								if (!prim.__lastDebugLog || (now - prim.__lastDebugLog > 3000)) {
 									console.log('🔷 Primitive creation active:', prim.tool, 'stage:', prim.stage);
-									console.log('🔷 Available hands:', prim.leftHand ? 'left' : 'none', prim.rightHand ? 'right' : 'none');
+									if (prim.leftHand || prim.rightHand) {
+										console.log('🔷 Hands available:', 
+											prim.leftHand ? `left(${prim.leftHand.hasHandTracking ? 'tracked' : 'controller'})` : 'none',
+											prim.rightHand ? `right(${prim.rightHand.hasHandTracking ? 'tracked' : 'controller'})` : 'none'
+										);
+									}
 									console.log('🔷 Preview exists:', !!prim.preview);
-									prim.__debugLogged = true;
-									prim.__lastLog = performance.now();
+									prim.__lastDebugLog = now;
 								}
 								
 								// Need at least one hand for basic functionality
 								if (!prim.rightHand && !prim.leftHand) {
+									// Clear stale hand data if hands haven't been seen for 2 seconds
+									if (!prim.__noHandsWarning || (now - prim.__noHandsWarning > 2000)) {
+										console.log('🔷 No hands detected in primitive mode - move controllers or hands into view');
+										prim.__noHandsWarning = now;
+									}
 									continue;
 								}
 								
@@ -5472,144 +5531,643 @@ const viewAxonBtn = document.getElementById('viewAxon');
 									if (!attachHand) continue;
 									
 									if (!prim.preview) {
-										// Create initial primitive at small size with semi-transparent material for preview
-										console.log('Creating primitive preview for tool:', prim.tool);
+										// Create initial primitive preview with improved material setup
+										console.log('🔧 Creating primitive preview for tool:', prim.tool);
 										const initialScale = prim.baseScale;
 										const previewMat = activeMat.clone();
 										previewMat.transparent = true;
-										previewMat.opacity = 0.6;
+										previewMat.opacity = 0.7;
 										previewMat.wireframe = false;
+										previewMat.depthTest = true;
+										previewMat.depthWrite = false; // Allow X-ray effect
 										
-										if (prim.tool === 'box') prim.preview = new THREE.Mesh(new THREE.BoxGeometry(initialScale, initialScale, initialScale), previewMat);
-										else if (prim.tool === 'sphere') prim.preview = new THREE.Mesh(new THREE.SphereGeometry(initialScale/2, 20, 16), previewMat);
-										else if (prim.tool === 'cylinder') prim.preview = new THREE.Mesh(new THREE.CylinderGeometry(initialScale/2, initialScale/2, initialScale, 20), previewMat);
-										else if (prim.tool === 'cone') prim.preview = new THREE.Mesh(new THREE.ConeGeometry(initialScale/2, initialScale, 20), previewMat);
+										let geometry = null;
+										if (prim.tool === 'box') geometry = new THREE.BoxGeometry(initialScale, initialScale, initialScale);
+										else if (prim.tool === 'sphere') geometry = new THREE.SphereGeometry(initialScale/2, 16, 12);
+										else if (prim.tool === 'cylinder') geometry = new THREE.CylinderGeometry(initialScale/2, initialScale/2, initialScale, 16);
+										else if (prim.tool === 'cone') geometry = new THREE.ConeGeometry(initialScale/2, initialScale, 16);
 										
-										if (prim.preview) {
+										if (geometry) {
+											prim.preview = new THREE.Mesh(geometry, previewMat);
 											prim.preview.userData.__helper = true;
 											prim.preview.userData.__primitivePreview = true;
+											prim.preview.renderOrder = 100; // Render on top
 											scene.add(prim.preview);
 											prim.initialPos = attachHand.pos.clone();
-											console.log('Primitive preview created and added to scene');
-											
-											// Add visual instruction hint
-											console.log('Primitive mode: Move to position, then pinch with BOTH hands to scale');
+											console.log('✅ Primitive preview created and added to scene');
+											console.log('📋 Next: Move to desired position, then pinch with BOTH hands to start scaling');
+										} else {
+											console.error('❌ Failed to create geometry for tool:', prim.tool);
+											window.__xrPrim = null;
+											continue;
 										}
 									}
 									
-									// Update preview position to follow primary hand
+									// Update preview position to follow primary hand smoothly
 									if (prim.preview && attachHand) {
-										prim.preview.position.copy(attachHand.pos);
+										// Smooth following with slight lag to reduce jitter
+										const targetPos = attachHand.pos;
+										const currentPos = prim.preview.position;
+										const lerpFactor = 0.8; // Adjust for responsiveness vs stability
+										currentPos.lerp(targetPos, lerpFactor);
 									}
 									
 									// Check if both hands are pinching to start scaling
-									if (prim.leftHand && prim.rightHand && prim.leftHand.pinching && prim.rightHand.pinching) {
-										console.log('Both hands pinching - starting scaling phase');
+									const bothHandsPinching = prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching;
+									// Allow single-hand scaling for users with only one controller or hand tracked
+									const singleHandScaling = (!prim.leftHand && prim.rightHand && prim.rightPinching) || 
+																(!prim.rightHand && prim.leftHand && prim.leftPinching);
+									
+									if (bothHandsPinching) {
+										console.log('👏 Both hands pinching - starting two-handed scaling phase');
 										prim.stage = 'scaling';
 										prim.initialDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
 										prim.initialScale = prim.baseScale;
+										prim.scalingMode = 'two-handed';
 										
-										// Make preview more opaque during scaling
+										// Visual feedback for scaling start
+										if (prim.preview && prim.preview.material) {
+											prim.preview.material.opacity = 0.9;
+											prim.preview.material.emissive.setHex(0x004444); // Slight cyan glow
+										}
+									} else if (singleHandScaling) {
+										console.log('👆 Single hand pinching - starting single-handed scaling mode');
+										prim.stage = 'scaling';
+										prim.initialScale = prim.baseScale;
+										prim.scalingMode = 'single-handed';
+										prim.scaleStartTime = now;
+										
+										// Visual feedback for single-hand scaling
 										if (prim.preview && prim.preview.material) {
 											prim.preview.material.opacity = 0.8;
+											prim.preview.material.emissive.setHex(0x442200); // Slight orange glow
 										}
 									}
 								} 
 								else if (prim.stage === 'scaling') {
-									// Stage 2: Both hands pinching - scale based on hand distance
-									if (prim.leftHand && prim.leftHand.pinching && prim.rightHand && prim.rightHand.pinching) {
-										const currentDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
-										const scaleFactor = Math.max(0.1, Math.min(5.0, currentDistance / prim.initialDistance)); // Clamp scale
-										const newScale = prim.initialScale * scaleFactor;
-										
-										// Update primitive scale and position (center between hands)
-										const centerPos = new THREE.Vector3()
-											.addVectors(prim.leftHand.pos, prim.rightHand.pos)
-											.multiplyScalar(0.5);
-										
-										if (prim.preview) {
-											prim.preview.position.copy(centerPos);
+									// Stage 2: Scaling phase - different logic for two-handed vs single-handed
+									if (prim.scalingMode === 'two-handed') {
+										// Two-handed scaling: scale based on hand distance
+										if (prim.leftHand && prim.leftPinching && prim.rightHand && prim.rightPinching) {
+											const currentDistance = prim.leftHand.pos.distanceTo(prim.rightHand.pos);
+											const scaleFactor = Math.max(0.1, Math.min(10.0, currentDistance / prim.initialDistance));
+											const newScale = prim.initialScale * scaleFactor;
 											
-											// Use scale transform instead of geometry recreation for better performance
-											const scaleFactor3D = newScale / prim.baseScale;
-											prim.preview.scale.set(scaleFactor3D, scaleFactor3D, scaleFactor3D);
+											// Update primitive scale and position (center between hands)
+											const centerPos = new THREE.Vector3()
+												.addVectors(prim.leftHand.pos, prim.rightHand.pos)
+												.multiplyScalar(0.5);
+											
+											if (prim.preview) {
+												prim.preview.position.copy(centerPos);
+												const scale3D = newScale / prim.baseScale;
+												prim.preview.scale.set(scale3D, scale3D, scale3D);
+												prim.currentScale = newScale;
+											}
+										} else {
+											// One hand stopped pinching - lock the scale
+											console.log('✋ Hand released - locking two-handed scale');
+											// Lock primitive scale and position
+											prim.stage = 'locked';
+											prim.lockedScale = prim.preview ? prim.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+											prim.lockedPosition = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+											
+											// Visual feedback for locked state
+											if (prim.preview && prim.preview.material) {
+												prim.preview.material.opacity = 1.0;
+												prim.preview.material.wireframe = true; // Show as wireframe when locked
+												prim.preview.material.emissive.setHex(0x000000); // Remove scaling glow
+											}
+											
+											console.log('🔒 Primitive locked - pinch again to finalize');
 										}
-									} else {
-										// One hand stopped pinching - lock the scale
-										console.log('One hand released - locking scale and position');
-										prim.stage = 'locked';
-										prim.lockedScale = prim.preview ? prim.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
-										prim.lockedPosition = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+									} else if (prim.scalingMode === 'single-handed') {
+										// Single-handed scaling: time-based or gesture-based
+										const activeHand = prim.rightHand || prim.leftHand;
+										const stillPinching = (prim.rightHand && prim.rightPinching) || (prim.leftHand && prim.leftPinching);
 										
-										// Make preview fully opaque when locked
-										if (prim.preview && prim.preview.material) {
-											prim.preview.material.opacity = 1.0;
-											prim.preview.material.wireframe = true; // Show as wireframe when locked
+										if (activeHand && stillPinching) {
+											// Scale based on vertical hand movement or time held
+											const timeHeld = (now - prim.scaleStartTime) / 1000; // seconds
+											const scaleFactor = 1.0 + (timeHeld * 0.3); // Grow over time
+											const clampedScale = Math.max(0.1, Math.min(5.0, scaleFactor));
+											const newScale = prim.initialScale * clampedScale;
+											
+											if (prim.preview) {
+												prim.preview.position.copy(activeHand.pos);
+												const scale3D = newScale / prim.baseScale;
+												prim.preview.scale.set(scale3D, scale3D, scale3D);
+												prim.currentScale = newScale;
+											}
+										} else {
+											// Hand stopped pinching - lock the scale
+											console.log('✋ Hand released - locking single-handed scale');
+											// Lock primitive scale and position
+											prim.stage = 'locked';
+											prim.lockedScale = prim.preview ? prim.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+											prim.lockedPosition = prim.preview ? prim.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+											
+											// Visual feedback for locked state
+											if (prim.preview && prim.preview.material) {
+												prim.preview.material.opacity = 1.0;
+												prim.preview.material.wireframe = true; // Show as wireframe when locked
+												prim.preview.material.emissive.setHex(0x000000); // Remove scaling glow
+											}
+											
+											console.log('🔒 Primitive locked - pinch again to finalize');
 										}
-										
-										console.log('Primitive locked - pinch with BOTH hands again to finalize');
 									}
 								}
 								else if (prim.stage === 'locked') {
-									// Stage 3: Scale is locked, wait for both hands to pinch simultaneously again to finalize
-									const bothHandsPinching = prim.leftHand && prim.rightHand && prim.leftHand.pinching && prim.rightHand.pinching;
-									// Allow single-hand finalize fallback if user only has controllers or one hand tracked
-									const singleHand = (prim.rightHand && prim.rightHand.pinching && !prim.leftHand) || (prim.leftHand && prim.leftHand.pinching && !prim.rightHand);
-									// Timeout safety: auto-finalize after 15s in locked state if user keeps moving but never pinches again
-									if (!prim.__lockedAt) prim.__lockedAt = performance.now();
-									const lockedDuration = performance.now() - prim.__lockedAt;
-
-									if (bothHandsPinching || singleHand || lockedDuration > 15000) {
-										if (lockedDuration > 15000) console.log('⏰ Primitive finalize timeout reached - auto-finalizing');
-										else if (singleHand) console.log('👆 Single-hand pinch finalize detected');
-										else console.log('👏 Both hands pinching again - finalizing primitive');
-										// Finalize primitive
+									// Stage 3: Scale locked, wait for confirmation to finalize
+									const bothHandsPinching = prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching;
+									const singleHandPinching = (!prim.leftHand && prim.rightHand && prim.rightPinching) || 
+																 (!prim.rightHand && prim.leftHand && prim.leftPinching);
+									
+									// Auto-finalize timeout: auto-finalize after 10 seconds in locked state
+									if (!prim.__lockedAt) prim.__lockedAt = now;
+									const lockedDuration = now - prim.__lockedAt;
+									
+									// Keep primitive at locked position/scale, allow repositioning
+									const activeHand = prim.rightHand || prim.leftHand;
+									if (prim.preview && activeHand && prim.lockedScale) {
+										// Smooth repositioning
+										prim.preview.position.lerp(activeHand.pos, 0.6);
+										prim.preview.scale.copy(prim.lockedScale);
+										prim.lockedPosition = prim.preview.position.clone();
+									}
+									
+									if (bothHandsPinching || singleHandPinching || lockedDuration > 10000) {
+										if (lockedDuration > 10000) {
+											console.log('⏰ Primitive auto-finalizing after 10 seconds');
+										} else if (singleHandPinching) {
+											console.log('👆 Single-hand pinch - finalizing primitive');
+										} else {
+											console.log('👏 Both hands pinching - finalizing primitive');
+										}
+										
+										// Finalize the primitive
 										try {
 											if (prim.preview) {
 												const nameBase = prim.tool.charAt(0).toUpperCase() + prim.tool.slice(1);
-												// Create final geometry with locked scale
-												let finalGeom = null;
-												const scale = prim.lockedScale.x; // Use uniform scale
-												console.log('🔧 Creating final geometry with scale:', scale);
-												if (prim.tool === 'box') finalGeom = new THREE.BoxGeometry(prim.baseScale * scale, prim.baseScale * scale, prim.baseScale * scale);
-												else if (prim.tool === 'sphere') finalGeom = new THREE.SphereGeometry(prim.baseScale * scale / 2, 20, 16);
-												else if (prim.tool === 'cylinder') finalGeom = new THREE.CylinderGeometry(prim.baseScale * scale / 2, prim.baseScale * scale / 2, prim.baseScale * scale, 20);
-												else if (prim.tool === 'cone') finalGeom = new THREE.ConeGeometry(prim.baseScale * scale / 2, prim.baseScale * scale, 20);
-												if (finalGeom) {
-													const finalMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || material);
-													const finalPrimitive = new THREE.Mesh(finalGeom, finalMat);
-													finalPrimitive.position.copy(prim.lockedPosition || prim.preview.position);
-													finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
-													console.log('📍 Final primitive position:', finalPrimitive.position);
-													console.log('🎯 About to add to scene...');
-													addObjectToScene(finalPrimitive, { select: false });
-													if (saveSessionDraftSoon) saveSessionDraftSoon();
-													console.log('✅ Primitive created successfully:', finalPrimitive.name);
-													console.log('🔢 Total objects in scene:', objects.length);
-												} else {
-													console.error('❌ Failed to create final geometry for tool:', prim.tool);
-												}
+												
+												// Use the current preview mesh and transform it into a real object
+												// This preserves the exact scaling and positioning the user achieved
+												const finalMat = (window.sketcherMaterialsAPI?.getActiveSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || 
+																window.sketcherMaterialsAPI?.getProceduralSharedMaterial?.(window.sketcherMaterialsAPI?.getCurrentStyle?.()) || 
+																material);
+												
+												// Clone the preview geometry and scale it properly
+												const previewGeometry = prim.preview.geometry;
+												const finalGeometry = previewGeometry.clone();
+												const finalPrimitive = new THREE.Mesh(finalGeometry, finalMat);
+												
+												// Apply the preview's transform (position and scale)
+												finalPrimitive.position.copy(prim.preview.position);
+												finalPrimitive.scale.copy(prim.preview.scale);
+												finalPrimitive.name = nameBase + ' ' + (objects.length + 1);
+												
+												// Apply scale to geometry to make it permanent
+												finalPrimitive.geometry.applyMatrix4(new THREE.Matrix4().makeScale(
+													finalPrimitive.scale.x, 
+													finalPrimitive.scale.y, 
+													finalPrimitive.scale.z
+												));
+												finalPrimitive.scale.set(1, 1, 1); // Reset scale after applying to geometry
+												
+												console.log('📍 Finalizing primitive:', finalPrimitive.name, 'at position:', finalPrimitive.position);
+												console.log('🎯 Adding to scene...');
+												
+												// Add to scene using the standard pipeline
+												addObjectToScene(finalPrimitive, { select: false });
+												
+												// Save session
+												if (saveSessionDraftSoon) saveSessionDraftSoon();
+												
+												console.log('✅ Primitive created successfully:', finalPrimitive.name);
+												console.log('🔢 Total objects in scene:', objects.length);
 											} else {
 												console.error('❌ No preview mesh to finalize');
 											}
-										} catch(e) { console.error('❌ Failed to create primitive:', e); }
-										// Clean up and reset
+										} catch(e) { 
+											console.error('❌ Failed to create primitive:', e);
+										}
+										
+										// Clean up preview and reset mode
 										try { 
 											if (prim.preview) { 
 												if (prim.preview.parent) prim.preview.parent.remove(prim.preview); 
 												prim.preview.geometry?.dispose?.(); 
 												prim.preview.material?.dispose?.(); 
 											} 
-										} catch(e) { console.warn('Cleanup error:', e); }
-										console.log('🧹 Primitive mode ended, cleaning up');
+										} catch(e) { 
+											console.warn('Cleanup error:', e); 
+										}
+										
+										console.log('🧹 Primitive creation completed, cleaning up');
 										window.__xrPrim = null;
 									} else {
-										// Keep primitive at locked position/scale, just follow one hand for repositioning
-										const activeHand = prim.rightHand || prim.leftHand;
-										if (prim.preview && activeHand && prim.lockedPosition && prim.lockedScale) {
-											prim.preview.position.copy(activeHand.pos);
-											prim.preview.scale.copy(prim.lockedScale);
-											prim.lockedPosition.copy(activeHand.pos);
+										// Show lock status periodically
+										if (!prim.__lockMessage || (now - prim.__lockMessage > 3000)) {
+											console.log('🔒 Primitive locked - pinch again to finalize, or wait 10s for auto-finalize');
+											prim.__lockMessage = now;
+										}
+									}
+								}
+							}
+							
+							// Enhanced VR Equipment placement with hand tracking and pinch-to-scale
+							if (window.__xrEquip && (src.handedness === 'left' || src.handedness === 'right')) {
+								const equip = window.__xrEquip;
+								
+								// Get hand tracking data for equipment placement (similar to primitives)
+								let handPos = null;
+								let isPinching = false;
+								let hasHandTracking = false;
+								
+								// Try hand tracking first (preferred method)
+								if (src.hand) {
+									try {
+										const idxJ = src.hand.get && src.hand.get('index-finger-tip');
+										const thJ = src.hand.get && src.hand.get('thumb-tip');
+										let ref = xrLocalSpace || xrViewerSpace;
+										if (!ref) {
+											try { ref = renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace(); } catch{}
+										}
+										
+										if (idxJ && thJ && frame.getJointPose) {
+											const idxPose = frame.getJointPose(idxJ, ref);
+											const thumbPose = frame.getJointPose(thJ, ref);
+											
+											if (idxPose && thumbPose && idxPose.transform && thumbPose.transform && 
+												idxPose.transform.position && thumbPose.transform.position) {
+												
+												const ip = idxPose.transform.position;
+												const tp = thumbPose.transform.position;
+												handPos = new THREE.Vector3(ip.x, ip.y, ip.z);
+												hasHandTracking = true;
+												
+												// Pinch detection with hysteresis
+												const dist = Math.hypot(ip.x - tp.x, ip.y - tp.y, ip.z - tp.z);
+												const wasAlreadyPinching = equip[`${src.handedness}Pinching`] || false;
+												
+												if (wasAlreadyPinching) {
+													isPinching = dist < 0.055; // Release at 5.5cm
+												} else {
+													isPinching = dist < 0.040; // Start at 4.0cm
+												}
+											}
+										}
+									} catch(e) {
+										console.warn(`Equipment hand tracking failed for ${src.handedness}:`, e);
+									}
+								}
+								
+								// Fallback to controller
+								if (!handPos && src.gamepad) {
+									try {
+										const raySpace = src.targetRaySpace || src.gripSpace;
+										if (raySpace) {
+											const ref = xrLocalSpace || xrViewerSpace || (renderer.xr.getReferenceSpace && renderer.xr.getReferenceSpace());
+											const pose = frame.getPose(raySpace, ref);
+											if (pose && pose.transform && pose.transform.position) {
+												const p = pose.transform.position;
+												handPos = new THREE.Vector3(p.x, p.y, p.z);
+												hasHandTracking = false;
+												
+												// Use trigger as pinch
+												const triggerPressed = !!(src.gamepad.buttons && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed);
+												const prevTrigger = equip.__triggerPrev && equip.__triggerPrev.get(src);
+												
+												if (triggerPressed !== prevTrigger) {
+													isPinching = triggerPressed;
+													if (!equip.__triggerPrev) equip.__triggerPrev = new WeakMap();
+													equip.__triggerPrev.set(src, triggerPressed);
+												} else {
+													isPinching = equip[`${src.handedness}Pinching`] || false;
+												}
+											}
+										}
+									} catch(e) {
+										console.warn(`Equipment controller fallback failed for ${src.handedness}:`, e);
+									}
+								}
+								
+								// Store hand data if we got a valid position
+								if (handPos) {
+									const handData = { 
+										pos: handPos, 
+										pinching: isPinching,
+										hasHandTracking: hasHandTracking,
+										timestamp: performance.now()
+									};
+									
+									if (src.handedness === 'left') {
+										equip.leftHand = handData;
+									} else if (src.handedness === 'right') {
+										equip.rightHand = handData;
+									}
+									
+									// Debug logging for pinch state changes
+									const prevPinching = equip[`${src.handedness}Pinching`] || false;
+									if (prevPinching !== isPinching) {
+										console.log(`📦 ${src.handedness} ${hasHandTracking ? 'hand' : 'controller'} pinch ${isPinching ? 'START' : 'END'} in equipment mode`);
+									}
+									equip[`${src.handedness}Pinching`] = isPinching;
+								}
+							}
+							
+							// Process equipment placement workflow
+							if (window.__xrEquip) {
+								const equip = window.__xrEquip;
+								
+								// Block other VR interactions during equipment placement
+								if (typeof window.__xrHudHover !== 'undefined') window.__xrHudHover = false;
+								
+								// Timeout safety - auto-cancel after 60 seconds
+								const TIMEOUT_MS = 60000;
+								if (!equip.lastActivityTime) equip.lastActivityTime = performance.now();
+								
+								const now = performance.now();
+								if (now - equip.lastActivityTime > TIMEOUT_MS) {
+									console.log('📦 Equipment placement timed out - auto-cancelling');
+									try {
+										if (equip.preview && equip.preview.parent) {
+											equip.preview.parent.remove(equip.preview);
+											equip.preview.geometry?.dispose?.();
+											if (equip.preview.material && equip.preview.material !== equip.originalPreview) {
+												equip.preview.material.dispose();
+											}
+										}
+									} catch {}
+									window.__xrEquip = null;
+									continue;
+								}
+								
+								// Update activity time when hands are detected
+								if (equip.leftHand || equip.rightHand) {
+									equip.lastActivityTime = now;
+								}
+								
+								// Debug logging
+								if (!equip.__lastDebugLog || (now - equip.__lastDebugLog > 3000)) {
+									console.log('📦 Equipment placement active:', equip.filename, 'stage:', equip.stage);
+									if (equip.leftHand || equip.rightHand) {
+										console.log('📦 Hands available:',
+											equip.leftHand ? `left(${equip.leftHand.hasHandTracking ? 'tracked' : 'controller'})` : 'none',
+											equip.rightHand ? `right(${equip.rightHand.hasHandTracking ? 'tracked' : 'controller'})` : 'none'
+										);
+									}
+									console.log('📦 Preview exists:', !!equip.preview);
+									equip.__lastDebugLog = now;
+								}
+								
+								// Need at least one hand
+								if (!equip.rightHand && !equip.leftHand) {
+									if (!equip.__noHandsWarning || (now - equip.__noHandsWarning > 2000)) {
+										console.log('📦 No hands detected in equipment mode - move controllers or hands into view');
+										equip.__noHandsWarning = now;
+									}
+									continue;
+								}
+								
+								if (equip.stage === 'attached') {
+									// Stage 1: Equipment attached to hand
+									const attachHand = equip.rightHand || equip.leftHand;
+									if (!attachHand) continue;
+									
+									if (!equip.preview) {
+										// Create equipment preview from the OBJ library
+										console.log('📦 Creating equipment preview for:', equip.filename);
+										try {
+											const fullObject = objLibrary.createFullScaleObject(equip.objData);
+											if (fullObject) {
+												// Make it semi-transparent for preview
+												fullObject.traverse((child) => {
+													if (child.isMesh && child.material) {
+														const mat = child.material.clone();
+														mat.transparent = true;
+														mat.opacity = 0.7;
+														mat.depthTest = true;
+														mat.depthWrite = false;
+														child.material = mat;
+													}
+												});
+												
+												equip.preview = fullObject;
+												equip.preview.userData.__helper = true;
+												equip.preview.userData.__equipmentPreview = true;
+												equip.preview.renderOrder = 100;
+												scene.add(equip.preview);
+												equip.initialPos = attachHand.pos.clone();
+												
+												console.log('✅ Equipment preview created and added to scene');
+												console.log('📋 Next: Move to position, then pinch with hands to scale');
+											} else {
+												console.error('❌ Failed to create equipment preview for:', equip.filename);
+												window.__xrEquip = null;
+												continue;
+											}
+										} catch(e) {
+											console.error('❌ Error creating equipment preview:', e);
+											window.__xrEquip = null;
+											continue;
+										}
+									}
+									
+									// Update preview position to follow hand smoothly
+									if (equip.preview && attachHand) {
+										const targetPos = attachHand.pos;
+										const currentPos = equip.preview.position;
+										currentPos.lerp(targetPos, 0.8);
+									}
+									
+									// Check for scaling start
+									const bothHandsPinching = equip.leftHand && equip.rightHand && equip.leftPinching && equip.rightPinching;
+									const singleHandScaling = (!equip.leftHand && equip.rightHand && equip.rightPinching) || 
+															  (!equip.rightHand && equip.leftHand && equip.leftPinching);
+									
+									if (bothHandsPinching) {
+										console.log('📦 Both hands pinching - starting two-handed equipment scaling');
+										equip.stage = 'scaling';
+										equip.initialDistance = equip.leftHand.pos.distanceTo(equip.rightHand.pos);
+										equip.initialScale = equip.currentScale;
+										equip.scalingMode = 'two-handed';
+										
+										// Visual feedback
+										if (equip.preview) {
+											equip.preview.traverse((child) => {
+												if (child.isMesh && child.material) {
+													child.material.opacity = 0.9;
+													child.material.emissive.setHex(0x004444);
+												}
+											});
+										}
+									} else if (singleHandScaling) {
+										console.log('📦 Single hand pinching - starting single-handed equipment scaling');
+										equip.stage = 'scaling';
+										equip.initialScale = equip.currentScale;
+										equip.scalingMode = 'single-handed';
+										equip.scaleStartTime = now;
+										
+										// Visual feedback
+										if (equip.preview) {
+											equip.preview.traverse((child) => {
+												if (child.isMesh && child.material) {
+													child.material.opacity = 0.8;
+													child.material.emissive.setHex(0x442200);
+												}
+											});
+										}
+									}
+								}
+								else if (equip.stage === 'scaling') {
+									// Stage 2: Scaling phase
+									if (equip.scalingMode === 'two-handed') {
+										// Two-handed scaling based on hand distance
+										if (equip.leftHand && equip.leftPinching && equip.rightHand && equip.rightPinching) {
+											const currentDistance = equip.leftHand.pos.distanceTo(equip.rightHand.pos);
+											const scaleFactor = Math.max(0.1, Math.min(10.0, currentDistance / equip.initialDistance));
+											equip.currentScale = equip.initialScale * scaleFactor;
+											
+											// Update position to center between hands
+											const centerPos = new THREE.Vector3()
+												.addVectors(equip.leftHand.pos, equip.rightHand.pos)
+												.multiplyScalar(0.5);
+											
+											if (equip.preview) {
+												equip.preview.position.copy(centerPos);
+												equip.preview.scale.set(equip.currentScale, equip.currentScale, equip.currentScale);
+											}
+										} else {
+											// Hand released - lock scale
+											console.log('📦 Hand released - locking equipment scale');
+											equip.stage = 'locked';
+											equip.lockedScale = equip.preview ? equip.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+											equip.lockedPosition = equip.preview ? equip.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+											
+											// Visual feedback
+											if (equip.preview) {
+												equip.preview.traverse((child) => {
+													if (child.isMesh && child.material) {
+														child.material.opacity = 1.0;
+														child.material.wireframe = true;
+														child.material.emissive.setHex(0x000000);
+													}
+												});
+											}
+										}
+									} else if (equip.scalingMode === 'single-handed') {
+										// Single-handed scaling
+										const activeHand = equip.rightHand || equip.leftHand;
+										const stillPinching = (equip.rightHand && equip.rightPinching) || (equip.leftHand && equip.leftPinching);
+										
+										if (activeHand && stillPinching) {
+											// Time-based scaling
+											const timeHeld = (now - equip.scaleStartTime) / 1000;
+											const scaleFactor = 1.0 + (timeHeld * 0.3);
+											equip.currentScale = equip.initialScale * Math.max(0.1, Math.min(5.0, scaleFactor));
+											
+											if (equip.preview) {
+												equip.preview.position.copy(activeHand.pos);
+												equip.preview.scale.set(equip.currentScale, equip.currentScale, equip.currentScale);
+											}
+										} else {
+											// Hand released - lock scale
+											console.log('📦 Hand released - locking equipment scale');
+											equip.stage = 'locked';
+											equip.lockedScale = equip.preview ? equip.preview.scale.clone() : new THREE.Vector3(1, 1, 1);
+											equip.lockedPosition = equip.preview ? equip.preview.position.clone() : new THREE.Vector3(0, 0, 0);
+											
+											// Visual feedback
+											if (equip.preview) {
+												equip.preview.traverse((child) => {
+													if (child.isMesh && child.material) {
+														child.material.opacity = 1.0;
+														child.material.wireframe = true;
+														child.material.emissive.setHex(0x000000);
+													}
+												});
+											}
+										}
+									}
+								}
+								else if (equip.stage === 'locked') {
+									// Stage 3: Locked, waiting for finalization
+									const bothHandsPinching = equip.leftHand && equip.rightHand && equip.leftPinching && equip.rightPinching;
+									const singleHandPinching = (!equip.leftHand && equip.rightHand && equip.rightPinching) || 
+															   (!equip.rightHand && equip.leftHand && equip.leftPinching);
+									
+									// Auto-finalize timeout
+									if (!equip.__lockedAt) equip.__lockedAt = now;
+									const lockedDuration = now - equip.__lockedAt;
+									
+									// Allow repositioning
+									const activeHand = equip.rightHand || equip.leftHand;
+									if (equip.preview && activeHand && equip.lockedScale) {
+										equip.preview.position.lerp(activeHand.pos, 0.6);
+										equip.preview.scale.copy(equip.lockedScale);
+										equip.lockedPosition = equip.preview.position.clone();
+									}
+									
+									if (bothHandsPinching || singleHandPinching || lockedDuration > 10000) {
+										if (lockedDuration > 10000) {
+											console.log('📦 Equipment auto-finalizing after 10 seconds');
+										} else {
+											console.log('📦 Finalizing equipment placement');
+										}
+										
+										// Finalize equipment
+										try {
+											if (equip.preview) {
+												// Create final object from the preview
+												const finalObject = objLibrary.createFullScaleObject(equip.objData);
+												if (finalObject) {
+													// Apply the preview's transform
+													finalObject.position.copy(equip.preview.position);
+													finalObject.scale.copy(equip.preview.scale);
+													finalObject.name = `${equip.filename}_${objects.length + 1}`;
+													
+													console.log('📦 Finalizing equipment:', finalObject.name, 'at position:', finalObject.position);
+													
+													// Add to scene using standard pipeline
+													addObjectToScene(finalObject, { select: false });
+													
+													if (saveSessionDraftSoon) saveSessionDraftSoon();
+													
+													console.log('✅ Equipment placed successfully:', finalObject.name);
+												} else {
+													console.error('❌ Failed to create final equipment object');
+												}
+											}
+										} catch(e) {
+											console.error('❌ Failed to finalize equipment:', e);
+										}
+										
+										// Clean up
+										try {
+											if (equip.preview && equip.preview.parent) {
+												equip.preview.parent.remove(equip.preview);
+												equip.preview.traverse((child) => {
+													if (child.isMesh) {
+														child.geometry?.dispose?.();
+														if (child.material && child.material !== equip.originalPreview) {
+															child.material.dispose?.();
+														}
+													}
+												});
+											}
+										} catch(e) {
+											console.warn('Equipment cleanup error:', e);
+										}
+										
+										console.log('📦 Equipment placement completed');
+										window.__xrEquip = null;
+									} else {
+										// Show lock status
+										if (!equip.__lockMessage || (now - equip.__lockMessage > 3000)) {
+											console.log('📦 Equipment locked - pinch again to finalize, or wait 10s for auto-finalize');
+											equip.__lockMessage = now;
 										}
 									}
 								}

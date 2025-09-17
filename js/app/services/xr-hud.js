@@ -1470,11 +1470,20 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   else if (!hud.visible && allowShow && (hud.userData.__autoHidden || hud.userData.__menuShown)) { 
     hud.visible = true; 
     hud.userData.__autoHidden = false; 
+    // Add extended grace period when HUD first becomes visible to prevent accidental clicks
+    const now = performance.now();
+    globalClickCooldownUntil = Math.max(globalClickCooldownUntil, now + 1000); // 1 second grace period
+    handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 800); // Additional hand crossing protection
+    console.log('🎨 XR-HUD: Became visible - adding 1000ms grace period to prevent accidental clicks');
     try { 
       /* reset pressed states on show */ 
-      // Default to main menu on open: close draw submenu unless draw is already active
-      const drawActive = !!(window.vrDraw && window.vrDraw.isActive && window.vrDraw.isActive());
-      if (!drawActive && typeof hideDrawSubmenu === 'function') hideDrawSubmenu();
+      // Default to main menu on open: ALWAYS start with main menu visible
+      // Only show draw submenu if VR Draw was explicitly active AND user deliberately opened it
+      // This prevents accidental auto-opening of draw menu on session start
+      if (typeof hideDrawSubmenu === 'function') {
+        hideDrawSubmenu();
+        console.log('🎨 XR-HUD: Forcing main menu to show on HUD open (draw submenu hidden)');
+      }
     } catch {} 
   }
     } catch {}
@@ -1980,8 +1989,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
       return;
     }
     
-    // Add stabilization delay to prevent rapid menu switching
+    // Respect global click cooldown to prevent accidental opening during HUD startup
     const now = performance.now();
+    if (now < globalClickCooldownUntil) {
+      console.log('🎨 Blocking draw submenu open - still in grace period:', (globalClickCooldownUntil - now), 'ms remaining');
+      return;
+    }
+    
+    // Add stabilization delay to prevent rapid menu switching
     handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 200);
     globalClickCooldownUntil = Math.max(globalClickCooldownUntil, now + 300); // Additional global cooldown
     
