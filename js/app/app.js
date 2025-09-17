@@ -5616,6 +5616,20 @@ const viewAxonBtn = document.getElementById('viewAxon');
 										}
 										// IMPROVED: Start editing when BOTH hands are pinching AND are reasonably close to the primitive
 										// Instead of requiring hands INSIDE the bounds, allow hands near the primitive for easier interaction
+										
+										// Enhanced debugging for pinch state
+										if (!prim.__pinchDebounce || (now - prim.__pinchDebounce > 2000)) {
+											console.log('🔧 Pinch State Check:', {
+												hasPreview: !!prim.preview,
+												leftHand: !!prim.leftHand,
+												rightHand: !!prim.rightHand,
+												leftPinching: prim.leftPinching,
+												rightPinching: prim.rightPinching,
+												bothPinching: prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching
+											});
+											prim.__pinchDebounce = now;
+										}
+										
 										if (prim.preview && prim.leftHand && prim.rightHand && prim.leftPinching && prim.rightPinching) {
 											// Get primitive center and size
 											const bbox = new THREE.Box3().setFromObject(prim.preview);
@@ -5623,12 +5637,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 											const size = bbox.getSize(new THREE.Vector3());
 											const maxDim = Math.max(size.x, size.y, size.z);
 											
-											// Check if hands are within interaction distance (3x the primitive size, minimum 20cm)
-											const interactionDistance = Math.max(0.2, maxDim * 3);
+											// Check if hands are within interaction distance (5x the primitive size, minimum 30cm for easier interaction)
+											const interactionDistance = Math.max(0.3, maxDim * 5);
 											const leftDist = prim.leftHand.pos.distanceTo(center);
 											const rightDist = prim.rightHand.pos.distanceTo(center);
 											
-											console.log(`🔧 Checking editing start: left dist=${leftDist.toFixed(3)}m, right dist=${rightDist.toFixed(3)}m, max allowed=${interactionDistance.toFixed(3)}m`);
+											console.log(`🔧 BOTH HANDS PINCHING! Checking editing start: left dist=${leftDist.toFixed(3)}m, right dist=${rightDist.toFixed(3)}m, max allowed=${interactionDistance.toFixed(3)}m`);
+											console.log(`🔧 Primitive center: (${center.x.toFixed(3)}, ${center.y.toFixed(3)}, ${center.z.toFixed(3)})`);
+											console.log(`🔧 Left hand pos: (${prim.leftHand.pos.x.toFixed(3)}, ${prim.leftHand.pos.y.toFixed(3)}, ${prim.leftHand.pos.z.toFixed(3)})`);
+											console.log(`🔧 Right hand pos: (${prim.rightHand.pos.x.toFixed(3)}, ${prim.rightHand.pos.y.toFixed(3)}, ${prim.rightHand.pos.z.toFixed(3)})`);
+											console.log(`🔧 Primitive size: ${maxDim.toFixed(3)}m, primitive at: (${prim.preview.position.x.toFixed(3)}, ${prim.preview.position.y.toFixed(3)}, ${prim.preview.position.z.toFixed(3)})`);
 											
 											// Both hands within interaction distance = start editing
 											if (leftDist <= interactionDistance && rightDist <= interactionDistance) {
@@ -5638,16 +5656,13 @@ const viewAxonBtn = document.getElementById('viewAxon');
 												// Reset release counter when actively editing
 												prim.releaseCount = 0;
 												prim.firstReleaseTime = null;
-												console.log('✋✋ Primitive editing started (two-hand pinch near object)');
+												console.log('✋✋ PRIMITIVE EDITING STARTED! (two-hand pinch near object)');
 												console.log(`📐 Initial hand distance: ${prim.editStartDistance.toFixed(3)}m`);
 											} else {
 												// Debug why editing didn't start
-												if (!prim.__editFailDebounce || (now - prim.__editFailDebounce > 1000)) {
-													console.log('🚫 Editing not starting - hands too far from primitive center');
-													console.log(`   Left hand: ${leftDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m)`);
-													console.log(`   Right hand: ${rightDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m)`);
-													prim.__editFailDebounce = now;
-												}
+												console.log('🚫 BOTH HANDS PINCHING BUT editing not starting - hands too far from primitive center');
+												console.log(`   Left hand: ${leftDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m) - ${leftDist <= interactionDistance ? 'WITHIN' : 'TOO FAR'}`);
+												console.log(`   Right hand: ${rightDist.toFixed(3)}m from center (limit: ${interactionDistance.toFixed(3)}m) - ${rightDist <= interactionDistance ? 'WITHIN' : 'TOO FAR'}`);
 											}
 										}
 									}
