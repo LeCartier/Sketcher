@@ -79,6 +79,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
   const raycaster = new THREE.Raycaster();
   // Global cooldown to prevent accidental clicks after menu transitions
   let globalClickCooldownUntil = 0;
+  // Additional arming window: buttons cannot fire until HUD is explicitly 'armed'
+  // This prevents an immediate accidental activation (e.g. Draw) on the same gesture
+  // that caused the HUD to appear (left palm up + incidental right finger near button).
+  let hudArmed = false;           // becomes true only after arming time & neutral state
+  let hudArmEligibleAt = 0;       // timestamp when we can consider arming
+  let hudArmPendingReason = 'initial';
   // Hand interaction smoothing - prevent rapid state changes when hands cross
   let handCrossingCooldownUntil = 0;
   let lastRightHandPosition = new THREE.Vector3();
@@ -1475,6 +1481,11 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     globalClickCooldownUntil = Math.max(globalClickCooldownUntil, now + 1000); // 1 second grace period
     handCrossingCooldownUntil = Math.max(handCrossingCooldownUntil, now + 800); // Additional hand crossing protection
     console.log('🎨 XR-HUD: Became visible - adding 1000ms grace period to prevent accidental clicks');
+    // Disarm HUD and schedule arming eligibility AFTER the grace period + a small buffer
+    hudArmed = false;
+    hudArmEligibleAt = now + 1150; // grace (1000) + 150ms buffer for stabilization
+    hudArmPendingReason = 'grace-period';
+    if (hud) hud.userData.__armed = false;
     try { 
       /* reset pressed states on show */ 
       // Default to main menu on open: ALWAYS start with main menu visible
@@ -1876,26 +1887,38 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
               // Check global cooldown and hand crossing to prevent accidental clicks
               const globalNow = performance.now();
               const crossingCheck = globalNow >= handCrossingCooldownUntil;
+              // HUD arming logic: block clicks until hudArmed true
+              const armed = hudArmed && (hud && hud.userData && hud.userData.__armed === true);
+              if (!armed) {
+                console.log('🛡️ HUD button press blocked (not yet armed):', m.userData?.__hudButton?.label, 'reason:', hudArmPendingReason, 'time until arm:', Math.round(Math.max(0, hudArmEligibleAt - globalNow)));
+              }
               if (globalNow >= globalClickCooldownUntil && crossingCheck) {
-                const buttonData = m.userData?.__hudButton;
-                const handler = buttonData?.onClick;
-                console.log('🎯 Button clicked:', {
-                  label: buttonData?.label,
-                  handlerType: typeof handler,
-                  timestamp: globalNow,
-                  globalCooldownPassed: globalNow >= globalClickCooldownUntil,
-                  crossingCheckPassed: crossingCheck
-                });
-                if (typeof handler === 'function') { 
-                  try { 
-                    handler(); 
-                  } catch(e) {
-                    console.error('🎯 Button click handler error:', e);
-                  } 
+                if (armed) {
+                  const buttonData = m.userData?.__hudButton;
+                  const handler = buttonData?.onClick;
+                  console.log('🎯 Button clicked:', {
+                    label: buttonData?.label,
+                    handlerType: typeof handler,
+                    timestamp: globalNow,
+                    globalCooldownPassed: globalNow >= globalClickCooldownUntil,
+                    crossingCheckPassed: crossingCheck,
+                    armed: true
+                  });
+                  if (typeof handler === 'function') { 
+                    try { 
+                      handler(); 
+                    } catch(e) {
+                      console.error('🎯 Button click handler error:', e);
+                    } 
+                  }
+                  st._cooldownUntil = now + 180; // ms
+                  // Trigger flash overlay
+                  try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
+                } else {
+                  // If a press attempt occurs before arming, postpone arming further slightly
+                  hudArmEligibleAt = Math.max(hudArmEligibleAt, globalNow + 250);
+                  hudArmPendingReason = 'early-press';
                 }
-                st._cooldownUntil = now + 180; // ms
-                // Trigger flash overlay
-                try { const fl = m.userData && m.userData.__flash; if (fl && fl.material) { fl.material.opacity = 0.9; } } catch {}
               } else {
                 console.log('🎯 Button click blocked by cooldown:', {
                   label: m.userData?.__hudButton?.label,
@@ -1909,6 +1932,30 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
             st.pressed = pressedNow;
             // Fade flash overlay each frame
             try { const fl = m.userData && m.userData.__flash; if (fl && fl.material && fl.material.opacity>0) { fl.material.opacity = Math.max(0, fl.material.opacity - 0.12); } } catch {}
+          }
+        } catch {}
+
+        // HUD Arming evaluation: only after eligibility time AND all buttons not actively depressed
+        try {
+          if (!hudArmed) {
+            const nowArmCheck = performance.now();
+            if (nowArmCheck >= hudArmEligibleAt) {
+              // Ensure no button currently has depth beyond press start (avoid mid-press arming)
+              let anyActiveDepth = false;
+              for (const b of hudTargets) {
+                const st = b && ensurePressState(b);
+                if (st && st.depth >= PRESS_START_M * 0.75) { anyActiveDepth = true; break; }
+              }
+              if (!anyActiveDepth) {
+                hudArmed = true; hudArmPendingReason = 'armed';
+                if (hud) hud.userData.__armed = true;
+                console.log('✅ XR-HUD armed: buttons now active');
+              } else {
+                // postpone slightly until depth clears
+                hudArmEligibleAt = nowArmCheck + 120;
+                hudArmPendingReason = 'waiting-depth-clear';
+              }
+            }
           }
         } catch {}
 
@@ -1986,6 +2033,12 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
     
     if (drawSubmenuActive) {
       console.log('🎨 Draw submenu already active, skipping...');
+      return;
+    }
+
+    // Disallow opening unless HUD is fully armed
+    if (!hudArmed) {
+      console.log('🛡️ Blocking draw submenu open: HUD not yet armed. Reason:', hudArmPendingReason, 'ms until arm:', Math.round(Math.max(0, hudArmEligibleAt - performance.now())));
       return;
     }
     

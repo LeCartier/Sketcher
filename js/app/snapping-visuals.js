@@ -5,8 +5,9 @@
 //   snapV.hide();
 
 export function createSnapVisuals({ THREE, scene }) {
-  let snapHighlight = null;
-  let faceSnapHighlights = []; // For VR face snapping - stores highlight meshes for both objects
+  let snapHighlight = null; // legacy plane (kept for backward compatibility)
+  let faceSnapHighlights = []; // Box helpers for both objects
+  let outlineMode = true; // when true we suppress the fill plane and only show outlines
 
   function ensure() {
     if (snapHighlight) return snapHighlight;
@@ -99,7 +100,15 @@ export function createSnapVisuals({ THREE, scene }) {
     }
   }
 
-  function showAt(movingBox, snapInfo) {
+  function showAt(movingBox, snapInfo, movingObj=null, targetObj=null) {
+    // Outline mode prefers box helpers instead of plane fill
+    if (outlineMode) {
+      if (!snapInfo || !snapInfo.axis || !snapInfo.otherBox) { hideFaceSnapHighlights(); return; }
+      showFaceSnapHighlights(movingObj, targetObj);
+      if (snapHighlight) snapHighlight.visible = false; // suppress plane
+      return;
+    }
+    // Legacy plane visualization
     const hl = ensure();
     if (!snapInfo || !snapInfo.axis || !snapInfo.otherBox) { hl.visible = false; return; }
     const bA = movingBox; const bB = snapInfo.otherBox;
@@ -134,5 +143,7 @@ export function createSnapVisuals({ THREE, scene }) {
     hl.visible = true;
   }
 
-  return { ensure, hide, showAt, showFaceSnapHighlights, hideFaceSnapHighlights };
+  function setOutlineMode(v){ outlineMode = !!v; if (outlineMode) { if (snapHighlight) snapHighlight.visible = false; } }
+
+  return { ensure, hide, showAt, showFaceSnapHighlights, hideFaceSnapHighlights, setOutlineMode };
 }
