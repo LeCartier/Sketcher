@@ -1939,7 +1939,14 @@ export function createXRHud({ THREE, scene, renderer, getLocalSpace, getButtons 
                     });
                     if (typeof handler === 'function') { 
                       try { 
-                        handler(); 
+                        // Support both sync and async handlers
+                        const result = handler();
+                        if (result && typeof result.then === 'function') {
+                          // It's a promise/async function
+                          result.catch(e => {
+                            console.error('🎯 Async button click handler error:', e);
+                          });
+                        }
                       } catch(e) {
                         console.error('🎯 Button click handler error:', e);
                       } 

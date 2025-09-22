@@ -1533,9 +1533,10 @@ export async function init() {
 									xrHud.hideDrawSubmenu();
 								}
 								
-								// Clear primitive creation if it might interfere with HUD interactions
-								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 2000)) {
-									console.log('🔧 Clearing primitive creation mode on HUD open (controller menu) - likely accidental');
+								// Only clear primitive creation if it's brand new (< 500ms) and user immediately opened menu
+								// This prevents accidental cancellation during normal pinch-grab-create workflow
+								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 500)) {
+									console.log('🔧 Clearing primitive creation mode on HUD open (controller menu) - very recent, likely accidental');
 									try { 
 										if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
 										window.__xrPrim.preview?.geometry?.dispose?.();
@@ -1543,7 +1544,7 @@ export async function init() {
 									} catch {}
 									window.__xrPrim = null;
 								} else if (nextShown && window.__xrPrim) {
-									console.log('🔧 Keeping primitive creation mode active (user likely intentional)');
+									console.log('🔧 Keeping primitive creation mode active - allowing normal pinch-grab-create workflow');
 								}
 							} catch {}
 											// Temporarily force Ray mode while the HUD is shown, but only if a controller is present.
@@ -1621,9 +1622,10 @@ export async function init() {
 									xrHud.hideDrawSubmenu();
 								}
 								
-								// Clear primitive creation if it might interfere with HUD interactions
-								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 2000)) {
-									console.log('🔧 Clearing primitive creation mode on HUD open (hand gesture) - likely accidental');
+								// Only clear primitive creation if it's brand new (< 500ms) and user immediately opened menu
+								// This prevents accidental cancellation during normal pinch-grab-create workflow
+								if (nextShown && window.__xrPrim && window.__xrPrim.createdAt && (performance.now() - window.__xrPrim.createdAt < 500)) {
+									console.log('🔧 Clearing primitive creation mode on HUD open (hand gesture) - very recent, likely accidental');
 									try { 
 										if (window.__xrPrim.preview?.parent) window.__xrPrim.preview.parent.remove(window.__xrPrim.preview);
 										window.__xrPrim.preview?.geometry?.dispose?.();
@@ -1631,7 +1633,7 @@ export async function init() {
 									} catch {}
 									window.__xrPrim = null;
 								} else if (nextShown && window.__xrPrim) {
-									console.log('🔧 Keeping primitive creation mode active (user likely intentional)');
+									console.log('🔧 Keeping primitive creation mode active - allowing normal pinch-grab-create workflow');
 								}
 							} catch {}
 							if (nextShown){

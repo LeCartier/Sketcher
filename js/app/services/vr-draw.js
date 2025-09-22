@@ -118,25 +118,56 @@
 					updateStatusText('VR DRAW: ON', '#00ff00');
 					// Force-create a test tube to verify the system works
 					console.log('🎨 CREATING TEST TUBE TO VERIFY VR DRAW WORKS');
+					
+					// Create a much more visible test tube right in front of user
 					const testPoints = [
-						new THREE.Vector3(0, 1.5, -0.5),
-						new THREE.Vector3(0.1, 1.5, -0.5),
-						new THREE.Vector3(0.2, 1.6, -0.5),
-						new THREE.Vector3(0.3, 1.5, -0.5)
+						new THREE.Vector3(-0.2, 1.6, -0.8), // Left, at eye level, close to user
+						new THREE.Vector3(-0.1, 1.6, -0.8), 
+						new THREE.Vector3(0.0, 1.6, -0.8),
+						new THREE.Vector3(0.1, 1.6, -0.8),
+						new THREE.Vector3(0.2, 1.6, -0.8)   // Right, at eye level, close to user
 					];
 					try {
+						// Create a much thicker, more visible tube
 						const curve = new THREE.CatmullRomCurve3(testPoints);
-						const tubeGeom = new THREE.TubeGeometry(curve, Math.max(2, testPoints.length * 2), lineWidth * 0.001, 8, false);
-						const tubeMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: false });
+						const tubeGeom = new THREE.TubeGeometry(curve, 32, 0.02, 8, false); // Much thicker: 2cm radius
+						const tubeMat = new THREE.MeshBasicMaterial({ 
+							color: 0xff0000,      // Bright red
+							transparent: false,
+							wireframe: false,
+							side: THREE.DoubleSide
+						});
 						const testTube = new THREE.Mesh(tubeGeom, tubeMat);
 						testTube.name = 'TestVRDrawTube';
 						testTube.userData.__helper = false; // Make it permanent for testing
-						drawGroup.add(testTube);
-						console.log('🎨 TEST TUBE CREATED and added to drawGroup. DrawGroup children:', drawGroup.children.length);
+						testTube.userData.isTestTube = true;
+						
+						// Add directly to scene AND drawGroup for maximum visibility
+						scene.add(testTube);
+						drawGroup.add(testTube.clone()); // Also add to drawGroup
+						
+						console.log('🎨 TEST TUBE CREATED!');
+						console.log('🎨 Test tube geometry vertices:', tubeGeom.attributes.position.count);
 						console.log('🎨 Test tube position:', testTube.position);
+						console.log('🎨 Test tube scale:', testTube.scale);
+						console.log('🎨 Test tube visible:', testTube.visible);
+						console.log('🎨 Test tube material color:', testTube.material.color);
+						console.log('🎨 Test tube added to scene children:', scene.children.length);
+						console.log('🎨 DrawGroup children after:', drawGroup.children.length);
 						console.log('🎨 DrawGroup parent:', drawGroup.parent?.type);
 						console.log('🎨 DrawGroup visible:', drawGroup.visible);
-						console.log('🎨 Test tube visible:', testTube.visible);
+						console.log('🎨 Scene contains test tube:', scene.children.includes(testTube));
+						
+						// Also create a simple box as backup test
+						const boxGeom = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+						const boxMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 }); // Green
+						const testBox = new THREE.Mesh(boxGeom, boxMat);
+						testBox.position.set(0, 1.6, -0.5); // Right in front of user
+						testBox.name = 'TestVRDrawBox';
+						testBox.userData.isTestBox = true;
+						scene.add(testBox);
+						console.log('🎨 GREEN TEST BOX also created at (0, 1.6, -0.5)');
+						
 					} catch(e) {
 						console.error('🎨 Failed to create test tube:', e);
 					}
@@ -193,11 +224,12 @@
 				{ position: nextPt, pressure: pressure }
 			];
 			
-			// Create tube geometry with pressure-influenced radius - MADE MUCH LARGER FOR VISIBILITY
-			const baseTubeRadius = (lineWidth || 6) * 0.002; // Doubled from 0.001 to 0.002 (now 12mm for lineWidth=6)
-			const tubeRadius = baseTubeRadius * (0.8 + 0.4 * pressure); // Range 80%-120% of base (was 50%-100%)
-			console.log('🎨 VR Draw: Creating EXTRA LARGE pressure-sensitive tube with radius:', tubeRadius, 'meters (pressure:', pressure, ')');
-			console.log('🎨 VR Draw: This should be', (tubeRadius * 1000).toFixed(1), 'mm in diameter');
+			// Create tube geometry with pressure-influenced radius - SET TO 0.125" DIAMETER AS REQUESTED
+			const targetDiameterInches = 0.125; // User requested 0.125 inch diameter
+			const targetRadiusMeters = (targetDiameterInches * 0.0254) / 2; // Convert inches to meters, then diameter to radius
+			const tubeRadius = targetRadiusMeters * (0.8 + 0.4 * pressure); // Range 80%-120% of base based on pressure
+			console.log('🎨 VR Draw: Creating 0.125" diameter tube with radius:', tubeRadius, 'meters (pressure:', pressure, ')');
+			console.log('🎨 VR Draw: This should be', (tubeRadius * 2 * 1000 / 0.0254).toFixed(2), 'inches in diameter');
 			
 			try {
 				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
@@ -298,8 +330,9 @@
 				
 				// Calculate average pressure for this segment
 				const avgPressure = points.reduce((sum, p) => sum + p.pressure, 0) / points.length;
-				const baseTubeRadius = (lineWidth || 6) * 0.002; // Doubled for visibility 
-				const tubeRadius = baseTubeRadius * (0.8 + 0.4 * avgPressure); // Pressure-influenced radius
+				const targetDiameterInches = 0.125; // User requested 0.125 inch diameter
+				const targetRadiusMeters = (targetDiameterInches * 0.0254) / 2; // Convert inches to meters, then diameter to radius
+				const tubeRadius = targetRadiusMeters * (0.8 + 0.4 * avgPressure); // Pressure-influenced radius
 				
 				const curve = new THREE.CatmullRomCurve3(points.map(p => p.position));
 				currentGeom = new THREE.TubeGeometry(curve, Math.max(1, points.length - 1), tubeRadius, 8, false);
@@ -329,7 +362,9 @@
 		function showPreview(position, direction) {
 			// Create or update preview stroke
 			if (!previewStroke) {
-				const previewRadius = (lineWidth || 6) * 0.0005; // Half thickness for preview
+				const targetDiameterInches = 0.125; // User requested 0.125 inch diameter
+				const targetRadiusMeters = (targetDiameterInches * 0.0254) / 2; // Convert inches to meters
+				const previewRadius = targetRadiusMeters * 0.5; // Half thickness for preview
 				const previewLength = 0.02; // 2cm preview line
 				
 				let previewDirection = (direction && direction.length() > 0) ? direction.clone().normalize() : new THREE.Vector3(1,0,0);
@@ -621,6 +656,80 @@
 				drawGroupParent: drawGroup.parent?.type,
 				drawGroupInScene: scene.children.includes(drawGroup)
 			};
+		};
+		
+		// Create test objects directly in scene for visibility testing
+		window.createVRTestObjects = function() {
+			console.log('🎨 CREATING TEST OBJECTS DIRECTLY IN SCENE');
+			
+			// Remove any existing test objects first
+			const existingTests = scene.children.filter(child => 
+				child.userData?.isTestTube || child.userData?.isTestBox || child.userData?.isTestSphere
+			);
+			existingTests.forEach(obj => {
+				scene.remove(obj);
+				obj.geometry?.dispose?.();
+				obj.material?.dispose?.();
+			});
+			
+			// Create a bright red sphere right in front of user
+			const sphereGeom = new THREE.SphereGeometry(0.05, 16, 16); // 5cm radius
+			const sphereMat = new THREE.MeshBasicMaterial({ 
+				color: 0xff0000,
+				transparent: false,
+				wireframe: false
+			});
+			const testSphere = new THREE.Mesh(sphereGeom, sphereMat);
+			testSphere.position.set(0, 1.6, -0.8); // Right in front of user at eye level
+			testSphere.name = 'TestVRSphere';
+			testSphere.userData.isTestSphere = true;
+			scene.add(testSphere);
+			
+			// Create a green cube to the left
+			const cubeGeom = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+			const cubeMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+			const testCube = new THREE.Mesh(cubeGeom, cubeMat);
+			testCube.position.set(-0.3, 1.6, -0.8);
+			testCube.name = 'TestVRCube';
+			testCube.userData.isTestBox = true;
+			scene.add(testCube);
+			
+			// Create a blue cylinder to the right
+			const cylGeom = new THREE.CylinderGeometry(0.03, 0.03, 0.2, 16);
+			const cylMat = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+			const testCyl = new THREE.Mesh(cylGeom, cylMat);
+			testCyl.position.set(0.3, 1.6, -0.8);
+			testCyl.name = 'TestVRCylinder';
+			testCyl.userData.isTestCylinder = true;
+			scene.add(testCyl);
+			
+			console.log('🎨 Test objects created:');
+			console.log('🎨   Red sphere at (0, 1.6, -0.8)');
+			console.log('🎨   Green cube at (-0.3, 1.6, -0.8)');
+			console.log('🎨   Blue cylinder at (0.3, 1.6, -0.8)');
+			console.log('🎨 Total scene children:', scene.children.length);
+			
+			return { 
+				sphere: testSphere, 
+				cube: testCube, 
+				cylinder: testCyl,
+				totalSceneChildren: scene.children.length
+			};
+		};
+		
+		// Remove test objects
+		window.removeVRTestObjects = function() {
+			const testObjects = scene.children.filter(child => 
+				child.userData?.isTestTube || child.userData?.isTestBox || 
+				child.userData?.isTestSphere || child.userData?.isTestCylinder
+			);
+			console.log('🎨 Removing', testObjects.length, 'test objects');
+			testObjects.forEach(obj => {
+				scene.remove(obj);
+				obj.geometry?.dispose?.();
+				obj.material?.dispose?.();
+			});
+			return testObjects.length;
 		};
 		
 		return { 
