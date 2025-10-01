@@ -64,7 +64,7 @@ export async function init() {
 	function tweenCamera(fromCam, toCam, duration = 600, onComplete) {
 		return views.tweenCamera(fromCam, toCam, controls, duration, onComplete);
 	}
-		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { downscaleLargeTextures, createMaterialSystem }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }, { createExcelParser }, { createBlockingStacking }, { createMassSystem }, { createBlockingUI }, { createRoomSystem }, { createRoomManager }, { createRoomDesignationUI }] = await Promise.all([
+		const [THREE, { GLTFLoader }, { OBJLoader }, { OrbitControls }, { TransformControls }, { OBJExporter }, { setupMapImport }, outlines, transforms, localStore, persistence, snapping, views, gridUtils, arExport, { createSnapVisuals }, { createSessionDraft }, primitives, { createAREdit }, { createXRHud }, vrDrawModule, { downscaleLargeTextures, createMaterialSystem }, { simplifyMaterialsForARInPlace, restoreMaterialsForARInPlace, applyOutlineModeForARInPlace, clearOutlineModeForAR }, { createCollab }, { createAlignmentTile }, { createFPQuality }, { createOBJLibrary }, { createExcelParser }, { createBlockingStacking }, { createMassSystem }, { createBlockingUI }, { createRoomBoundaryDetection }, { createEnhancedRoomSystem }, { createEnhancedRoomManager }, { createEnhancedRoomDesignationUI }] = await Promise.all([
 		import('../vendor/three.module.js'),
 		import('../vendor/GLTFLoader.js'),
 		import('../vendor/OBJLoader.js'),
@@ -96,9 +96,10 @@ export async function init() {
 			import('./services/blocking-stacking.js'),
 			import('./services/mass-creation.js'),
 			import('./services/blocking-ui.js'),
-			import('./services/room-system.js'),
-			import('./services/room-manager.js'),
-			import('./services/room-designation-ui.js')
+			import('./services/room-boundary-detection.js'),
+			import('./services/room-system-v2.js'),
+			import('./services/room-manager-v2.js'),
+			import('./services/room-designation-ui-v2.js')
 		]);
 
 	// Version badge
@@ -4713,7 +4714,7 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	// Two-click placement tools state (floor/wall)
 	const FLOOR_THICKNESS_FT = 0.5; // 6 inches
 	const WALL_THICKNESS_FT = 0.333;
-	const WALL_HEIGHT_FT = 10.0;
+	const WALL_HEIGHT_FT = 7.0;
 	let placingTool = null; // 'floor' | 'wall' | null
 	let placingStage = 0;   // 0 = waiting for first click, 1 = waiting for second click
 	let placingStart = new THREE.Vector3();
@@ -5139,6 +5140,47 @@ const viewAxonBtn = document.getElementById('viewAxon');
 
 	// ESC should also cancel two-click placing tools (floor/wall)
 	window.addEventListener('keydown', e => { if (e.key === 'Escape' && placingTool){ cancelPlacing(); } });
+
+	// General Escape key handler: deselect all tools and return to navigation mode
+	window.addEventListener('keydown', e => { 
+		if (e.key === 'Escape') {
+			// Skip if input fields are focused
+			if(e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+			
+			// Skip if specific tools are already handling Escape (avoid conflicts)
+			if (activeDrawTool || placingTool || faceAlignState) return;
+			
+			// Only proceed if there's something to deselect
+			const hasSelection = selectedObjects.length > 0 || transformControls.object;
+			const hasSnipMode = (typeof snipMode !== 'undefined' && snipMode);
+			
+			if (!hasSelection && !hasSnipMode) return;
+			
+			e.preventDefault();
+			
+			// Clear selections
+			if (hasSelection) {
+				selectedObjects = [];
+				transformControls.detach();
+				clearSelectionOutlines();
+				updateVisibilityUI();
+			}
+			
+			// Cancel any face alignment mode
+			if (typeof cancelFaceAlignMode === 'function') {
+				try { cancelFaceAlignMode(); } catch {}
+			}
+			
+			// Clear any snip mode
+			if (hasSnipMode) {
+				try {
+					if (typeof exitSnip === 'function') exitSnip(false);
+				} catch {}
+			}
+			
+			console.log('All tools deselected (Escape pressed)');
+		}
+	});
 
 	// Primitives + utilities
 	if (addFloorBtn) addFloorBtn.addEventListener('click',()=>{ startPlacing('floor'); });
@@ -6662,14 +6704,16 @@ const viewAxonBtn = document.getElementById('viewAxon');
 	const blockingStacking = createBlockingStacking();
 	const massSystem = createMassSystem({ THREE, scene });
 	
-	// Room System Setup
-	// ================= [ ROOM & BLOCKING SYSTEMS ] =================
-	// Spatial room metadata, blocking/stacking, mass system & designation UI initialization.
-	const roomSystem = createRoomSystem({ THREE, scene });
-	const roomManager = createRoomManager({ THREE, scene, roomSystem, persistence });
-	const roomDesignationUI = createRoomDesignationUI({ 
+	// Enhanced Room System Setup (V2.0)
+	// ================= [ ENHANCED ROOM & BLOCKING SYSTEMS ] =================
+	// Boundary-based room detection with spatial analysis and hybrid room types.
+	const roomBoundaryDetection = createRoomBoundaryDetection({ THREE, scene });
+	const roomSystem = createEnhancedRoomSystem({ THREE, scene, roomBoundaryDetection });
+	const roomManager = createEnhancedRoomManager({ THREE, scene, roomSystem, roomBoundaryDetection, persistence });
+	const roomDesignationUI = createEnhancedRoomDesignationUI({ 
 		roomSystem, 
 		roomManager, 
+		roomBoundaryDetection,
 		selectedObjects, 
 		transformControls, 
 		isOverlayOrChild: __isOverlayOrChild 

@@ -220,9 +220,62 @@ function getPointOnObject(obj, edgeIndex, snapType) {
       break;
       
     case 'rect':
+      if (obj.a && obj.b) {
+        const corners = [
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) }, // top-left
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) }, // top-right
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) }, // bottom-right
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) }  // bottom-left
+        ];
+        
+        if (snapType === 'corner' && edgeIndex >= 0 && edgeIndex < corners.length) {
+          return corners[edgeIndex];
+        } else if (snapType === 'edge') {
+          // Return midpoint of edge
+          const edges = [
+            [corners[0], corners[1]], // top
+            [corners[1], corners[2]], // right
+            [corners[2], corners[3]], // bottom
+            [corners[3], corners[0]]  // left
+          ];
+          if (edgeIndex >= 0 && edgeIndex < edges.length) {
+            const edge = edges[edgeIndex];
+            return {
+              x: (edge[0].x + edge[1].x) / 2,
+              y: (edge[0].y + edge[1].y) / 2
+            };
+          }
+        }
+      }
+      break;
+      
     case 'ellipse':
-      // For rects and ellipses, calculate points based on current geometry
-      // This is more complex and would need specific implementations
+      if (obj.a && obj.b) {
+        const centerX = (obj.a.x + obj.b.x) / 2;
+        const centerY = (obj.a.y + obj.b.y) / 2;
+        const radiusX = Math.abs(obj.b.x - obj.a.x) / 2;
+        const radiusY = Math.abs(obj.b.y - obj.a.y) / 2;
+        
+        if (snapType === 'keypoint') {
+          // Key points on ellipse (ends of major/minor axes)
+          const keyPoints = [
+            { x: centerX - radiusX, y: centerY }, // left
+            { x: centerX + radiusX, y: centerY }, // right
+            { x: centerX, y: centerY - radiusY }, // top
+            { x: centerX, y: centerY + radiusY }  // bottom
+          ];
+          if (edgeIndex >= 0 && edgeIndex < keyPoints.length) {
+            return keyPoints[edgeIndex];
+          }
+        } else if (snapType === 'perimeter') {
+          // For perimeter snapping, edgeIndex is actually the angle
+          const angle = edgeIndex;
+          return {
+            x: centerX + radiusX * Math.cos(angle),
+            y: centerY + radiusY * Math.sin(angle)
+          };
+        }
+      }
       break;
   }
   
@@ -726,6 +779,64 @@ function hitTestDimension(dimension, screenPoint, worldToScreen, tolerance) {
 }
 
 /**
+ * Project a point to the nearest point on an ellipse perimeter
+ */
+function projectPointToEllipse(point, centerX, centerY, radiusX, radiusY) {
+  // Handle degenerate cases
+  if (radiusX <= 0 || radiusY <= 0) {
+    return { x: centerX, y: centerY };
+  }
+  
+  // For circles, use simple projection
+  if (Math.abs(radiusX - radiusY) < 1e-6) {
+    const dx = point.x - centerX;
+    const dy = point.y - centerY;
+    const distance = Math.hypot(dx, dy);
+    if (distance === 0) return { x: centerX + radiusX, y: centerY };
+    
+    const scale = radiusX / distance;
+    return {
+      x: centerX + dx * scale,
+      y: centerY + dy * scale
+    };
+  }
+  
+  // For ellipses, use iterative approach to find nearest point
+  // Transform to unit circle, find nearest point, then transform back
+  const dx = point.x - centerX;
+  const dy = point.y - centerY;
+  
+  // Initial guess using angle from center
+  let angle = Math.atan2(dy / radiusY, dx / radiusX);
+  
+  // Newton-Raphson iteration to find the exact nearest point
+  for (let i = 0; i < 5; i++) {
+    const cos_t = Math.cos(angle);
+    const sin_t = Math.sin(angle);
+    
+    const ex = radiusX * cos_t;
+    const ey = radiusY * sin_t;
+    
+    const rx = ex - dx;
+    const ry = ey - dy;
+    
+    const qx = -radiusX * sin_t;
+    const qy = radiusY * cos_t;
+    
+    const r = rx * qx + ry * qy;
+    const q = qx * qx + qy * qy;
+    
+    if (Math.abs(r) < 1e-6 || q === 0) break;
+    angle -= r / q;
+  }
+  
+  return {
+    x: centerX + radiusX * Math.cos(angle),
+    y: centerY + radiusY * Math.sin(angle)
+  };
+}
+
+/**
  * Calculate distance from point to line segment
  */
 function distancePointToLineSegment(point, lineStart, lineEnd) {
@@ -796,8 +907,8 @@ export function repositionDimensionGrabber(dimensionId, grabberType, newWorldPoi
   switch (grabberType) {
     case 'start':
       dimension.startPoint = { ...newWorldPoint };
-      // Try to find new snap target
-      const startSnap = findNearbySnapTarget(newWorldPoint, objects);
+      // Try to find new snap target with appropriate tolerance
+      const startSnap = findNearbySnapTarget(newWorldPoint, objects, 0.2);
       if (startSnap) {
         dimension.startParentId = startSnap.parentId;
         dimension.startEdgeIndex = startSnap.edgeIndex;
@@ -821,8 +932,8 @@ export function repositionDimensionGrabber(dimensionId, grabberType, newWorldPoi
       
     case 'end':
       dimension.endPoint = { ...newWorldPoint };
-      // Try to find new snap target
-      const endSnap = findNearbySnapTarget(newWorldPoint, objects);
+      // Try to find new snap target with appropriate tolerance  
+      const endSnap = findNearbySnapTarget(newWorldPoint, objects, 0.2);
       if (endSnap) {
         dimension.endParentId = endSnap.parentId;
         dimension.endEdgeIndex = endSnap.edgeIndex;
@@ -881,28 +992,148 @@ export function repositionDimensionGrabber(dimensionId, grabberType, newWorldPoi
  * Find nearby snap target for repositioning
  */
 function findNearbySnapTarget(worldPoint, objects, tolerance = 0.1) {
-  // This is a simplified version - in a full implementation you'd want
-  // to reuse the snap detection logic from the main app
+  // Check for existing objects to snap to
   for (let i = 0; i < objects.length; i++) {
     const obj = objects[i];
-    if (obj.type === 'path' && obj.pts && obj.pts.length >= 2) {
-      // Check distance to each line segment
-      for (let j = 0; j < obj.pts.length - 1; j++) {
-        const start = obj.pts[j];
-        const end = obj.pts[j + 1];
-        const distance = distancePointToLineSegment(worldPoint, start, end);
-        
-        if (distance <= tolerance) {
-          return {
-            parentId: `obj_${i}`,
-            edgeIndex: j,
-            type: 'edge',
-            point: worldPoint // Simplified - should project to nearest point on edge
-          };
-        }
-      }
+    const snapInfo = getObjectSnapInfo(obj, worldPoint, tolerance, i);
+    if (snapInfo) {
+      return snapInfo;
     }
   }
+  return null;
+}
+
+/**
+ * Get snap information for a specific object (reused logic from main app)
+ */
+function getObjectSnapInfo(obj, worldPoint, tolerance, objectIndex) {
+  if (!obj) return null;
+  
+  switch (obj.type) {
+    case 'line':
+      if (obj.a && obj.b) {
+        // Check endpoints
+        if (Math.hypot(worldPoint.x - obj.a.x, worldPoint.y - obj.a.y) <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: obj.a, edgeIndex: 0, type: 'endpoint' };
+        }
+        if (Math.hypot(worldPoint.x - obj.b.x, worldPoint.y - obj.b.y) <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: obj.b, edgeIndex: 1, type: 'endpoint' };
+        }
+        // Check line segment
+        const distToLine = distancePointToLineSegment(worldPoint, obj.a, obj.b);
+        if (distToLine <= tolerance) {
+          return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: 0, type: 'edge' };
+        }
+      }
+      break;
+      
+    case 'rect':
+      if (obj.a && obj.b) {
+        const corners = [
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) },
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.min(obj.a.y, obj.b.y) },
+          { x: Math.max(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) },
+          { x: Math.min(obj.a.x, obj.b.x), y: Math.max(obj.a.y, obj.b.y) }
+        ];
+        
+        // Check corners
+        for (let i = 0; i < corners.length; i++) {
+          if (Math.hypot(worldPoint.x - corners[i].x, worldPoint.y - corners[i].y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: corners[i], edgeIndex: i, type: 'corner' };
+          }
+        }
+        
+        // Check edges
+        const edges = [
+          [corners[0], corners[1]], // top
+          [corners[1], corners[2]], // right
+          [corners[2], corners[3]], // bottom
+          [corners[3], corners[0]]  // left
+        ];
+        
+        for (let i = 0; i < edges.length; i++) {
+          const distToEdge = distancePointToLineSegment(worldPoint, edges[i][0], edges[i][1]);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: i, type: 'edge' };
+          }
+        }
+      }
+      break;
+      
+    case 'ellipse':
+      // Enhanced ellipse snapping - check anywhere along the ellipse perimeter
+      if (obj.a && obj.b) {
+        const centerX = (obj.a.x + obj.b.x) / 2;
+        const centerY = (obj.a.y + obj.b.y) / 2;
+        const radiusX = Math.abs(obj.b.x - obj.a.x) / 2;
+        const radiusY = Math.abs(obj.b.y - obj.a.y) / 2;
+        
+        // First check key points (ends of major/minor axes) for exact snapping
+        const keyPoints = [
+          { x: centerX - radiusX, y: centerY, edgeIndex: 0 }, // left
+          { x: centerX + radiusX, y: centerY, edgeIndex: 1 }, // right
+          { x: centerX, y: centerY - radiusY, edgeIndex: 2 }, // top
+          { x: centerX, y: centerY + radiusY, edgeIndex: 3 }  // bottom
+        ];
+        
+        for (const point of keyPoints) {
+          if (Math.hypot(worldPoint.x - point.x, worldPoint.y - point.y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: { x: point.x, y: point.y }, edgeIndex: point.edgeIndex, type: 'keypoint' };
+          }
+        }
+        
+        // Check if point is near the ellipse perimeter and project to nearest point on ellipse
+        if (radiusX > 0 && radiusY > 0) {
+          const nearestPoint = projectPointToEllipse(worldPoint, centerX, centerY, radiusX, radiusY);
+          const distanceToPerimeter = Math.hypot(worldPoint.x - nearestPoint.x, worldPoint.y - nearestPoint.y);
+          
+          if (distanceToPerimeter <= tolerance) {
+            // Calculate angle for this point on the ellipse (for tracking purposes)
+            const angle = Math.atan2(nearestPoint.y - centerY, nearestPoint.x - centerX);
+            return { 
+              parentId: obj.id || `obj_${objectIndex}`, 
+              point: nearestPoint, 
+              edgeIndex: angle, // Use angle as edge index for continuous tracking
+              type: 'perimeter' 
+            };
+          }
+        }
+      }
+      break;
+      
+    case 'path':
+      if (obj.pts && obj.pts.length >= 2) {
+        // Check endpoints
+        for (let i = 0; i < obj.pts.length; i++) {
+          const pt = obj.pts[i];
+          if (Math.hypot(worldPoint.x - pt.x, worldPoint.y - pt.y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: pt, edgeIndex: i, type: 'endpoint' };
+          }
+        }
+        
+        // Check edge segments
+        for (let i = 0; i < obj.pts.length - 1; i++) {
+          const start = obj.pts[i];
+          const end = obj.pts[i + 1];
+          const distToEdge = distancePointToLineSegment(worldPoint, start, end);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: i, type: 'edge' };
+          }
+        }
+        
+        // For closed paths, check the closing segment
+        if (obj.closed && obj.pts.length > 2) {
+          const start = obj.pts[obj.pts.length - 1];
+          const end = obj.pts[0];
+          const distToEdge = distancePointToLineSegment(worldPoint, start, end);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: obj.pts.length - 1, type: 'edge' };
+          }
+        }
+      }
+      break;
+  }
+  
   return null;
 }
 

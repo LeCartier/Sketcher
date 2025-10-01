@@ -240,19 +240,19 @@ function getObjectSnapInfo(obj, worldPoint, tolerance, objectIndex) {
       break;
       
     case 'ellipse':
-      // Simplified ellipse snapping - check if near the ellipse boundary
+      // Enhanced ellipse snapping - check anywhere along the ellipse perimeter
       if (obj.a && obj.b) {
         const centerX = (obj.a.x + obj.b.x) / 2;
         const centerY = (obj.a.y + obj.b.y) / 2;
         const radiusX = Math.abs(obj.b.x - obj.a.x) / 2;
         const radiusY = Math.abs(obj.b.y - obj.a.y) / 2;
         
-        // Check key points (ends of major/minor axes)
+        // First check key points (ends of major/minor axes) for exact snapping
         const keyPoints = [
           { x: centerX - radiusX, y: centerY, edgeIndex: 0 }, // left
-          { x: centerX + radiusX, y: centerY, edgeIndex: 0 }, // right
-          { x: centerX, y: centerY - radiusY, edgeIndex: 1 }, // top
-          { x: centerX, y: centerY + radiusY, edgeIndex: 1 }  // bottom
+          { x: centerX + radiusX, y: centerY, edgeIndex: 1 }, // right
+          { x: centerX, y: centerY - radiusY, edgeIndex: 2 }, // top
+          { x: centerX, y: centerY + radiusY, edgeIndex: 3 }  // bottom
         ];
         
         for (const point of keyPoints) {
@@ -260,11 +260,118 @@ function getObjectSnapInfo(obj, worldPoint, tolerance, objectIndex) {
             return { parentId: obj.id || `obj_${objectIndex}`, point: { x: point.x, y: point.y }, edgeIndex: point.edgeIndex, type: 'keypoint' };
           }
         }
+        
+        // Check if point is near the ellipse perimeter and project to nearest point on ellipse
+        if (radiusX > 0 && radiusY > 0) {
+          const nearestPoint = projectPointToEllipse(worldPoint, centerX, centerY, radiusX, radiusY);
+          const distanceToPerimeter = Math.hypot(worldPoint.x - nearestPoint.x, worldPoint.y - nearestPoint.y);
+          
+          if (distanceToPerimeter <= tolerance) {
+            // Calculate angle for this point on the ellipse (for tracking purposes)
+            const angle = Math.atan2(nearestPoint.y - centerY, nearestPoint.x - centerX);
+            return { 
+              parentId: obj.id || `obj_${objectIndex}`, 
+              point: nearestPoint, 
+              edgeIndex: angle, // Use angle as edge index for continuous tracking
+              type: 'perimeter' 
+            };
+          }
+        }
+      }
+      break;
+      
+    case 'path':
+      if (obj.pts && obj.pts.length >= 2) {
+        // Check endpoints
+        for (let i = 0; i < obj.pts.length; i++) {
+          const pt = obj.pts[i];
+          if (Math.hypot(worldPoint.x - pt.x, worldPoint.y - pt.y) <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: pt, edgeIndex: i, type: 'endpoint' };
+          }
+        }
+        
+        // Check edge segments
+        for (let i = 0; i < obj.pts.length - 1; i++) {
+          const start = obj.pts[i];
+          const end = obj.pts[i + 1];
+          const distToEdge = distancePointToLineSegment(worldPoint, start, end);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: i, type: 'edge' };
+          }
+        }
+        
+        // For closed paths, check the closing segment
+        if (obj.closed && obj.pts.length > 2) {
+          const start = obj.pts[obj.pts.length - 1];
+          const end = obj.pts[0];
+          const distToEdge = distancePointToLineSegment(worldPoint, start, end);
+          if (distToEdge <= tolerance) {
+            return { parentId: obj.id || `obj_${objectIndex}`, point: worldPoint, edgeIndex: obj.pts.length - 1, type: 'edge' };
+          }
+        }
       }
       break;
   }
   
   return null;
+}
+
+/**
+ * Project a point to the nearest point on an ellipse perimeter
+ */
+function projectPointToEllipse(point, centerX, centerY, radiusX, radiusY) {
+  // Handle degenerate cases
+  if (radiusX <= 0 || radiusY <= 0) {
+    return { x: centerX, y: centerY };
+  }
+  
+  // For circles, use simple projection
+  if (Math.abs(radiusX - radiusY) < 1e-6) {
+    const dx = point.x - centerX;
+    const dy = point.y - centerY;
+    const distance = Math.hypot(dx, dy);
+    if (distance === 0) return { x: centerX + radiusX, y: centerY };
+    
+    const scale = radiusX / distance;
+    return {
+      x: centerX + dx * scale,
+      y: centerY + dy * scale
+    };
+  }
+  
+  // For ellipses, use iterative approach to find nearest point
+  // Transform to unit circle, find nearest point, then transform back
+  const dx = point.x - centerX;
+  const dy = point.y - centerY;
+  
+  // Initial guess using angle from center
+  let angle = Math.atan2(dy / radiusY, dx / radiusX);
+  
+  // Newton-Raphson iteration to find the exact nearest point
+  for (let i = 0; i < 5; i++) {
+    const cos_t = Math.cos(angle);
+    const sin_t = Math.sin(angle);
+    
+    const ex = radiusX * cos_t;
+    const ey = radiusY * sin_t;
+    
+    const rx = ex - dx;
+    const ry = ey - dy;
+    
+    const qx = -radiusX * sin_t;
+    const qy = radiusY * cos_t;
+    
+    const r = rx * qx + ry * qy;
+    const q = qx * qx + qy * qy;
+    
+    if (Math.abs(r) < 1e-6 || q === 0) break;
+    angle -= r / q;
+  }
+  
+  return {
+    x: centerX + radiusX * Math.cos(angle),
+    y: centerY + radiusY * Math.sin(angle)
+  };
 }
 
 /**
@@ -331,11 +438,19 @@ function drawDimensionPreview(ctx, drawing, worldToScreen) {
     ctx.lineTo(endScreen.x, endScreen.y);
     ctx.stroke();
     
-    // Draw start point indicator
+    // Draw start point indicator (different color if snapped)
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(30, 136, 229, 0.8)';
+    const startSnapped = drawing.snapStart && drawing.snapStart.parentId;
+    ctx.fillStyle = startSnapped ? 'rgba(46, 204, 113, 0.9)' : 'rgba(30, 136, 229, 0.8)';
     ctx.beginPath();
     ctx.arc(startScreen.x, startScreen.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw end point indicator (different color if snapped during preview)
+    const endSnapped = drawing.snapPreview && drawing.snapPreview.parentId;
+    ctx.fillStyle = endSnapped ? 'rgba(46, 204, 113, 0.9)' : 'rgba(30, 136, 229, 0.8)';
+    ctx.beginPath();
+    ctx.arc(endScreen.x, endScreen.y, 3, 0, Math.PI * 2);
     ctx.fill();
     
   } else if (drawing.__stage === 2) {
@@ -343,6 +458,23 @@ function drawDimensionPreview(ctx, drawing, worldToScreen) {
     const offsetScreen = worldToScreen(drawing.offsetPoint);
     const dimText = formatDimension(worldDistance);
     drawSimpleDimensionPreview(ctx, startScreen, endScreen, offsetScreen, dimText);
+    
+    // Draw endpoint indicators to show which points are snapped
+    ctx.setLineDash([]);
+    
+    // Start point indicator
+    const startSnapped = drawing.snapStart && drawing.snapStart.parentId;
+    ctx.fillStyle = startSnapped ? 'rgba(46, 204, 113, 0.9)' : 'rgba(30, 136, 229, 0.8)';
+    ctx.beginPath();
+    ctx.arc(startScreen.x, startScreen.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // End point indicator
+    const endSnapped = drawing.snapEnd && drawing.snapEnd.parentId;
+    ctx.fillStyle = endSnapped ? 'rgba(46, 204, 113, 0.9)' : 'rgba(30, 136, 229, 0.8)';
+    ctx.beginPath();
+    ctx.arc(endScreen.x, endScreen.y, 3, 0, Math.PI * 2);
+    ctx.fill();
   }
   
   ctx.restore();
@@ -1308,6 +1440,20 @@ function setTool(id){
   else setStatus(`Tool: ${id}`);
   // Hide Modify HUD when leaving modify tools (we'll show it contextually on pick)
   if(id!=='offset' && id!=='fillet' && id!=='chamfer'){ hideModifyHUD && hideModifyHUD(); }
+  
+  // Deactivate selection when any drawing, measuring, or dimensioning tool is selected
+  const drawingTools = ['pen', 'smart', 'line', 'polyline', 'rect', 'ellipse', 'polygon', 'regpoly', 'roundrect', 'star', 'arc3', 'arccenter', 'bezier', 'text', 'erase-object', 'erase-pixel', 'offset', 'fillet', 'chamfer', 'trim', 'mirror', 'array', 'measure', 'dimension', 'hatch'];
+  if(drawingTools.includes(id) && selectToggle) {
+    selectToggle = false;
+    const selectBtn = document.getElementById('toggle2DSelect');
+    if(selectBtn) selectBtn.setAttribute('aria-pressed', 'false');
+    // Clear any active selection
+    selection.index = -1; 
+    selection.mode = null; 
+    selection.handle = null; 
+    selection.orig = null;
+    draw();
+  }
   const ids = ['tPen','tSmart','tLine','tPolyline','tRect','tEllipse','tPolygon','tRegPoly','tRoundRect','tStar','tArc3','tArcCenter','tBezier','tText','tEraseObj','tErasePix','tOffset','tFillet','tChamfer','tTrim','tMirror','tArray','tDimension','tMeasure','tHatch'];
   ids.forEach(i => { const el = document.getElementById(i); if(!el) return; const map = { tPen:'pen', tSmart:'smart', tLine:'line', tPolyline:'polyline', tRect:'rect', tEllipse:'ellipse', tPolygon:'polygon', tRegPoly:'regpoly', tRoundRect:'roundrect', tStar:'star', tArc3:'arc3', tArcCenter:'arccenter', tBezier:'bezier', tText:'text', tEraseObj:'erase-object', tErasePix:'erase-pixel', tOffset:'offset', tFillet:'fillet', tChamfer:'chamfer', tTrim:'trim', tMirror:'mirror', tArray:'array', tDimension:'dimension', tMeasure:'measure', tHatch:'hatch' }; el.setAttribute('aria-pressed', String(map[i]===id)); });
 }
@@ -2569,13 +2715,22 @@ function onPointerMove(e){
     } else if(drawing.__mode==='dimension'){
       // Update dimension preview based on stage (similar to measure)
       if(drawing.__stage === 1) {
-        // Stage 1: Live preview line from start to current cursor position
+        // Stage 1: Live preview line from start to current cursor position with snapping
+        const rFeet = 1 / (view.scale * view.pxPerFt);
+        let snapInfo = findSnapTarget(world, rFeet * 2); // Same snap radius as click
+        
+        // Use snap point if found, otherwise use raw cursor position
+        const previewEndPoint = snapInfo ? snapInfo.point : world;
+        
         if(drawing.pts.length === 1) {
-          drawing.pts.push(world);
+          drawing.pts.push(previewEndPoint);
         } else {
-          drawing.pts[1] = world;
+          drawing.pts[1] = previewEndPoint;
         }
-        drawing.endPoint = world;
+        drawing.endPoint = previewEndPoint;
+        
+        // Store snap info for potential use (optional, for visual feedback)
+        drawing.snapPreview = snapInfo;
       } else if(drawing.__stage === 2) {
         // Stage 2: Preview dimension line positioning
         drawing.offsetPoint = world;
@@ -2860,14 +3015,44 @@ window.addEventListener('keydown', e => {
   if((e.ctrlKey||e.metaKey) && !e.shiftKey && k==='z'){ e.preventDefault(); undo(); }
   else if((e.ctrlKey||e.metaKey) && (e.shiftKey && k==='z')){ e.preventDefault(); redo(); }
   else if(k==='escape') {
-    // Quit any tool back to Select: cancel drawings and erasing
-  if(drawing){ drawing=null; }
-    if(tool==='erase-pixel'){ erasing.active=false; erasing.cursor.visible=false; }
-  hideModifyHUD && hideModifyHUD();
-    // Default interaction: disable selection overlay, clear transform, remain in current draw/erase tool
-    selectToggle = false; try { const b=document.getElementById('toggle2DSelect'); if(b) b.setAttribute('aria-pressed','false'); } catch{}
-    selection.mode=null; selection.handle=null; selection.orig=null; selection.index = -1;
-    draw(); setStatus('Ready');
+    // Escape key: deselect all tools and return to navigation mode
+    e.preventDefault();
+    
+    // Cancel any active drawing
+    if(drawing){ 
+      drawing = null; 
+    }
+    
+    // Cancel any active erasing
+    if(tool==='erase-pixel'){ 
+      erasing.active = false; 
+      erasing.cursor.visible = false; 
+    }
+    
+    // Hide any modify HUD
+    hideModifyHUD && hideModifyHUD();
+    
+    // Disable selection mode
+    selectToggle = false; 
+    try { 
+      const b = document.getElementById('toggle2DSelect'); 
+      if(b) b.setAttribute('aria-pressed','false'); 
+    } catch{}
+    
+    // Clear selection state
+    selection.mode = null; 
+    selection.handle = null; 
+    selection.orig = null; 
+    selection.index = -1;
+    
+    // Collapse all expanded panels
+    collapseAllPanels();
+    
+    // Return to pan tool (navigation mode)
+    setTool('pan');
+    
+    draw(); 
+    setStatus('Navigation mode (Escape pressed)');
   }
   else if(k==='v') {
     selectToggle = !selectToggle; const b=document.getElementById('toggle2DSelect'); if(b) b.setAttribute('aria-pressed', String(selectToggle)); if(!selectToggle){ selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; draw(); }
@@ -3012,9 +3197,61 @@ try {
     zoomToFit2D(); setStatus('Snip: click to lasso selection; double-click/Enter to finish; Esc to cancel');
   }
 } catch{}
+// Function to collapse all expanded toolbox panels
+function collapseAllPanels() {
+  const panelIds = [
+    'draw2DGroup', 'shapes2DGroup', 'text2DGroup', 'style2DGroup', 
+    'erase2DGroup', 'edit2DGroup', 'modify2DGroup', 'dimensions2DGroup'
+  ];
+  const toggleIds = [
+    'toggle2DDraw', 'toggle2DShapes', 'toggle2DText', 'toggle2DStyle',
+    'toggle2DErase', 'toggle2DEdit', 'toggle2DModify', 'toggle2DDimensions'
+  ];
+  
+  panelIds.forEach((groupId, index) => {
+    const group = document.getElementById(groupId);
+    const toggle = document.getElementById(toggleIds[index]);
+    if(group && toggle) {
+      group.classList.remove('open');
+      group.setAttribute('aria-hidden', 'true');
+      toggle.setAttribute('aria-pressed', 'false');
+    }
+  });
+  
+  // Reposition mobile delete bar after collapsing panels
+  placeMobileDeleteBar2D();
+}
+
 // Wire select toggle button
 const selectBtn = document.getElementById('toggle2DSelect');
-if(selectBtn){ selectBtn.addEventListener('click', ()=>{ selectToggle = !selectToggle; selectBtn.setAttribute('aria-pressed', String(selectToggle)); if(!selectToggle){ selection.index=-1; selection.mode=null; selection.handle=null; selection.orig=null; draw(); } }); }
+if(selectBtn){ 
+  selectBtn.addEventListener('click', ()=>{ 
+    selectToggle = !selectToggle; 
+    selectBtn.setAttribute('aria-pressed', String(selectToggle)); 
+    
+    if(selectToggle) {
+      // When activating selection mode:
+      // 1. Collapse all expanded panels
+      collapseAllPanels();
+      // 2. Set tool to pan (deactivate any active drawing tools)
+      setTool('pan');
+      // 3. Clear any active drawing state
+      if(drawing) {
+        drawing = null;
+        draw();
+      }
+      // 4. Set appropriate status message
+      setStatus('Selection mode: click objects to select, drag to move');
+    } else {
+      // When deactivating selection mode, clear selection
+      selection.index = -1; 
+      selection.mode = null; 
+      selection.handle = null; 
+      selection.orig = null; 
+      draw();
+    }
+  }); 
+}
 
 // Save to Personal Columbarium (2D)
 async function save2DToColumbarium(){

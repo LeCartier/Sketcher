@@ -2116,6 +2116,101 @@ body.community .page-vignette::before {
 	font-size: 12px;
 }
 
+/* Room Placement Styles */
+.room-placement-section {
+	margin: 16px 0;
+	padding: 16px;
+	background: #f8fafc;
+	border-radius: 8px;
+	border: 1px solid #e2e8f0;
+}
+
+.room-placement-section h4 {
+	margin: 0 0 12px;
+	font: 600 14px/1.4 system-ui, sans-serif;
+	color: #1e293b;
+}
+
+.placement-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.placement-status {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-size: 13px;
+}
+
+.status-indicator {
+	padding: 4px 8px;
+	border-radius: 4px;
+	font-weight: 500;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.status-indicator.ready {
+	background: #dcfce7;
+	color: #166534;
+}
+
+.status-indicator.active {
+	background: #dbeafe;
+	color: #1d4ed8;
+	animation: pulse 2s infinite;
+}
+
+.status-indicator.success {
+	background: #dcfce7;
+	color: #166534;
+}
+
+.status-indicator.error {
+	background: #fee2e2;
+	color: #dc2626;
+}
+
+.placement-mode {
+	color: #64748b;
+	font-size: 12px;
+	font-style: italic;
+}
+
+.placement-buttons {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.placement-buttons .btn {
+	flex: 1;
+	min-width: 80px;
+}
+
+/* Placement mode cursor styles */
+canvas.placement-active {
+	cursor: crosshair !important;
+}
+
+/* Status indicator animation */
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.7; }
+}
+
+/* Placed rooms stat card styling */
+.stat-card.placed .stat-value {
+	color: #3b82f6;
+}
+
+.stat-card.placed {
+	border-left: 3px solid #3b82f6;
+}
+
 /* Room Manager Panel (Movable) */
 .room-manager-panel {
 	position: fixed;
